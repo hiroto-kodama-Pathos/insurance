@@ -1,0 +1,24 @@
+.page { padding: 16px 24px; }
+.page-header { display: flex; align-items: center; gap: 24px; }
+.list { border-collapse: collapse; font-size: 13px; }
+.list th, .list td { border: 1px solid #ccc; padding: 4px 8px; white-space: nowrap; }
+.list th { background: #f0f3f8; }
+.form { display: flex; flex-direction: column; gap: 10px; max-width: 420px; padding: 16px; margin-bottom: 16px; border: 1px solid #ccc; border-radius: 8px; }
+.form h2 { margin: 0; font-size: 16px; }
+.form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.form input, .form select { padding: 6px; font-size: 14px; }
+.help { color: #666; font-size: 12px; }
+.err, .error { color: #c00; font-size: 12px; }
+.notice { background: #e5f4e4; padding: 6px 10px; }
+.actions { display: flex; gap: 8px; }
+.secondary { background: #fff; }
+.row { display: flex; gap: 8px; }
+.row input { flex: 1; }
+.radio { display: flex; gap: 16px; border: none; padding: 0; margin: 0; font-size: 13px; }
+.radio legend { padding: 0; margin-bottom: 4px; }
+.radio label { flex-direction: row; align-items: center; gap: 4px; }
+.filters { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin: 8px 0; }
+.tabs { display: flex; gap: 4px; }
+.tab { background: #fff; border: 1px solid #ccc; border-radius: 16px; padding: 4px 12px; font-size: 13px; cursor: pointer; }
+.tab.active { background: #e7f1fb; border-color: #7aa7d9; font-weight: bold; }
+.filters input, .filters select { padding: 6px; font-size: 14px; }

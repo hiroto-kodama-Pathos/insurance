@@ -1,0 +1,100 @@
+<section class="page">
+  <header class="page-header">
+    <h1>給与</h1>
+    <label class="month">
+      支払月
+      <input type="month" [value]="yearMonth()" (change)="onMonthChange($any($event.target).value)" />
+    </label>
+  </header>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <p class="help">
+      給与計算が終わったら、その月に支払った給与を入れます。給与は随時改定の候補と定時決定の見込みを出すためだけに使い、保険料は変わりません（保険料は標準報酬月額で計算します）。
+    </p>
+    <p><a routerLink="/salaries/import">CSVで取り込む</a>（給与ソフトの出力をまとめて取り込めます）</p>
+    <p class="summary">入力済み {{ enteredCount() }} / {{ rows().length }}人　固定的賃金の変動あり {{ changedCount() }}人
+      @if (changedCount() > 0) {
+        <a routerLink="/revisions">随時改定の候補を見る</a>
+      }
+    </p>
+
+    @if (notice()) {
+      <p class="notice">{{ notice() }}</p>
+    }
+
+    <div class="table-wrap">
+      <table class="list salaries">
+        <thead>
+          <tr>
+            <th>社員番号</th>
+            <th>氏名</th>
+            <th>支払日</th>
+            <th>固定的賃金</th>
+            <th>非固定的賃金</th>
+            <th>支払基礎日数</th>
+            <th>うち遡及差額</th>
+            <th>うち現物給与</th>
+            <th>前月の固定的賃金</th>
+            <th>状態</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of rows(); track row.employee.id) {
+            <tr [class.changed]="row.change">
+              <td>{{ row.employee.employeeNumber }}</td>
+              <td>{{ row.employee.name }}</td>
+              <td>
+                <input type="date" [value]="draft(row.employee.id, 'paidDate')" [disabled]="row.closed"
+                  (input)="setDraft(row.employee.id, 'paidDate', $any($event.target).value)" />
+                <span class="err">{{ err(row.employee.id, 'paidDate') }}</span>
+              </td>
+              @for (key of ['fixedWages', 'nonFixedWages', 'paymentBaseDays', 'retroactiveDiff', 'inKindWages']; track key) {
+                <td>
+                  <input class="num-input" [class.days]="key === 'paymentBaseDays'" inputmode="numeric" [attr.name]="key"
+                    [value]="draft(row.employee.id, $any(key))" [disabled]="row.closed"
+                    (input)="setDraft(row.employee.id, $any(key), $any($event.target).value)" />
+                  <span class="err">{{ err(row.employee.id, $any(key)) }}</span>
+                </td>
+              }
+              <td class="num">{{ yen(row.previousFixed) }}</td>
+              <td>
+                @if (row.closed) {
+                  <span class="badge">確定</span>
+                }
+                @if (row.change) {
+                  <span class="badge up">変動あり（{{ row.change.direction === 'up' ? '上がった' : '下がった' }}）</span>
+                }
+                @if (row.existing) {
+                  <span class="badge">入力済み</span>
+                }
+                @if (row.others > 0) {
+                  <span class="badge">ほかに{{ row.others }}回の支払い（合算）</span>
+                }
+                <span class="err">{{ err(row.employee.id, 'form') }}</span>
+              </td>
+              <td class="actions">
+                @if (!row.closed) {
+                  <button type="button" [disabled]="saving() !== null" (click)="save(row)">保存</button>
+                  @if (row.existing) {
+                    <button type="button" class="secondary" [disabled]="saving() !== null" (click)="remove(row)">削除</button>
+                  }
+                }
+              </td>
+            </tr>
+          } @empty {
+            <tr><td colspan="11">この月に資格のある従業員はいません。</td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    <p class="hint">
+      固定的賃金：基本給・諸手当（役職・家族・住宅・通勤手当など）。非固定的賃金：残業代・歩合給など。支払基礎日数：月給制は暦日数（欠勤控除がある人は所定日数から欠勤日数を引いた日数）、日給・時給制は出勤日数。<br />
+      遡及差額は、過去の月の分としてまとめて払った昇給の差額です。固定的賃金に含めて入れ、ここに内訳を書くと、変動の判定と平均から除きます。
+    </p>
+  }
+</section>

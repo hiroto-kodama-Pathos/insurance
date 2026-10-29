@@ -1,0 +1,24 @@
+.page { padding: 16px 24px; }
+.help, .hint { color: #666; font-size: 12px; margin: 4px 0 8px; max-width: 1000px; }
+.file { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.mapping { border: 1px solid #ccc; border-radius: 8px; padding: 8px 12px; margin: 8px 0; max-width: 1000px; }
+.mapping summary { cursor: pointer; font-weight: bold; }
+.fields { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0; }
+.fields label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.fields select { padding: 4px; }
+fieldset { border: 1px solid #ddd; margin: 8px 0; font-size: 13px; }
+.check { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; font-size: 13px; }
+.table-wrap { overflow-x: auto; }
+.list { border-collapse: collapse; margin-bottom: 8px; font-size: 13px; }
+.list th, .list td { border: 1px solid #ccc; padding: 4px 6px; white-space: nowrap; vertical-align: top; }
+.list th { background: #f0f3f8; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+tr.error { background: #ffecec; }
+tr.closed, tr.outOfScope { color: #888; }
+tr.overwrite { background: #fffbe6; }
+.badge { display: inline-block; background: #e7f1fb; border-radius: 4px; padding: 0 6px; margin-right: 4px; }
+.err { color: #c00; font-size: 12px; }
+.error { color: #c00; }
+.notice { background: #e5f4e4; padding: 6px 10px; }
+.counts { margin: 8px 0; }
+.primary { font-weight: bold; }

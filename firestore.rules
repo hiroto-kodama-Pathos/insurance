@@ -1,0 +1,459 @@
+rules_version = '2';
+// 第二課題（タスク管理アプリ）: 権限は「役職による例外を作らない」方針。Custom Claims は使わず、
+// 各ドキュメントの participantUids / adminUids への含有だけで判定する。
+// 第三課題（社会保険料計算アプリ）: ファイルの最後のブロック。カスタムクレーム siRole で判定する。
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function orgDoc(orgId) {
+      return get(/databases/$(database)/documents/organizations/$(orgId));
+    }
+    // 組織メンバー共通: メールのドメインが organizations/{orgId}.domain と一致、
+    // または organizations/{orgId}.allowedEmails（小文字のメールアドレスの配列）に含まれる
+    function isOrgMember(orgId) {
+      return request.auth != null
+        && request.auth.token.email_verified == true
+        && (request.auth.token.email.split('@')[1] == orgDoc(orgId).data.domain
+            || request.auth.token.email.lower() in orgDoc(orgId).data.get('allowedEmails', []));
+    }
+    function projectPath(orgId, pid) {
+      return /databases/$(database)/documents/organizations/$(orgId)/projects/$(pid);
+    }
+    function isParticipant(orgId, pid) {
+      return isOrgMember(orgId) && request.auth.uid in get(projectPath(orgId, pid)).data.participantUids;
+    }
+    // プロジェクトの期間: 開始日は必須（作成時と、開始日を変えるとき）。終了日は空でもよい。あれば yyyy-mm-dd で2000〜2099年、終了日は開始日以降。
+    // 開始日が空の既存プロジェクトは、開始日を変えない更新に限って許可する（作成日として扱う）
+    function validDateOrNull(v) {
+      return v == null || (v is string && v.size() == 10 && v >= '2000-01-01' && v <= '2099-12-31');
+    }
+    function validPeriod(d) {
+      return validDateOrNull(d.get('startDate', null)) && validDateOrNull(d.get('endDate', null))
+        && (d.get('startDate', null) == null || d.get('endDate', null) == null || d.startDate <= d.endDate);
+    }
+    // チェックリストの件数（タスク本体）: 0以上の整数で、完了数は全体数以下。ない古いタスクは 0 として扱う
+    function validNext(d) { return d.get('nextAction', '') is string && d.get('nextAction', '').size() <= 100; }
+    function validCounts(d) {
+      return d.get('checklistTotal', 0) is int && d.get('checklistTotal', 0) >= 0
+        && d.get('checklistCompleted', 0) is int && d.get('checklistCompleted', 0) >= 0
+        && d.get('checklistCompleted', 0) <= d.get('checklistTotal', 0);
+    }
+    // 最後に変更した人（updatedBy）: 変えるときは、自分のIDだけ（通知で、実行した本人を除くため。なりすまさない）
+    function validUpdatedBy(d, old) {
+      return d.get('updatedBy', null) == old.get('updatedBy', null) || d.get('updatedBy', null) == request.auth.uid;
+    }
+    function nonEmptyString(v, max) { return v is string && v.trim().size() > 0 && v.size() <= max; }
+
+    // 参考リンク: 0〜50件。すべての要素が、http:// または https:// で始まる（javascript: などは拒否）。
+    // ルールには、リストの各要素を調べる書き方がないので、空白でつないだ1つの文字列に、まとめて正規表現を当てる
+    function validLinks(d) {
+      return d.get('referenceLinks', []) is list
+        && (d.get('referenceLinks', []).size() == 0
+            || (d.get('referenceLinks', []).size() <= 50
+                && d.get('referenceLinks', []).join(' ').matches('^https?://[^ ]+( https?://[^ ]+)*$')));
+    }
+
+    // 担当者は任意（assigneeUids は空配列可、複数可）。旧データ（assigneeUids なし）の更新も許可する
+    function validAssignees(d) {
+      return d.get('assigneeUids', []) is list && d.get('assigneeUids', []).size() <= 50;
+    }
+
+    // マイタスク用の collectionGroup('tasks') クエリ。
+    // クエリでは親プロジェクトの参加者判定(get)や組織ドキュメントの参照を静的に証明できないため、
+    // 「自分が担当者のタスク」に限って許可する（絞り込み条件 assigneeUids array-contains uid が必須）。
+    // ドメイン制限はログイン時(beforeSignIn)で担保済み。担当者は参加者から外す際に付け替える運用とする。
+    // 組織は単一（APP_CONFIG.orgId = 'default'）なので組織メンバー判定を行う。
+    // 担当者は書き込み時に参加者のサブセットであることを検証している（validAssigneesInProject）ため、非参加者は担当者になれない
+    match /{path=**}/tasks/{tid} {
+      allow read: if isOrgMember('default')
+        && resource.data.get('assigneeUids', []).hasAny([request.auth.uid]);
+    }
+
+    // 担当者はプロジェクトの参加者のみ。更新時は、すでに入っている担当者（参加者から外れた人）の残存は許す
+    function validAssigneesInProject(orgId, pid, d, old) {
+      return d.get('assigneeUids', []).toSet()
+        .difference(get(projectPath(orgId, pid)).data.participantUids.toSet())
+        .difference(old.get('assigneeUids', []).toSet()).size() == 0;
+    }
+
+    // 参加者の追加は、組織メンバー(members/{uid})に実在する UID だけ。
+    // ルールには各要素を調べる書き方がなく、exists() は1リクエスト10回までなので、追加は「既存の並びの末尾に最大8件」に限る。
+    // （管理者は参加者のサブセットと別途検証しているので、管理者の追加もここで担保される）
+    function isMemberUid(orgId, v) {
+      return v is string && exists(/databases/$(database)/documents/organizations/$(orgId)/members/$(v));
+    }
+    function newParticipantOk(orgId, l, n, i) {
+      return n + i >= l.size() || isMemberUid(orgId, l[n + i]);
+    }
+    function validParticipantsAdded(orgId, d, old) {
+      let l = d.participantUids;
+      let o = old.participantUids;
+      let n = o.size();
+      return l.toSet().difference(o.toSet()).size() == 0 // 追加なし（削除のみ・変更なし）
+        || (l.size() <= n + 8
+            && l[0:n] == o // 既存の並びは変えず、末尾にだけ追加する
+            && newParticipantOk(orgId, l, n, 0) && newParticipantOk(orgId, l, n, 1)
+            && newParticipantOk(orgId, l, n, 2) && newParticipantOk(orgId, l, n, 3)
+            && newParticipantOk(orgId, l, n, 4) && newParticipantOk(orgId, l, n, 5)
+            && newParticipantOk(orgId, l, n, 6) && newParticipantOk(orgId, l, n, 7));
+    }
+
+    match /organizations/{orgId} {
+      allow get: if isOrgMember(orgId);
+      allow write: if false;
+
+      // 組織メンバーは Cloud Functions(onCreate) が自動作成する。クライアントからの書き込みは不可
+      match /members/{uid} {
+        allow read: if isOrgMember(orgId);
+        allow write: if false;
+      }
+
+      // 拠点・グループ: 組織メンバーなら誰でも作成・編集可
+      // 拠点の統合は作らない。グループは誰でも削除できる。
+      // 拠点も組織メンバーなら削除できるが、「使用中か」はルールでは判定できない。
+      // 画面の確認・削除直前のサマリー再検索・指定時のトランザクションで防ぐ
+      match /locations/{id} {
+        allow read, delete: if isOrgMember(orgId);
+        allow create, update: if isOrgMember(orgId)
+          && nonEmptyString(request.resource.data.name, 100)
+          && request.resource.data.get('groupIds', []) is list;
+      }
+      match /groups/{id} {
+        allow read, delete: if isOrgMember(orgId);
+        allow create, update: if isOrgMember(orgId)
+          && nonEmptyString(request.resource.data.name, 100)
+          && request.resource.data.get('memberUids', []) is list;
+      }
+
+      // プロジェクト名の予約ドキュメント projectNames/{正規化した名前}。同じ名前の重複を防ぐ。
+      // create は、ドキュメントがまだ存在しないときだけ許される（存在すれば update になり、下で禁止）。
+      // プロジェクトの作成・名前変更と同じバッチ／トランザクションで書くので、getAfter で、そのプロジェクトの管理者であることを確認する。
+      // 削除は、そのプロジェクトの管理者による名前の付け替えのときだけ（ゴミ箱の30日後の削除は Functions が行う）
+      match /projectNames/{key} {
+        allow read: if isOrgMember(orgId);
+        // 関係ない名前の予約（横取り）を防ぐ: 予約は { projectId, createdAt, createdBy, name } だけ。
+        // createdBy は本人、name は同じバッチで保存するプロジェクトの name と一致が必須。
+        // キーは projectNameKey（NFKC 正規化 + encodeURIComponent）で、ルールでは完全には再計算できない。
+        // 英数字・_・- だけの名前は、キー == 'n_' + 小文字の名前 を厳密に検証し、それ以外は、キーの形（パーセントエンコード形式）を検証する。
+        // 完全な一致は、Functions の onProjectNameCreated が作成直後に再検証し、食い違う予約を削除する
+        allow create: if isOrgMember(orgId)
+          && request.resource.data.projectId is string
+          && request.auth.uid in getAfter(projectPath(orgId, request.resource.data.projectId)).data.adminUids
+          && request.resource.data.keys().hasOnly(['projectId', 'createdAt', 'createdBy', 'name'])
+          && request.resource.data.createdBy == request.auth.uid
+          && request.resource.data.name is string
+          && request.resource.data.name == getAfter(projectPath(orgId, request.resource.data.projectId)).data.name
+          && key.matches('^n_.+')
+          && (request.resource.data.name.matches('^[A-Za-z0-9_-]+$')
+              ? key == 'n_' + request.resource.data.name.lower()
+              : key.matches("^n_(%[0-9A-F]{2}|[A-Za-z0-9_.!~*'()-])+$"));
+        allow update: if false;
+        allow delete: if isOrgMember(orgId)
+          && request.auth.uid in get(projectPath(orgId, resource.data.projectId)).data.adminUids;
+      }
+
+      // 組織の全プロジェクト一覧用サマリー。組織メンバー全員が読める（projects 本体は参加者のみのまま）。
+      // 書き込みは、そのプロジェクトの参加者だけ。本体の書き込みと同じバッチで書くため getAfter で検証する。
+      // 完全非公開のプロジェクトのサマリーは作れない。削除（ゴミ箱）時はサマリーを消す
+      match /projectSummaries/{pid} {
+        allow read: if isOrgMember(orgId);
+        // 進捗の件数（taskCount / doneCount）は Cloud Functions（Admin SDK、ルールの対象外）だけが書く。
+        // クライアントは、作成時は 0 のみ、更新時は変更不可（改ざん防止）
+        allow create, update: if isOrgMember(orgId)
+          && (request.method == 'create'
+              ? (request.resource.data.get('taskCount', 0) == 0 && request.resource.data.get('doneCount', 0) == 0)
+              : (request.resource.data.get('taskCount', null) == resource.data.get('taskCount', null)
+                 && request.resource.data.get('doneCount', null) == resource.data.get('doneCount', null)))
+          && (request.auth.uid in getAfter(projectPath(orgId, pid)).data.participantUids
+              || (exists(projectPath(orgId, pid)) && request.auth.uid in get(projectPath(orgId, pid)).data.participantUids))
+          && getAfter(projectPath(orgId, pid)).data.visibility == 'normal'
+          && request.resource.data.get('locationIds', []) == getAfter(projectPath(orgId, pid)).data.get('locationIds', [])
+          && request.resource.data.get('deletedAt', null) == getAfter(projectPath(orgId, pid)).data.get('deletedAt', null)
+          && request.resource.data.name == getAfter(projectPath(orgId, pid)).data.name
+          && request.resource.data.status == getAfter(projectPath(orgId, pid)).data.status
+          && request.resource.data.get('endDate', null) == getAfter(projectPath(orgId, pid)).data.get('endDate', null)
+          && request.resource.data.participantCount == getAfter(projectPath(orgId, pid)).data.participantUids.size()
+          && request.resource.data.adminUids == getAfter(projectPath(orgId, pid)).data.adminUids;
+        allow delete: if isOrgMember(orgId)
+          && request.auth.uid in get(projectPath(orgId, pid)).data.participantUids;
+      }
+
+      match /projects/{pid} {
+        // 一覧クエリは participantUids array-contains uid が必須。完全非公開は非参加者に一切返らない
+        allow read: if isOrgMember(orgId) && request.auth.uid in resource.data.participantUids;
+        allow create: if isOrgMember(orgId)
+          && nonEmptyString(request.resource.data.name, 20)
+          && request.auth.uid in request.resource.data.adminUids
+          && request.auth.uid in request.resource.data.participantUids
+          && request.resource.data.createdBy == request.auth.uid
+          // 作成者を先頭に、他の参加者は組織メンバーだけ（作成者以外は最大8人）
+          && validParticipantsAdded(orgId, request.resource.data, {'participantUids': [request.auth.uid]})
+          && validPeriod(request.resource.data)
+          && request.resource.data.get('startDate', null) != null // 開始日は必須
+          && request.resource.data.visibility in ['normal', 'fullyPrivate']
+          // 完全非公開: 理由は必須（200文字以内）。拠点は指定できない（拠点の使用中判定に出てしまうため）
+          && (request.resource.data.visibility == 'normal'
+              || (nonEmptyString(request.resource.data.get('privateReason', null), 200)
+                  && request.resource.data.get('locationIds', []).size() == 0));
+        // 設定変更・メンバー増減は管理者のみ。管理者は常に1人以上、かつ参加者に含まれる
+        allow update: if (isOrgMember(orgId)
+          && request.auth.uid in resource.data.adminUids
+          && request.resource.data.adminUids.size() >= 1
+          && (request.resource.data.name.size() <= 20 || request.resource.data.name == resource.data.name)
+          && request.resource.data.adminUids.toSet().difference(request.resource.data.participantUids.toSet()).size() == 0
+          && validParticipantsAdded(orgId, request.resource.data, resource.data) // 追加できるのは組織メンバーだけ
+          && validUpdatedBy(request.resource.data, resource.data) // updatedBy は自分のIDだけ（なりすまし防止）
+          && validPeriod(request.resource.data) // 期間（startDate・endDate）を変えられるのは管理者だけ
+          && (request.resource.data.get('startDate', null) != null || resource.data.get('startDate', null) == null) // 開始日を空にはできない
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.visibility == resource.data.visibility // 作成後は、公開の設定も理由も、変えられない
+          && request.resource.data.get('privateReason', null) == resource.data.get('privateReason', null)
+          && (request.resource.data.visibility == 'normal' || request.resource.data.get('locationIds', []).size() == 0))
+          // 完了・進行中の切り替え（status / updatedAt のみ）は参加者なら誰でも可。
+          // ゴミ箱への出し入れ（deletedAt の変更）は管理者のみ（上の管理者用の更新ルールで許可される）
+          || (isOrgMember(orgId)
+          && request.auth.uid in resource.data.participantUids
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt'])
+          && request.resource.data.status in ['active', 'completed']);
+        allow delete: if false;
+
+        // 繰り返しタスクのルール（追補T）: 作成は参加者。編集・削除は、作成した人か管理者。実際のタスクは、Functions が作る
+        match /recurringRules/{rid} {
+          // 周期（追補AK）: { unit: 'day'|'week'|'month', every: 1〜99, weekdays: 曜日の配列（7個まで）, endDate: 2000〜2099年の yyyy-mm-dd または null }
+          function validInterval(i) {
+            return i is map && i.get('unit', null) in ['day', 'week', 'month']
+              && i.get('every', 0) is int && i.get('every', 0) >= 1 && i.get('every', 0) <= 99
+              && i.get('weekdays', []) is list && i.get('weekdays', []).size() <= 7
+              && validDateOrNull(i.get('endDate', null));
+          }
+          function validRule(d) {
+            return nonEmptyString(d.get('title', null), 20)
+              && validInterval(d.get('interval', null))
+              && d.get('ended', false) is bool
+              && d.get('assigneeUids', []) is list && d.get('assigneeUids', []).size() <= 200
+              && d.get('checklist', []) is list && d.get('checklist', []).size() <= 50
+              && validLinks(d)
+              && validDateOrNull(d.get('anchor', null));
+          }
+          function canManage(orgId, pid) {
+            return resource.data.createdBy == request.auth.uid
+              || request.auth.uid in get(projectPath(orgId, pid)).data.adminUids;
+          }
+          allow read: if isParticipant(orgId, pid);
+          allow create: if isParticipant(orgId, pid) && request.resource.data.createdBy == request.auth.uid && validRule(request.resource.data);
+          allow update: if isParticipant(orgId, pid) && canManage(orgId, pid)
+            && request.resource.data.createdBy == resource.data.createdBy && validRule(request.resource.data);
+          allow delete: if isParticipant(orgId, pid) && canManage(orgId, pid);
+        }
+
+        match /tasks/{tid} {
+          // 参加者なら誰でも作成・編集（担当者以外も可）。物理削除は Functions のみ（ゴミ箱は deletedAt）
+          allow read: if isParticipant(orgId, pid);
+          allow create: if isParticipant(orgId, pid)
+            && nonEmptyString(request.resource.data.title, 20)
+            && request.resource.data.assigneeUids is list   // 担当者は任意（空配列可）・複数可
+            && validAssignees(request.resource.data)
+            && validAssigneesInProject(orgId, pid, request.resource.data, {})
+            && validLinks(request.resource.data)
+            && validCounts(request.resource.data)
+            && validNext(request.resource.data)
+            && request.resource.data.status in ['not_started', 'in_progress', 'checking', 'waiting', 'on_hold', 'done'];
+          allow update: if isParticipant(orgId, pid)
+            && (nonEmptyString(request.resource.data.title, 20) || request.resource.data.title == resource.data.title)
+            && validAssignees(request.resource.data)
+            && validAssigneesInProject(orgId, pid, request.resource.data, resource.data)
+            && validLinks(request.resource.data)
+            && validCounts(request.resource.data)
+            && validNext(request.resource.data)
+            && validUpdatedBy(request.resource.data, resource.data)
+            && request.resource.data.status in ['not_started', 'in_progress', 'checking', 'waiting', 'on_hold', 'done']
+            && request.resource.data.priority in [null, 'high', 'mid', 'low']
+            && request.resource.data.createdBy == resource.data.createdBy;
+          allow delete: if false;
+
+          match /checklistItems/{iid} {
+            allow read, create, update, delete: if isParticipant(orgId, pid);
+          }
+        }
+      }
+
+      // ユーザーごとの設定・個人タスク（本人のみ）
+      // 本人だけの領域（お気に入り・個人タスク・FCM トークン・設定）。本人だけが読み書きできる
+      match /users/{uid} {
+        function own() { return isOrgMember(orgId) && request.auth.uid == uid; }
+        match /favorites/{d} { allow read, write: if own(); }
+        match /taskFavorites/{d} { allow read, write: if own(); }
+        match /personalTasks/{d=**} { allow read, write: if own(); }
+        match /fcmTokens/{d} { allow read, write: if own(); }
+        match /settings/{s} {
+          // 通知設定（追補F-5）: { masterEnabled: bool, perEvent: { 11のイベント: bool } }。古い構造のキー（taskAssigned など）が残っていてもよい（読み替える）。
+          // このほかのキーは、保存できない
+          function validNotificationSettings(d) {
+            return d.keys().hasOnly(['masterEnabled', 'perEvent', 'updatedAt', 'taskAssigned', 'dueSoon', 'overdue', 'projectAdded', 'taskDeleted', 'priorityHigh'])
+              && d.get('masterEnabled', true) is bool
+              && d.get('perEvent', {}) is map
+              && d.get('perEvent', {}).keys().hasOnly(['assigneeAssigned', 'participantAdded', 'taskDeleted', 'priorityHigh', 'dailyDigest', 'statusChangedByOthers', 'adminProjectParticipantAdded', 'checklistCompleted', 'taskOverloadAlert', 'invitedToFullyPrivateProject', 'groupInviteSuggested'])
+              && d.get('perEvent', {}).get('assigneeAssigned', true) is bool
+              && d.get('perEvent', {}).get('participantAdded', true) is bool
+              && d.get('perEvent', {}).get('taskDeleted', true) is bool
+              && d.get('perEvent', {}).get('priorityHigh', true) is bool
+              && d.get('perEvent', {}).get('dailyDigest', true) is bool
+              && d.get('perEvent', {}).get('statusChangedByOthers', true) is bool
+              && d.get('perEvent', {}).get('adminProjectParticipantAdded', true) is bool
+              && d.get('perEvent', {}).get('checklistCompleted', true) is bool
+              && d.get('perEvent', {}).get('taskOverloadAlert', true) is bool
+              && d.get('perEvent', {}).get('invitedToFullyPrivateProject', true) is bool
+              && d.get('perEvent', {}).get('groupInviteSuggested', true) is bool
+              && d.get('taskAssigned', true) is bool && d.get('dueSoon', true) is bool && d.get('overdue', true) is bool
+              && d.get('projectAdded', true) is bool && d.get('taskDeleted', true) is bool && d.get('priorityHigh', true) is bool;
+          }
+          allow read, delete: if own();
+          allow create, update: if own() && (s != 'notificationSettings' || validNotificationSettings(request.resource.data));
+        }
+      }
+    }
+
+    // ===== 第三課題（社会保険料計算アプリ）=====
+    // データはすべて apps/socialInsurance の下に置く。第二課題のデータ（organizations）とは分ける。
+    // 権限は、管理者が Cloud Functions で付けるカスタムクレーム siRole（'staff' または 'admin'）で判定する。
+    // 第二課題のアカウントには siRole が付いていないので、第三課題のデータは読めない。
+    // 注意: 第二課題の match /{path=**}/tasks/{tid} が効くため、第三課題では「tasks」という名前のコレクションを作らない。
+    function siRole() {
+      return request.auth != null ? request.auth.token.get('siRole', null) : null;
+    }
+    function isSiUser() { return siRole() in ['staff', 'admin']; }
+    function isSiAdmin() { return siRole() == 'admin'; }
+
+    match /apps/socialInsurance {
+      allow read, write: if false;
+
+      function siPath(name, id) {
+        return /databases/$(database)/documents/apps/socialInsurance/$(name)/$(id);
+      }
+      // マスタ・会社の設定・月次確定・賞与は下で個別に決める。それ以外（従業員など）は担当者も読み書きできる
+      function isMasterCollection(c) {
+        return c in ['insurers', 'insurerRates', 'pensionRates', 'grades', 'gradeThresholds', 'offices', 'companySettings', 'closings', 'bonuses', 'salaries'];
+      }
+      match /{collection}/{document=**} {
+        allow read: if isSiUser();
+        allow write: if isSiUser() && !isMasterCollection(collection);
+      }
+
+      // システム共通マスタ：読むだけ。書き込みは運営者の Admin SDK スクリプトだけ（ルールを通らない）
+      match /pensionRates/{id} { allow read: if isSiUser(); }
+      match /grades/{id} { allow read: if isSiUser(); }
+      match /gradeThresholds/{id} { allow read: if isSiUser(); }
+
+      // 適用事業所：管理者だけが追加・変更する。従業員が参照するので削除はさせない
+      match /offices/{id} {
+        allow read: if isSiUser();
+        allow create, update: if isSiAdmin()
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && exists(siPath('insurers', request.resource.data.insurerId));
+      }
+
+      // 保険者：協会けんぽはシステム共通。管理者は組合健保だけを追加・変更できる
+      match /insurers/{id} {
+        allow read: if isSiUser();
+        allow create: if isSiAdmin() && request.resource.data.type == 'kumiai';
+        allow update: if isSiAdmin() && resource.data.type == 'kumiai' && request.resource.data.type == 'kumiai';
+      }
+
+      // 料率：管理者は組合健保の料率だけを追加・変更できる（保険者を付け替えることはできない）
+      match /insurerRates/{id} {
+        allow read: if isSiUser();
+        allow create: if isSiAdmin()
+          && get(siPath('insurers', request.resource.data.insurerId)).data.type == 'kumiai'
+          && request.resource.data.prefecture == null;
+        allow update: if isSiAdmin()
+          && get(siPath('insurers', resource.data.insurerId)).data.type == 'kumiai'
+          && request.resource.data.insurerId == resource.data.insurerId
+          && request.resource.data.rateType == resource.data.rateType
+          && request.resource.data.prefecture == null;
+      }
+
+      // 会社の設定：管理者が変える。退職者データの保管期間（retentionYears）は運営者だけが変える
+      match /companySettings/{id} {
+        allow read: if isSiUser();
+        allow create: if isSiAdmin() && !('retentionYears' in request.resource.data);
+        allow update: if isSiAdmin()
+          && request.resource.data.get('retentionYears', null) == resource.data.get('retentionYears', null);
+      }
+      // 月次確定：担当範囲（siScope が 'all' か、その事業所のID）の人が確定・解除できる。
+      // 確定した結果は書き換えさせない（直すときは解除してから、もう一度確定する）
+      function siScope() { return request.auth.token.get('siScope', null); }
+      function inScope(officeId) { return siScope() == 'all' || siScope() == officeId; }
+
+      // 親：事業所ごとの確定日時だけを持つ。自分の担当範囲の事業所の分だけ変えられる
+      match /closings/{yearMonth} {
+        allow read: if isSiUser();
+        allow create: if isSiUser()
+          && request.resource.data.keys().hasOnly(['offices'])
+          && (siScope() == 'all' || request.resource.data.offices.keys().hasOnly([siScope()]));
+        allow update: if isSiUser()
+          && request.resource.data.keys().hasOnly(['offices'])
+          && (siScope() == 'all'
+            || request.resource.data.offices.diff(resource.data.offices).affectedKeys().hasOnly([siScope()]));
+      }
+
+      // 賞与：確定済みの月（closings/{支給月}/offices/{事業所} がある）の賞与は、登録も削除もできない。
+      // 直すときは月次確定を解除してから行う。賞与額などの書き換えは許可しない（削除して登録し直す）
+      function closedPath(yearMonth, officeId) {
+        return /databases/$(database)/documents/apps/socialInsurance/closings/$(yearMonth)/offices/$(officeId);
+      }
+      match /bonuses/{bonusId} {
+        allow read: if isSiUser();
+        allow create: if isSiUser()
+          && request.resource.data.employeeId is string
+          && request.resource.data.amount is int && request.resource.data.amount > 0
+          && request.resource.data.yearMonth is string
+          && request.resource.data.paidDate.matches(request.resource.data.yearMonth + '-[0-9]{2}')
+          && request.resource.data.officeId is string
+          && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId));
+        allow delete: if isSiUser()
+          && !exists(closedPath(resource.data.yearMonth, resource.data.officeId));
+        // 二以上事業所勤務：全事業所の賞与額の合計だけは、確定済みの月でも登録できる（確定した控除額は変えず、過不足を出すため）
+        allow update: if isSiUser()
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalAmount', 'updatedAt'])
+          && (request.resource.data.totalAmount == null
+            || (request.resource.data.totalAmount is int && request.resource.data.totalAmount > resource.data.amount));
+      }
+
+      // 給与：確定済みの月（closings/{支払月}/offices/{事業所} がある）の給与は、登録・上書き・削除ができない。
+      // 同じ人・同じ支払日は1件（ドキュメントID＝従業員ID_支払日）にして、上書きで直す
+      function validSalary(d) {
+        return d.employeeId is string
+          && d.paidDate is string && d.yearMonth is string
+          && d.paidDate.matches(d.yearMonth + '-[0-9]{2}')
+          && d.officeId is string
+          && d.fixedWages is int && d.fixedWages >= 0
+          && d.nonFixedWages is int && d.nonFixedWages >= 0
+          && d.paymentBaseDays is int && d.paymentBaseDays >= 0 && d.paymentBaseDays <= 31;
+      }
+      match /salaries/{salaryId} {
+        allow read: if isSiUser();
+        allow create: if isSiUser() && validSalary(request.resource.data)
+          && salaryId == request.resource.data.employeeId + '_' + request.resource.data.paidDate
+          && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId));
+        allow update: if isSiUser() && validSalary(request.resource.data)
+          && request.resource.data.employeeId == resource.data.employeeId
+          && request.resource.data.paidDate == resource.data.paidDate
+          && !exists(closedPath(resource.data.yearMonth, resource.data.officeId))
+          && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId));
+        allow delete: if isSiUser()
+          && !exists(closedPath(resource.data.yearMonth, resource.data.officeId));
+      }
+
+      // 事業所ごとの結果
+      match /closings/{yearMonth}/offices/{officeId} {
+        // TODO: 特定の事業所の担当者は、担当事業所の分だけ読めるようにする（一覧の読み込みを事業所で絞ってから）
+        allow read: if isSiUser();
+        allow create: if isSiUser() && inScope(officeId)
+          && request.resource.data.officeId == officeId
+          && request.resource.data.yearMonth == yearMonth
+          && request.resource.data.closedBy == request.auth.uid;
+        allow delete: if isSiUser() && inScope(officeId);
+      }
+    }
+    }
+  }

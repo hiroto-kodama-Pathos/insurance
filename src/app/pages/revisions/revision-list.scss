@@ -1,0 +1,27 @@
+.page { padding: 16px 24px; }
+.table-wrap { overflow-x: auto; }
+.list { border-collapse: collapse; margin-bottom: 8px; font-size: 13px; }
+.list th, .list td { border: 1px solid #ccc; padding: 4px 8px; white-space: nowrap; vertical-align: top; }
+.list th { background: #f0f3f8; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.months div { font-variant-numeric: tabular-nums; }
+.hit { font-weight: bold; }
+.review { background: #fff4e5; }
+.badge { display: inline-block; background: #e7f1fb; border-radius: 4px; padding: 0 6px; margin: 1px 4px 1px 0; }
+.badge.warn { background: #ffd8a8; }
+.help, .hint { color: #666; font-size: 12px; margin: 4px 0 8px; max-width: 1000px; }
+.error { color: #c00; }
+.notice { background: #e5f4e4; padding: 6px 10px; }
+.tabs { display: flex; gap: 4px; margin: 8px 0; }
+.tab { background: #fff; border: 1px solid #ccc; border-radius: 16px; padding: 4px 12px; font-size: 13px; cursor: pointer; }
+.tab.active { background: #e7f1fb; border-color: #7aa7d9; font-weight: bold; }
+.actions { display: flex; gap: 4px; }
+.secondary { background: #fff; }
+.status { display: inline-block; border-radius: 4px; padding: 0 6px; }
+.status.open { background: #ffd8a8; }
+.status.filed { background: #d0ebff; }
+.status.registered { background: #d3f9d8; }
+.status.dismissed { background: #e9ecef; }
+.badge.leave { background: #e5dbff; }
+.unused { color: #999; }
+.until { font-size: 12px; color: #666; }

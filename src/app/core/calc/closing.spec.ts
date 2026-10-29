@@ -1,0 +1,121 @@
+import { describe, expect, it } from 'vitest';
+import {
+  buildOfficeClosing,
+  canCloseOffice,
+  closeBlockers,
+  mergeWithClosings,
+  restoreRow,
+  RowInput,
+} from './closing';
+import { calcEmployeeMonth, EmployeeData, Masters } from './employee-month';
+import { summarizeMonth } from './monthly-summary';
+
+const masters: Masters = {
+  offices: [
+    { id: 'honsha', name: '本社', prefecture: '東京都', insurerId: 'kyokai' },
+    { id: 'osaka', name: '大阪支店', prefecture: '大阪府', insurerId: 'kyokai' },
+  ],
+  insurers: [{ id: 'kyokai', type: 'kyokai', name: '協会けんぽ' }],
+  insurerRates: [
+    { insurerId: 'kyokai', rateType: 'health', prefecture: '東京都', validFrom: '2026-03', rate: 9850, employeeShare: 500 },
+    { insurerId: 'kyokai', rateType: 'health', prefecture: '大阪府', validFrom: '2026-03', rate: 10130, employeeShare: 500 },
+    { insurerId: 'kyokai', rateType: 'care', prefecture: null, validFrom: '2026-03', rate: 1620, employeeShare: 500 },
+    { insurerId: 'kyokai', rateType: 'childSupport', prefecture: null, validFrom: '2026-04', rate: 230, employeeShare: 500 },
+  ],
+  pensionRates: [{ validFrom: '2017-09', rate: 18300, employeeShare: 500 }],
+};
+
+function emp(id: string, office: string, std: number | null, birth = '1980-05-10'): EmployeeData & { employeeNumber: string; name: string } {
+  return {
+    id,
+    employeeNumber: id,
+    name: `社員 ${id}`,
+    birthDate: birth,
+    qualifications: [{ acquiredDate: '2024-04-01', lostDate: null }],
+    leaves: [],
+    exemptions: [],
+    assignments: [{ validFrom: '2024-04-01', officeId: office }],
+    standardHistory: std ? [{ validFrom: '2024-04', healthStandard: std, pensionStandard: std }] : [],
+  };
+}
+const rowsOf = (list: ReturnType<typeof emp>[], ym = '2026-10'): RowInput[] =>
+  list.map((e) => ({ employee: e, result: calcEmployeeMonth(e, masters, ym) }));
+
+describe('calcEmployeeMonth の料率', () => {
+  it('計算に使った料率と負担割合を返す', () => {
+    const r = calcEmployeeMonth(emp('e1', 'osaka', 300_000), masters, '2026-10');
+    expect(r.rates?.health).toEqual({ rate: 10130, share: 500 });
+    expect(r.rates?.pension).toEqual({ rate: 18300, share: 500 });
+  });
+});
+
+describe('closeBlockers', () => {
+  it('標準報酬月額が未登録の人がいれば確定できない', () => {
+    const rows = rowsOf([emp('e1', 'honsha', 300_000), emp('e2', 'honsha', null)]);
+    expect(closeBlockers('2026-10', 'honsha', rows)).toEqual(['e2 社員 e2：標準報酬月額が未登録']);
+  });
+  it('ほかの事業所の問題は関係しない', () => {
+    const rows = rowsOf([emp('e1', 'honsha', 300_000), emp('e2', 'osaka', null)]);
+    expect(closeBlockers('2026-10', 'honsha', rows)).toEqual([]);
+  });
+  it('保険料がかかる人がいない事業所は確定しない', () => {
+    expect(closeBlockers('2026-10', 'osaka', rowsOf([emp('e1', 'honsha', 300_000)]))).toHaveLength(1);
+  });
+});
+
+describe('buildOfficeClosing と restoreRow', () => {
+  const rows = rowsOf([emp('e1', 'honsha', 300_000), emp('e2', 'honsha', 260_000, '1995-08-20'), emp('e3', 'osaka', 410_000)]);
+  const closing = buildOfficeClosing('2026-10', 'honsha', rows, 'u1');
+
+  it('その事業所の人だけを、根拠つきで保存する', () => {
+    expect(closing.rows.map((r) => r.employeeId)).toEqual(['e1', 'e2']);
+    expect(closing.rows[0].standard).toEqual({ health: 300_000, pension: 300_000 });
+    expect(closing.rows[0].rates?.health).toEqual({ rate: 9850, share: 500 });
+    expect(closing.rows[0].careLabel).toBe('second');
+    expect(closing.rows[0].premiums.health?.employeeYen).toBe(14775);
+    expect(closing.closedBy).toBe('u1');
+  });
+
+  it('保存する値は number（Firestore に保存できる形）', () => {
+    expect(typeof closing.rows[0].premiums.pension?.fullSen).toBe('number');
+    expect(typeof closing.totals.pension.paymentYen).toBe('number');
+  });
+
+  it('戻した結果から求めた小計は、確定前と同じ', () => {
+    const before = summarizeMonth('2026-10', rows.filter((r) => r.result.officeId === 'honsha').map((r) => r.result));
+    const after = summarizeMonth('2026-10', closing.rows.map((r) => restoreRow(closing, r).result));
+    expect(after).toEqual(before);
+    expect(closing.totals.healthCare.paymentYen).toBe(Number(before.company.healthCare.paymentYen));
+  });
+});
+
+describe('mergeWithClosings', () => {
+  it('確定済みの事業所は保存した結果、それ以外は計算した結果を使う', () => {
+    const rows = rowsOf([emp('e1', 'honsha', 300_000), emp('e3', 'osaka', 410_000)]);
+    const closing = buildOfficeClosing('2026-10', 'honsha', rows, 'u1');
+    // 確定後に、本社の人の標準報酬月額を直した
+    const changed = rowsOf([emp('e1', 'honsha', 500_000), emp('e3', 'osaka', 410_000)]);
+    const merged = mergeWithClosings(changed, [closing]);
+    const e1 = merged.find((r) => r.employee.id === 'e1')!;
+    expect(e1.closed).toBe(true);
+    expect(e1.result.standard?.health).toBe(300_000);
+    expect(merged.find((r) => r.employee.id === 'e3')!.closed).toBe(false);
+    expect(merged).toHaveLength(2);
+  });
+
+  it('確定後に別の事業所へ異動した人は、二重に出さない', () => {
+    const closing = buildOfficeClosing('2026-10', 'honsha', rowsOf([emp('e1', 'honsha', 300_000)]), 'u1');
+    const merged = mergeWithClosings(rowsOf([emp('e1', 'osaka', 300_000)]), [closing]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].result.officeId).toBe('honsha');
+  });
+});
+
+describe('canCloseOffice', () => {
+  it('全担当はすべて、事業所の担当者はその事業所だけ', () => {
+    expect(canCloseOffice('all', 'osaka')).toBe(true);
+    expect(canCloseOffice('osaka', 'osaka')).toBe(true);
+    expect(canCloseOffice('osaka', 'honsha')).toBe(false);
+    expect(canCloseOffice(null, 'honsha')).toBe(false);
+  });
+});

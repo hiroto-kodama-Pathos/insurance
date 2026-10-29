@@ -1,0 +1,213 @@
+<section class="page">
+  <header class="page-header">
+    <h1>月次保険料一覧</h1>
+    <label class="month">
+      対象月
+      <input
+        type="month"
+        [value]="yearMonth()"
+        (change)="onMonthChange($any($event.target).value)"
+      />
+    </label>
+  </header>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <h2>{{ yearMonth() }}分の保険料</h2>
+    <p class="timing">{{ monthLabel(yearMonth()) }}分保険料（{{ monthLabel(payMonth()) }}支給給与から控除）</p>
+
+    <section class="closing">
+      <h3>確定の状況：{{ allClosed() ? 'すべて確定済み' : '一部未確定' }}</h3>
+      @if (notice()) {
+        <p class="notice">{{ notice() }}</p>
+      }
+      <table class="list status">
+        <thead><tr><th>適用事業所</th><th>状況</th><th></th></tr></thead>
+        <tbody>
+          @for (s of officeStatuses(); track s.officeId) {
+            <tr>
+              <td>{{ s.name }}</td>
+              <td>
+                @if (s.closing) {
+                  <span class="badge">確定済み</span> {{ closedAtLabel(s.closing) }}
+                } @else if (s.blockers.length > 0) {
+                  <span class="error">確定できません</span>
+                  <ul class="blockers">
+                    @for (b of s.blockers; track b) {
+                      <li>{{ b }}</li>
+                    }
+                  </ul>
+                } @else {
+                  未確定
+                }
+                @if (s.bonusCount > 0) {
+                  <span class="hint">（賞与 {{ s.bonusCount }}件を含む）</span>
+                }
+              </td>
+              <td>
+                @if (s.canOperate) {
+                  @if (s.closing) {
+                    <button type="button" class="secondary" [disabled]="saving()" (click)="reopen(s.officeId)">確定を解除</button>
+                  } @else {
+                    <button type="button" [disabled]="saving() || s.blockers.length > 0" (click)="close([s.officeId])">確定</button>
+                  }
+                }
+              </td>
+            </tr>
+          } @empty {
+            <tr><td colspan="3">この月に保険料がかかる従業員はいません。</td></tr>
+          }
+        </tbody>
+      </table>
+      @if (closableOffices().length > 1) {
+        <button type="button" [disabled]="saving()" (click)="close(closableOffices().map((s) => s.officeId))">
+          確定できる事業所をまとめて確定（{{ closableOffices().length }}件）
+        </button>
+      }
+      <p class="hint">確定は、給与ソフトの控除額と突き合わせたあと、給与を支払う前に行います。確定した事業所は保存した金額を表示し、後から従業員や料率を直しても変わりません。</p>
+    </section>
+
+    <div class="table-wrap">
+      <table class="list persons">
+        <thead>
+          <tr>
+            <th rowspan="2">社員番号</th>
+            <th rowspan="2">氏名</th>
+            <th rowspan="2">適用事業所</th>
+            <th rowspan="2">標準報酬月額</th>
+            <th colspan="2">健康保険</th>
+            <th colspan="2">介護保険</th>
+            <th colspan="2">支援金</th>
+            <th colspan="2">厚生年金</th>
+            <th rowspan="2">本人負担計</th>
+            <th rowspan="2">給与からの控除</th>
+            <th rowspan="2">備考</th>
+          </tr>
+          <tr>
+            <th>本人</th><th>会社</th>
+            <th>本人</th><th>会社</th>
+            <th>本人</th><th>会社</th>
+            <th>本人</th><th>会社</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of rows(); track row.employee.id) {
+            <tr [class.warn]="row.result.status !== 'ok'" [class.closed]="row.closed">
+              <td>{{ row.employee.employeeNumber }}</td>
+              <td>{{ row.employee.name }}</td>
+              <td>{{ row.officeName }}</td>
+              <td>{{ standardLabel(row) }}</td>
+              <td class="num">{{ yen(row.result.premium?.health?.employeeYen) }}</td>
+              <td class="num">{{ employerYen(row.result.premium?.health) }}</td>
+              @if (row.result.premium?.care) {
+                <td class="num">{{ yen(row.result.premium?.care?.employeeYen) }}</td>
+                <td class="num">{{ employerYen(row.result.premium?.care) }}</td>
+              } @else {
+                <td colspan="2" class="note">{{ careNote(row) }}</td>
+              }
+              <td class="num">{{ yen(row.result.premium?.childSupport?.employeeYen) }}</td>
+              <td class="num">{{ employerYen(row.result.premium?.childSupport) }}</td>
+              <td class="num">{{ yen(row.result.premium?.pension?.employeeYen) }}</td>
+              <td class="num">{{ employerYen(row.result.premium?.pension) }}</td>
+              <td class="num strong">{{ employeeTotal(row) }}</td>
+              <td class="deduction">
+                @if (deductions().get(row.employee.id); as d) {
+                  @if (d.status !== 'none') {
+                    <div>{{ monthLabel(d.payMonth) }}支給</div>
+                    @if (d.premiumMonths.length === 2) {
+                      <span class="badge two">最終給与で2か月分控除</span>
+                    }
+                    @switch (d.status) {
+                      @case ('shortage') { <span class="badge shortage">控除不足 {{ d.shortage.toLocaleString('ja-JP') }}円</span> }
+                      @case ('caution') { <span class="badge caution">注意（給与の60%超）</span> }
+                      @case ('notEntered') { <span class="badge muted">給与未入力</span> }
+                    }
+                  }
+                }
+              </td>
+              <td>
+                @if (row.closed) {
+                  <span class="badge">確定</span>
+                }
+                @if (row.result.premium?.exempt) {
+                  <span class="badge">休業免除</span>
+                }
+                @if (exemptionLabel(row); as x) {
+                  <span class="badge">{{ x }}</span>
+                }
+                @if (row.result.premium?.careLabel === 'special') {
+                  <span class="badge">特定被保険者</span>
+                }
+                @if (multiOfficeLabel(row); as x) {
+                  <span class="badge">{{ x }}</span>
+                }
+                {{ statusLabel(row) }}
+              </td>
+            </tr>
+          } @empty {
+            <tr><td colspan="15">この月に資格のある従業員はいません。</td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    <p class="hint">
+      給与からの控除：控除する給与（「給与」画面で入力・取り込み）のうちお金で払う額と、本人負担を比べた目安です。所得税・住民税などほかの控除は考えていません。
+      控除不足の人は、不足額を本人から別に集めるか確かめてください。保険料が給与の60%を超える人は、ほかの控除と合わせて足りなくなるおそれがあります。
+    </p>
+
+    <h2>適用事業所別の小計</h2>
+    @for (office of summary().offices; track office.officeId + office.insurerId) {
+      <h3>{{ officeName(office.officeId) }}</h3>
+      <table class="list subtotal">
+        <thead>
+          <tr>
+            <th>納付書の欄</th>
+            <th>人数</th>
+            <th>納付見込額</th>
+            <th>本人負担計</th>
+            <th>会社負担計</th>
+            <th>1人ずつの会社負担の合計との差</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (line of lines; track line) {
+            <tr>
+              <td>{{ lineLabels[line] }}</td>
+              <td class="num">{{ office.lines[line].count }}</td>
+              <td class="num">{{ yen(office.lines[line].paymentYen) }}</td>
+              <td class="num">{{ yen(office.lines[line].employeeTotal) }}</td>
+              <td class="num">{{ yen(office.lines[line].employerTotal) }}</td>
+              <td class="num">{{ yen(office.lines[line].roundingGap) }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    }
+
+    <h2>会社合計</h2>
+    <table class="list subtotal">
+      <thead>
+        <tr>
+          <th>納付書の欄</th>
+          <th>納付見込額</th>
+          <th>本人負担計</th>
+          <th>会社負担計</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (line of lines; track line) {
+          <tr>
+            <td>{{ lineLabels[line] }}</td>
+            <td class="num">{{ yen(summary().company[line].paymentYen) }}</td>
+            <td class="num">{{ yen(summary().company[line].employeeTotal) }}</td>
+            <td class="num">{{ yen(summary().company[line].employerTotal) }}</td>
+          </tr>
+        }
+      </tbody>
+    </table>
+    <p class="hint">納付見込額は、適用事業所ごとに全額を合計して円未満を切り捨てた額です。実際の納付額は保険者からの請求で確定します。</p>
+  }
+</section>

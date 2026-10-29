@@ -1,0 +1,26 @@
+.page { padding: 16px 24px; }
+.page-header { display: flex; align-items: center; gap: 24px; }
+.month { display: flex; align-items: center; gap: 8px; }
+.table-wrap { overflow-x: auto; }
+.list { border-collapse: collapse; margin-bottom: 16px; font-size: 13px; }
+.list th, .list td { border: 1px solid #ccc; padding: 4px 8px; white-space: nowrap; }
+.list th { background: #f0f3f8; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.strong { font-weight: bold; }
+.note { color: #666; text-align: center; }
+.warn { background: #fff4e5; }
+.badge { background: #e7f1fb; border-radius: 4px; padding: 0 6px; margin-right: 4px; }
+.error { color: #c00; }
+.hint { color: #666; font-size: 12px; }
+.closing { margin: 8px 0 16px; }
+.closing h3 { margin: 4px 0; }
+.notice { background: #e5f4e4; padding: 6px 10px; }
+.blockers { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
+.closed td { background: #f7f9fc; }
+.secondary { background: #fff; }
+.deduction { font-size: 12px; }
+.badge.shortage { background: #ffc9c9; font-weight: bold; }
+.badge.caution { background: #ffe8cc; }
+.badge.two { background: #e5dbff; }
+.badge.muted { background: #f1f3f5; color: #666; }
+.timing { margin: 0 0 8px; }

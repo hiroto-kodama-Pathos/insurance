@@ -1,0 +1,24 @@
+.page { padding: 16px 24px; max-width: 960px; }
+h2 { margin-top: 28px; border-bottom: 1px solid #ddd; padding-bottom: 4px; }
+h3 { display: flex; align-items: center; gap: 8px; font-size: 15px; }
+.list { border-collapse: collapse; font-size: 13px; margin-bottom: 8px; }
+.list th, .list td { border: 1px solid #ccc; padding: 4px 8px; white-space: nowrap; }
+.list th { background: #f0f3f8; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.badge { background: #e7f1fb; border-radius: 4px; padding: 0 6px; font-size: 12px; font-weight: normal; }
+.form { display: flex; flex-direction: column; gap: 10px; max-width: 480px; padding: 16px; margin: 12px 0; border: 1px solid #ccc; border-radius: 8px; }
+.form h3 { margin: 0; }
+.form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.form label.check { flex-direction: row; align-items: center; gap: 6px; }
+.form input:not([type=radio]):not([type=checkbox]), .form select { padding: 6px; font-size: 14px; }
+.radio { display: flex; flex-direction: column; gap: 6px; border: none; padding: 0; margin: 0; font-size: 13px; }
+.radio legend { padding: 0; margin-bottom: 4px; }
+.radio label { flex-direction: row; align-items: center; gap: 6px; }
+.row { display: flex; gap: 16px; }
+.help { color: #666; font-size: 12px; margin: 0 0 8px; }
+.err, .error { color: #c00; font-size: 12px; }
+.err:empty { display: none; }
+.notice { background: #e5f4e4; padding: 6px 10px; }
+.actions { display: flex; gap: 8px; }
+.secondary { background: #fff; }
+.small { font-size: 12px; padding: 2px 8px; }

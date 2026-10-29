@@ -1,0 +1,145 @@
+<section class="page">
+  <header class="page-header">
+    <h1>従業員一覧</h1>
+    @if (!showForm()) {
+      <button type="button" (click)="openForm()">新規登録</button>
+    }
+  </header>
+
+  @if (notice()) {
+    <p class="notice">{{ notice() }}</p>
+  }
+
+  @if (showForm()) {
+    <form class="form" (submit)="save($event)">
+      <h2>従業員の新規登録</h2>
+      <label>
+        社員番号
+        <input [value]="form().employeeNumber" (input)="setText('employeeNumber', $any($event.target).value)" />
+        @if (errors().employeeNumber) { <span class="err">{{ errors().employeeNumber }}</span> }
+      </label>
+      <label>
+        氏名
+        <input [value]="form().name" (input)="setText('name', $any($event.target).value)" />
+        @if (errors().name) { <span class="err">{{ errors().name }}</span> }
+      </label>
+      <label>
+        生年月日
+        <input type="date" [value]="form().birthDate" (input)="setText('birthDate', $any($event.target).value)" />
+        @if (errors().birthDate) { <span class="err">{{ errors().birthDate }}</span> }
+      </label>
+      <label>
+        所属する適用事業所
+        <select (change)="setText('officeId', $any($event.target).value)">
+          <option value="" [selected]="form().officeId === ''">選んでください</option>
+          @for (o of offices(); track o.id) {
+            <option [value]="o.id" [selected]="form().officeId === o.id">{{ o.name }}</option>
+          }
+        </select>
+        <span class="help">料率は従業員の住所ではなく、働く事業所の所在地で決まります。</span>
+        @if (errors().officeId) { <span class="err">{{ errors().officeId }}</span> }
+      </label>
+      <fieldset class="radio">
+        <legend>社会保険</legend>
+        <label><input type="radio" name="insured" [checked]="form().insured" (change)="setInsured(true)" /> 加入する</label>
+        <label><input type="radio" name="insured" [checked]="!form().insured" (change)="setInsured(false)" /> 加入しない</label>
+      </fieldset>
+      @if (form().insured) {
+        <label>
+          資格取得日
+          <input type="date" [value]="form().acquiredDate" (input)="setText('acquiredDate', $any($event.target).value)" />
+          @if (errors().acquiredDate) { <span class="err">{{ errors().acquiredDate }}</span> }
+        </label>
+        <label>
+          被保険者区分
+          <select name="insuredType" [value]="form().insuredType ?? 'general'" (change)="setInsuredType($any($event.target).value)">
+            @for (t of insuredTypes; track t) {
+              <option [value]="t">{{ insuredTypeLabel[t] }}</option>
+            }
+          </select>
+          <span class="help">雇用形態ではなく、届出上の区分です。随時改定・定時決定の支払基礎日数の基準に使います。</span>
+        </label>
+        <label>
+          報酬月額（見込み）
+          <span class="row">
+            <input inputmode="numeric" [value]="form().remuneration ?? ''" (input)="setAmount('remuneration', $any($event.target).value)" />
+            <button type="button" (click)="suggest()">提案を入力</button>
+          </span>
+          <span class="help">資格取得届に書く額です（基本給・手当・通勤手当・残業の見込みを含む）。</span>
+          @if (suggestMessage()) { <span class="err">{{ suggestMessage() }}</span> }
+          @if (errors().remuneration) { <span class="err">{{ errors().remuneration }}</span> }
+        </label>
+        <label>
+          標準報酬月額（健康保険）
+          <input inputmode="numeric" [value]="form().healthStandard ?? ''" (input)="setAmount('healthStandard', $any($event.target).value)" />
+          @if (suggestion(); as s) { <span class="help">健康保険 {{ s.healthGrade }}等級</span> }
+          @if (errors().healthStandard) { <span class="err">{{ errors().healthStandard }}</span> }
+        </label>
+        <label>
+          標準報酬月額（厚生年金）
+          <input inputmode="numeric" [value]="form().pensionStandard ?? ''" (input)="setAmount('pensionStandard', $any($event.target).value)" />
+          @if (suggestion(); as s) {
+            <span class="help">
+              厚生年金 {{ s.pensionGrade }}等級@if (s.pensionIsEquivalent) {（70歳以上のため相当額。保険料はかかりません）}
+            </span>
+          }
+          <span class="help">提案は入力の補助です。等級を確かめて登録し、決定通知書が届いたら値を確かめてください。</span>
+          @if (errors().pensionStandard) { <span class="err">{{ errors().pensionStandard }}</span> }
+        </label>
+      }
+      <div class="actions">
+        <button type="submit" [disabled]="saving()">{{ saving() ? '登録中…' : '登録する' }}</button>
+        <button type="button" class="secondary" (click)="closeForm()">やめる</button>
+      </div>
+    </form>
+  }
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <div class="filters">
+      <div class="tabs" role="tablist">
+        @for (t of statusTabs; track t) {
+          <button type="button" role="tab" class="tab" [class.active]="statusFilter() === t" [attr.aria-selected]="statusFilter() === t" (click)="statusFilter.set(t)">
+            {{ t === 'all' ? 'すべて' : t === '資格なし' ? '資格なし（退職など）' : t }}（{{ counts()[t] }}）
+          </button>
+        }
+      </div>
+      <input id="employee-search" type="search" placeholder="社員番号・氏名で検索" [value]="query()" (input)="query.set($any($event.target).value)" />
+      <select id="employee-office" [value]="officeFilter()" (change)="officeFilter.set($any($event.target).value)">
+        <option value="">すべての事業所</option>
+        @for (o of offices(); track o.id) {
+          <option [value]="o.id">{{ o.name }}</option>
+        }
+      </select>
+    </div>
+    <table class="list">
+      <thead>
+        <tr>
+          <th>社員番号</th>
+          <th>氏名</th>
+          <th>生年月日</th>
+          <th>適用事業所</th>
+          <th>今の標準報酬月額</th>
+          <th>社会保険</th>
+        </tr>
+      </thead>
+      <tbody>
+        @for (row of filteredRows(); track row.employee.id) {
+          <tr>
+            <td>{{ row.employee.employeeNumber }}</td>
+            <td><a [routerLink]="['/employees', row.employee.id]">{{ row.employee.name }}</a></td>
+            <td>{{ row.employee.birthDate }}</td>
+            <td>{{ row.officeName }}</td>
+            <td>{{ row.standard }}</td>
+            <td>{{ row.status }}</td>
+          </tr>
+        } @empty {
+          <tr><td colspan="6">{{ rows().length === 0 ? '従業員が登録されていません。' : '条件に合う従業員はいません。' }}</td></tr>
+        }
+      </tbody>
+    </table>
+  }
+</section>

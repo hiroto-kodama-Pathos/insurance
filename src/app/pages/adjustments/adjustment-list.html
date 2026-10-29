@@ -1,0 +1,108 @@
+<section class="page">
+  <h1>さかのぼる改定の差額</h1>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <p class="help">
+      確定済みの月にさかのぼって標準報酬月額が変わったり、確定後に異動・休業を登録したりした人の差額です（直近{{ lookback }}か月の確定済みの月）。
+      確定した金額は書き換えません。差額を精算する給与の月を記録すると「精算済み」になります。追加の控除・返金そのものは給与ソフトで行ってください。
+    </p>
+
+    @if (notice()) {
+      <p class="notice">{{ notice() }}</p>
+    }
+
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" class="tab" [class.active]="tab() === 'open'" (click)="tab.set('open')">未精算（{{ openRows().length }}）</button>
+      <button type="button" role="tab" class="tab" [class.active]="tab() === 'settled'" (click)="tab.set('settled')">精算済み（{{ settledRows().length }}）</button>
+    </div>
+
+    <div class="table-wrap">
+      <table class="list adjustments">
+        <thead>
+          <tr>
+            <th rowspan="2">対象月</th>
+            <th rowspan="2">確定した事業所</th>
+            <th rowspan="2">社員番号</th>
+            <th rowspan="2">氏名</th>
+            <th rowspan="2">理由</th>
+            <th rowspan="2">標準報酬月額<br />確定時 → 今</th>
+            <th colspan="5">本人負担の差額（円）</th>
+            <th rowspan="2">会社負担の差額</th>
+            <th rowspan="2">納付見込額の差額</th>
+            <th rowspan="2">現在の所属</th>
+            <th rowspan="2">精算</th>
+          </tr>
+          <tr>
+            @for (k of keys; track k) {
+              <th>{{ insuranceLabel[k] }}</th>
+            }
+            <th>計</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (r of rows(); track r.id) {
+            <tr>
+              <td>{{ r.yearMonth }}</td>
+              <td>{{ officeName(r.officeId) }}</td>
+              <td>{{ r.employee?.employeeNumber }}</td>
+              <td>
+                @if (r.employee) {
+                  <a [routerLink]="['/employees', r.employeeId]">{{ r.employee.name }}</a>
+                }
+              </td>
+              <td>{{ causeLabel[r.cause] }}</td>
+              <td>{{ man(r.beforeStandard) }} → {{ man(r.afterStandard) }}</td>
+              @for (k of keys; track k) {
+                <td class="num">{{ yen(r.remaining[k].employeeYen) }}</td>
+              }
+              <td class="num strong" [class.plus]="r.remainingEmployeeTotal > 0" [class.minus]="r.remainingEmployeeTotal < 0">
+                {{ yen(r.remainingEmployeeTotal) }}
+              </td>
+              <td class="num">{{ senYen(employerTotal(r)) }}</td>
+              <td class="num">{{ senYen(fullTotal(r)) }}</td>
+              <td>{{ r.currentOffice }}</td>
+              <td>
+                @if (r.settledMonth) {
+                  <span class="badge done">{{ r.settledMonth }}の給与で精算済み</span>
+                } @else {
+                  <span class="settle">
+                    <input type="month" [value]="settleMonth(r.id)" (change)="setSettleMonth(r.id, $any($event.target).value)" />
+                    <button type="button" [disabled]="saving()" (click)="settle(r)">精算済みにする</button>
+                  </span>
+                }
+              </td>
+            </tr>
+          } @empty {
+            <tr><td colspan="15">{{ tab() === 'open' ? '未精算の差額はありません。' : '精算済みの差額はありません。' }}</td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    <p class="hint">
+      本人負担の差額は、正なら追加で控除、負なら返金します。確定後に異動を登録した人は、元の事業所のマイナスと異動先のプラスの2件の合計（料率の違いの分）で精算し、2件とも同じ給与の月を記録してください。
+      精算したあとにまた変わった場合は、残りの差額が未精算に戻ります。
+    </p>
+
+    @if (tab() === 'open' && officeTotals().length > 0) {
+      <h2>適用事業所ごとの未精算の差額</h2>
+      <table class="list offices">
+        <thead><tr><th>適用事業所</th><th>件数</th><th>本人負担の差額</th><th>納付見込額の差額</th></tr></thead>
+        <tbody>
+          @for (t of officeTotals(); track t.officeId) {
+            <tr>
+              <td>{{ officeName(t.officeId) }}</td>
+              <td class="num">{{ t.count }}</td>
+              <td class="num">{{ yen(t.employee) }}</td>
+              <td class="num">{{ senYen(t.fullSen) }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+      <p class="hint">納付見込額の差額は、後の月の納付書で保険者が調整します。納付書と照合するときの参考にしてください。</p>
+    }
+  }
+</section>

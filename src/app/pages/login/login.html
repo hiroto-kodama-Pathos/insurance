@@ -1,0 +1,35 @@
+<section class="login">
+  <h1>社会保険管理システム</h1>
+  <form (submit)="submit($event)">
+    <label>
+      メールアドレス
+      <input
+        type="email"
+        name="email"
+        autocomplete="username"
+        required
+        [value]="email()"
+        (input)="email.set($any($event.target).value)"
+      />
+    </label>
+    <label>
+      パスワード
+      <input
+        type="password"
+        name="password"
+        autocomplete="current-password"
+        required
+        [value]="password()"
+        (input)="password.set($any($event.target).value)"
+      />
+    </label>
+    @if (message()) {
+      <p class="error" role="alert">{{ message() }}</p>
+    }
+    <button type="submit" [disabled]="busy()">{{ busy() ? 'ログイン中…' : 'ログイン' }}</button>
+  </form>
+  <p class="hint">アカウントは管理者が発行します。新規登録はできません。</p>
+  @if (showDevHint) {
+    <p class="dev">開発中（エミュレータ）：dev@example.com ／ dev-password でログインできます。</p>
+  }
+</section>

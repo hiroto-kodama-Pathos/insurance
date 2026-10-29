@@ -1,0 +1,13 @@
+.page { padding: 16px 24px; max-width: 1000px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 12px; }
+.chip { background: #fff4e5; border: 1px solid #f0c27b; border-radius: 16px; padding: 4px 12px; font-size: 13px; }
+a.chip { color: inherit; text-decoration: none; }
+.chip.zero { background: #f3f5f8; border-color: #d6dbe3; color: #666; }
+.ok { background: #e5f4e4; padding: 6px 10px; }
+h2 { font-size: 16px; margin-top: 24px; }
+.list { border-collapse: collapse; font-size: 13px; margin-bottom: 8px; }
+.list th, .list td { border: 1px solid #ccc; padding: 4px 8px; }
+.list th { background: #f0f3f8; white-space: nowrap; }
+.hint { color: #666; font-size: 12px; }
+.error { color: #c00; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }

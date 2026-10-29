@@ -1,0 +1,222 @@
+<section class="page">
+  <h1>設定</h1>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    @if (notice()) {
+      <p class="notice">{{ notice() }}</p>
+    }
+    @if (errors()['form'] && mode() === null) {
+      <p class="error">{{ errors()['form'] }}</p>
+    }
+
+    <!-- 会社の設定 -->
+    <h2>会社の設定</h2>
+    <form class="form" (submit)="saveSettings($event)">
+      <fieldset class="radio">
+        <legend>子ども・子育て支援金の本人負担の端数処理</legend>
+        <label>
+          <input type="radio" name="rounding" value="combined" [checked]="settings().childSupportRounding === 'combined'" (change)="setRounding('combined')" />
+          健康保険料と合算して処理する
+        </label>
+        <label>
+          <input type="radio" name="rounding" value="separate" [checked]="settings().childSupportRounding === 'separate'" (change)="setRounding('separate')" />
+          支援金だけで処理する
+        </label>
+      </fieldset>
+      <p class="help">給与計算ソフトの設定に合わせてください。合算すると、支援金の本人負担は（合算した額）−（支援金を含まない額）になります。</p>
+
+      <label>保険料を控除する給与
+        <select [value]="settings().deductionTiming" (change)="setTiming($any($event.target).value)">
+          <option value="nextMonth">翌月の給与（翌月控除）</option>
+          <option value="sameMonth">その月の給与（当月控除）</option>
+        </select>
+      </label>
+      <div class="row">
+        <label>給与の締め日
+          <select [value]="'' + settings().payrollCutoff.day" (change)="setCutoffDay($any($event.target).value)">
+            <option value="end">末日</option>
+            @for (d of [5, 10, 15, 20, 25]; track d) {
+              <option [value]="'' + d">{{ d }}日</option>
+            }
+          </select>
+        </label>
+        <label>支払月
+          <select [value]="settings().payrollCutoff.paidIn" (change)="setPaidIn($any($event.target).value)">
+            <option value="sameMonth">当月払</option>
+            <option value="nextMonth">翌月払</option>
+          </select>
+        </label>
+      </div>
+      <span class="err">{{ settingsErrors()['cutoffDay'] }}</span>
+      <p class="help">退職者の個人データの保管期間：{{ settings().retentionYears }}年（運営者が設定します）</p>
+      <div class="actions">
+        <button type="submit" [disabled]="saving()">会社の設定を保存</button>
+      </div>
+    </form>
+
+    <!-- 適用事業所 -->
+    <h2>適用事業所</h2>
+    <table class="list">
+      <thead><tr><th>事業所名</th><th>都道府県</th><th>保険者</th><th>新規登録の初期値</th><th></th></tr></thead>
+      <tbody>
+        @for (o of offices(); track o.id) {
+          <tr>
+            <td>{{ o.name }}</td>
+            <td>{{ o.prefecture }}</td>
+            <td>{{ insurerName(o.insurerId) }}</td>
+            <td>{{ o.isDefault ? '○' : '' }}</td>
+            <td><button type="button" class="secondary" (click)="openOffice(o)">変更</button></td>
+          </tr>
+        } @empty {
+          <tr><td colspan="5">登録されていません。</td></tr>
+        }
+      </tbody>
+    </table>
+    @if (mode()?.kind === 'office') {
+      <form class="form" (submit)="saveOffice($event)">
+        <h3>{{ mode()?.id ? '適用事業所を変更' : '適用事業所を追加' }}</h3>
+        <label>事業所名
+          <input [value]="officeForm().name" (input)="setOffice('name', $any($event.target).value)" />
+        </label>
+        <span class="err">{{ errors()['name'] }}</span>
+        <label>加入する保険者
+          <select [value]="officeForm().insurerId" (change)="setOffice('insurerId', $any($event.target).value)">
+            <option value="">選んでください</option>
+            @for (i of insurers(); track i.id) {
+              <option [value]="i.id">{{ i.name }}</option>
+            }
+          </select>
+        </label>
+        <span class="err">{{ errors()['insurerId'] }}</span>
+        <label>都道府県{{ isKyokai(officeForm().insurerId) ? '' : '（任意）' }}
+          <select [value]="officeForm().prefecture" (change)="setOffice('prefecture', $any($event.target).value)">
+            <option value="">選んでください</option>
+            @for (p of prefectures; track p) {
+              <option [value]="p">{{ p }}</option>
+            }
+          </select>
+        </label>
+        <span class="err">{{ errors()['prefecture'] }}</span>
+        <p class="help">協会けんぽの健康保険料率は、事業所の都道府県で決まります。保険者や所在地が変わったときは、変更ではなく新しい事業所として追加し、従業員を異動させてください（過去の月の計算が変わらないようにするため）。</p>
+        <label class="check">
+          <input type="checkbox" [checked]="officeForm().isDefault" (change)="setOffice('isDefault', $any($event.target).checked)" />
+          従業員の新規登録で初めから選んでおく
+        </label>
+        <span class="err">{{ errors()['form'] }}</span>
+        <div class="actions">
+          <button type="submit" [disabled]="saving()">保存</button>
+          <button type="button" class="secondary" (click)="cancel()">やめる</button>
+        </div>
+      </form>
+    } @else {
+      <button type="button" (click)="openOffice(null)">適用事業所を追加</button>
+    }
+
+    <!-- 健康保険組合 -->
+    <h2>健康保険組合と料率</h2>
+    <p class="help">組合健保に加入している事業所がある場合に登録します。料率は組合の規約や通知を見て入力してください。</p>
+    @for (g of kumiaiRates(); track g.insurer.id) {
+      <h3>
+        {{ g.insurer.name }}
+        @if (g.insurer.specialInsuredEnabled) {
+          <span class="badge">特定被保険者制度あり</span>
+        }
+        <button type="button" class="secondary small" (click)="openKumiai(g.insurer)">名前などを変更</button>
+      </h3>
+      <table class="list">
+        <thead><tr><th>保険</th><th>適用開始月</th><th>料率</th><th>負担割合</th><th></th></tr></thead>
+        <tbody>
+          @for (r of g.rates; track r.id) {
+            <tr>
+              <td>{{ rateTypeLabels[r.rateType] }}</td>
+              <td>{{ r.validFrom }}</td>
+              <td class="num">{{ toPercent(r.rate) }}%</td>
+              <td>{{ shareLabel(r.employeeShare) }}</td>
+              <td><button type="button" class="secondary" (click)="openRate(r.insurerId, r)">変更</button></td>
+            </tr>
+          } @empty {
+            <tr><td colspan="5">料率が登録されていません。</td></tr>
+          }
+        </tbody>
+      </table>
+      @if (!(mode()?.kind === 'rate' && rateForm().insurerId === g.insurer.id)) {
+        <button type="button" (click)="openRate(g.insurer.id, null)">料率を追加</button>
+      }
+    }
+
+    @if (mode()?.kind === 'rate') {
+      <form class="form" (submit)="saveRate($event)">
+        <h3>{{ insurerName(rateForm().insurerId) }}：{{ mode()?.id ? '料率を変更' : '料率を追加' }}</h3>
+        <label>保険
+          <select [value]="rateForm().rateType" [disabled]="!!mode()?.id" (change)="setRate('rateType', $any($event.target).value)">
+            @for (t of rateTypes; track t) {
+              <option [value]="t">{{ rateTypeLabels[t] }}</option>
+            }
+          </select>
+        </label>
+        <label>適用開始月
+          <input type="month" [value]="rateForm().validFrom" (input)="setRate('validFrom', $any($event.target).value)" />
+        </label>
+        <span class="err">{{ errors()['validFrom'] }}</span>
+        <label>料率（会社と本人の合計・%）
+          <input inputmode="decimal" placeholder="例：9.5" [value]="rateForm().rate" (input)="setRate('rate', $any($event.target).value)" />
+        </label>
+        <span class="err">{{ errors()['rate'] }}</span>
+        <label>そのうち本人の料率（%・折半なら空欄）
+          <input inputmode="decimal" placeholder="例：4.5" [value]="rateForm().employeeRate" (input)="setRate('employeeRate', $any($event.target).value)" />
+        </label>
+        <span class="err">{{ errors()['employeeRate'] }}</span>
+        <p class="help">料率が変わるときは、変更ではなく新しい適用開始月で追加してください。変更は入力の誤りを直すときに使います。</p>
+        <span class="err">{{ errors()['form'] }}</span>
+        <div class="actions">
+          <button type="submit" [disabled]="saving()">保存</button>
+          <button type="button" class="secondary" (click)="cancel()">やめる</button>
+        </div>
+      </form>
+    }
+
+    @if (mode()?.kind === 'kumiai') {
+      <form class="form" (submit)="saveKumiai($event)">
+        <h3>{{ mode()?.id ? '健康保険組合を変更' : '健康保険組合を追加' }}</h3>
+        <label>名前
+          <input placeholder="例：〇〇健康保険組合" [value]="kumiaiForm().name" (input)="setKumiai('name', $any($event.target).value)" />
+        </label>
+        <span class="err">{{ errors()['name'] }}</span>
+        <label class="check">
+          <input type="checkbox" [checked]="kumiaiForm().specialInsuredEnabled" (change)="setKumiai('specialInsuredEnabled', $any($event.target).checked)" />
+          特定被保険者制度を採用している
+        </label>
+        <span class="err">{{ errors()['form'] }}</span>
+        <div class="actions">
+          <button type="submit" [disabled]="saving()">保存</button>
+          <button type="button" class="secondary" (click)="cancel()">やめる</button>
+        </div>
+      </form>
+    } @else {
+      <p><button type="button" (click)="openKumiai(null)">健康保険組合を追加</button></p>
+    }
+
+    <!-- 協会けんぽ（表示だけ） -->
+    <h2>協会けんぽ・厚生年金の料率（参照）</h2>
+    <p class="help">協会けんぽの料率と等級表は、毎年の改定に合わせて運営者が登録します。ここでは確認だけできます。登録した事業所の都道府県の分だけを表示しています。</p>
+    <table class="list">
+      <thead><tr><th>保険</th><th>都道府県</th><th>適用開始月</th><th>料率</th></tr></thead>
+      <tbody>
+        @for (r of kyokaiRates(); track r.id) {
+          <tr>
+            <td>{{ rateTypeLabels[r.rateType] }}</td>
+            <td>{{ r.prefecture ?? '全国一律' }}</td>
+            <td>{{ r.validFrom }}</td>
+            <td class="num">{{ toPercent(r.rate) }}%</td>
+          </tr>
+        } @empty {
+          <tr><td colspan="4">登録されていません。運営者に連絡してください。</td></tr>
+        }
+      </tbody>
+    </table>
+  }
+</section>

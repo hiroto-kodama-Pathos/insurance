@@ -1,0 +1,118 @@
+<section class="page">
+  <h1>給与のCSV取り込み</h1>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <p class="help">
+      給与計算が終わったら、給与ソフトから出力したCSVを選びます。文字コード（Shift_JIS・UTF-8）、日付（2026/10/25・R8.10.25など）、金額のカンマ、先頭の0が消えた社員番号は自動でそろえます。
+      <a [href]="templateHref()" download="給与取り込みテンプレート.csv">アプリ指定の形式（テンプレート）をダウンロード</a>
+    </p>
+
+    <label class="file">CSVファイル
+      <input type="file" accept=".csv,text/csv" (change)="onFile($event)" />
+    </label>
+
+    @if (notice()) {
+      <p class="notice">{{ notice() }}</p>
+    }
+
+    @if (headers().length > 0) {
+      <p>{{ fileName() }}：{{ headers().length > 0 ? csvRows().length - 1 : 0 }}行（見出しを除く）
+        @if (isTemplate()) {
+          <span class="badge">テンプレートの形式のため、列の対応づけは不要です</span>
+        }
+      </p>
+
+      @if (!isTemplate()) {
+        <details class="mapping" [open]="missing().length > 0">
+          <summary>列の対応づけ{{ missing().length > 0 ? '（設定が必要です）' : '' }}</summary>
+          @if (!isAdmin()) {
+            <p class="hint">対応づけを保存できるのは管理者だけです。この画面で選んだ対応づけは、今回の取り込みにだけ使います。</p>
+          }
+          <div class="fields">
+            @for (f of singleFields; track f.key) {
+              <label>{{ f.label }}{{ f.required ? '（必須）' : '' }}
+                <select [attr.name]="f.key" (change)="setSingle(f.key, $any($event.target).value)">
+                  <option value="" [selected]="mapping()[f.key] === ''">{{ f.required ? '選んでください' : 'なし（取り込み後に手入力）' }}</option>
+                  @for (h of headers(); track h) {
+                    <option [value]="h" [selected]="mapping()[f.key] === h">{{ h }}</option>
+                  }
+                </select>
+              </label>
+            }
+          </div>
+          @for (f of multiFields; track f.key) {
+            <fieldset>
+              <legend>{{ f.label }}：合計する列を選ぶ（{{ f.hint }}）</legend>
+              @for (h of headers(); track h) {
+                <label class="check">
+                  <input type="checkbox" [attr.name]="f.key + ':' + h" [checked]="isChecked(f.key, h)"
+                    (change)="toggleMulti(f.key, h, $any($event.target).checked)" />{{ h }}
+                </label>
+              }
+            </fieldset>
+          }
+          @if (isAdmin()) {
+            <button type="button" [disabled]="busy() || missing().length > 0" (click)="saveMapping()">この対応づけを保存</button>
+          }
+        </details>
+      }
+
+      @if (missing().length > 0) {
+        <p class="error">列の対応づけを設定してください。CSVにない列：{{ missing().join('、') }}</p>
+      } @else {
+        <p class="counts">
+          新規 {{ counts().new }}件・上書き {{ counts().overwrite }}件・エラー {{ counts().error }}件・確定済み {{ counts().closed }}件・担当範囲外 {{ counts().outOfScope }}件
+        </p>
+        <div class="table-wrap">
+          <table class="list preview">
+            <thead>
+              <tr>
+                <th>行</th><th>社員番号</th><th>氏名</th><th>支払日</th><th>固定的賃金</th><th>非固定的賃金</th>
+                <th>支払基礎日数</th><th>うち遡及差額</th><th>うち現物給与</th><th>状態</th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (r of preview(); track r.line) {
+                <tr [class]="r.status">
+                  <td class="num">{{ r.line }}</td>
+                  <td>{{ r.employeeNumber }}</td>
+                  <td>{{ r.name }}</td>
+                  <td>{{ r.salary?.paidDate }}</td>
+                  <td class="num">{{ yen(r.salary?.fixedWages) }}</td>
+                  <td class="num">{{ yen(r.salary?.nonFixedWages) }}</td>
+                  <td class="num">{{ r.salary?.paymentBaseDays }}</td>
+                  <td class="num">{{ yen(r.salary?.retroactiveDiff) }}</td>
+                  <td class="num">{{ yen(r.salary?.inKindWages) }}</td>
+                  <td>
+                    <span class="badge">{{ statusLabel[r.status] }}</span>
+                    @for (e of r.errors; track e) {
+                      <div class="err">{{ e }}</div>
+                    }
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+
+        @if (counts().overwrite > 0) {
+          <label class="check">
+            <input type="checkbox" name="overwrite" [checked]="overwrite()" (change)="overwrite.set($any($event.target).checked)" />
+            登録済みの給与（{{ counts().overwrite }}件）を、このファイルの内容で上書きする
+          </label>
+        }
+        <p>
+          <button type="button" class="primary" [disabled]="busy() || toSave().length === 0" (click)="importRows()">
+            {{ toSave().length }}件を取り込む
+          </button>
+          エラー・確定済み・担当範囲外の行{{ counts().overwrite > 0 && !overwrite() ? '・上書きしない行' : '' }}は取り込みません。
+        </p>
+      }
+    }
+    <p><a routerLink="/salaries">給与の画面に戻る</a>　<a routerLink="/revisions">随時改定の候補を見る</a></p>
+  }
+</section>

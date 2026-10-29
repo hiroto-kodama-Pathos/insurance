@@ -1,0 +1,8 @@
+.app-header { display: flex; align-items: center; gap: 24px; padding: 8px 24px; background: #305496; color: #fff; }
+.app-title { font-weight: bold; }
+.app-header a { color: #fff; text-decoration: none; }
+.app-header a.active { text-decoration: underline; }
+.spacer { flex: 1; }
+.user { font-size: 13px; }
+.logout { background: transparent; color: #fff; border: 1px solid #fff; border-radius: 4px; padding: 2px 10px; cursor: pointer; }
+nav { display: flex; gap: 16px; }

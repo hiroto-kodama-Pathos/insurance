@@ -42,3 +42,14 @@ __screenshots__/
 # System files
 .DS_Store
 Thumbs.db
+
+# Firebase のサービスアカウントの鍵（絶対に Git に入れない）
+/secrets/
+*-firebase-adminsdk-*.json
+
+# エミュレータのログ
+firebase-debug.log
+firestore-debug.log
+ui-debug.log
+database-debug.log
+pubsub-debug.log

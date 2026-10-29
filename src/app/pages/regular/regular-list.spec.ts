@@ -1,0 +1,91 @@
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideRouter } from '@angular/router';
+import { buildKyokaiGrades, buildKyokaiThresholds } from '../../core/calc/grade-suggest';
+import { SalaryRecord } from '../../core/calc/salary';
+import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
+import { MasterRepository } from '../../core/repository/master-repository';
+import { SalaryRepository } from '../../core/repository/salary-repository';
+import { SettingsRepository } from '../../core/repository/settings-repository';
+import { DEFAULT_SETTINGS } from '../../core/calc/settings';
+import { defaultRegularYear, RegularList } from './regular-list';
+
+const person = (id: string, no: string, name: string, acquired = '2024-04-01'): EmployeeRecord => ({
+  id, employeeNumber: no, name, birthDate: '1980-05-10',
+  qualifications: [{ acquiredDate: acquired, lostDate: null }],
+  leaves: [], exemptions: [],
+  assignments: [{ validFrom: acquired, officeId: 'honsha' }],
+  standardHistory: [{ validFrom: acquired.slice(0, 7), healthStandard: 300_000, pensionStandard: 300_000 }],
+});
+const pay = (employeeId: string, ym: string, fixed: number, nonFixed: number, days = 30): SalaryRecord => ({
+  id: `${employeeId}_${ym}`, employeeId, paidDate: `${ym}-25`, fixedWages: fixed, nonFixedWages: nonFixed,
+  paymentBaseDays: days, retroactiveDiff: null, inKindWages: null,
+});
+
+describe('RegularList', () => {
+  let fixture: ComponentFixture<RegularList>;
+  let employees: EmployeeRecord[];
+  let added: { id: string; validFrom: string; healthStandard: number }[];
+
+  beforeEach(async () => {
+    added = [];
+    employees = [person('e1', '0001', '山田 太郎'), person('e2', '0002', '佐藤 花子'), person('e3', '0003', '六月 入社', '2026-06-10')];
+    const salaries = [
+      pay('e1', '2026-04', 300_000, 20_000), pay('e1', '2026-05', 300_000, 30_000), pay('e1', '2026-06', 300_000, 40_000),
+      pay('e2', '2026-04', 300_000, 0), pay('e2', '2026-05', 150_000, 0, 10), pay('e2', '2026-06', 300_000, 0),
+    ];
+    await TestBed.configureTestingModule({
+      imports: [RegularList],
+      providers: [
+        provideRouter([]),
+        {
+          provide: EmployeeRepository,
+          useValue: {
+            loadAll: async () => employees,
+            addStandard: async (id: string, input: { validFrom: string; healthStandard: number; pensionStandard: number }) => {
+              added.push({ id, validFrom: input.validFrom, healthStandard: input.healthStandard });
+              employees = employees.map((e) => (e.id === id ? { ...e, standardHistory: [...e.standardHistory, input] } : e));
+            },
+          },
+        },
+        {
+          provide: MasterRepository,
+          useValue: { loadGrades: async () => buildKyokaiGrades('2020-09'), loadGradeThresholds: async () => buildKyokaiThresholds('2020-09') },
+        },
+        { provide: SettingsRepository, useValue: { loadSettings: async () => DEFAULT_SETTINGS } },
+        { provide: SalaryRepository, useValue: { loadRange: async () => salaries } },
+      ],
+    }).compileComponents();
+    fixture = TestBed.createComponent(RegularList);
+    fixture.componentRef.instance['year'].set(2026);
+    await fixture.whenStable();
+    fixture.detectChanges();
+  });
+
+  const el = () => fixture.nativeElement as HTMLElement;
+  const row = (name: string) => [...el().querySelectorAll('table.regular tbody tr')].find((tr) => tr.textContent!.includes(name)) as HTMLElement;
+
+  it('7月以降はその年、1〜6月は前の年の定時決定を出す', () => {
+    expect(defaultRegularYear('2026-07-01')).toBe(2026);
+    expect(defaultRegularYear('2026-06-30')).toBe(2025);
+  });
+
+  it('4〜6月の報酬・平均・見込みの等級と、平均から除いた月の理由を出す。6月以降の入社者は出さない', () => {
+    expect(row('山田 太郎').textContent).toContain('330,000');
+    expect(row('山田 太郎').textContent).toContain('22等級 300,000 → 24等級 340,000');
+    expect(row('佐藤 花子').textContent).toContain('除く：支払基礎日数が17日未満');
+    expect(el().querySelector('table.regular')!.textContent).not.toContain('六月 入社');
+    expect(el().textContent).toContain('対象外のため出していません');
+  });
+
+  it('一括登録で、全員の9月分からの標準報酬月額を登録する', async () => {
+    ([...el().querySelectorAll('button')].find((b) => b.textContent!.includes('一括登録')) as HTMLButtonElement).click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(added).toEqual([
+      { id: 'e1', validFrom: '2026-09', healthStandard: 340_000 },
+      { id: 'e2', validFrom: '2026-09', healthStandard: 300_000 },
+    ]);
+    expect(row('山田 太郎').textContent).toContain('登録済み');
+    expect(el().textContent).toContain('2人の2026年9月分からの標準報酬月額を登録しました。');
+  });
+});

@@ -1,0 +1,109 @@
+<section class="page">
+  <h1>今月の要確認（{{ thisMonth() }}）</h1>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <div class="chips">
+      <span class="chip" [class.zero]="ageThisMonth().length === 0">年齢による切り替え {{ ageThisMonth().length }}件</span>
+      <span class="chip" [class.zero]="problems().length === 0">保険料を計算できない人 {{ problems().length }}件</span>
+      <a class="chip" routerLink="/revisions" [class.zero]="revisions().length === 0">改定の候補 {{ revisions().length }}件@if (revisionReviewCount() > 0) {（要確認 {{ revisionReviewCount() }}）}@if (revisionFiledCount() > 0) {（届出済み {{ revisionFiledCount() }}）}</a>
+      @if (regularSeason()) {
+        <a class="chip" routerLink="/regular" [class.zero]="regularPending() === 0">定時決定の未登録 {{ regularPending() }}人</a>
+      }
+      <a class="chip" routerLink="/adjustments" [class.zero]="openAdjustments().length === 0">未精算の差額 {{ openAdjustments().length }}件</a>
+      <span class="chip" [class.zero]="deductionAlerts().length === 0">今月の給与で控除不足 {{ shortageCount() }}人@if (deductionAlerts().length > shortageCount()) {（注意 {{ deductionAlerts().length - shortageCount() }}人）}</span>
+      <span class="chip" [class.zero]="unclosedPrev().length === 0">{{ prevMonth() }}分の未確定 {{ unclosedPrev().length }}件</span>
+    </div>
+    @if (total() === 0) {
+      <p class="ok">今月、給与計算の前に確かめることはありません。</p>
+    }
+
+    <h2>年齢で保険料が切り替わる人（今月）</h2>
+    <table class="list age-this">
+      <thead><tr><th>社員番号</th><th>氏名</th><th>年齢</th><th>切り替わりの日</th><th>内容</th></tr></thead>
+      <tbody>
+        @for (a of ageThisMonth(); track a.employeeId + a.kind) {
+          <tr>
+            <td>{{ a.employee.employeeNumber }}</td>
+            <td><a [routerLink]="['/employees', a.employeeId]">{{ a.employee.name }}</a></td>
+            <td>{{ a.age }}歳</td>
+            <td>{{ a.date }}</td>
+            <td>{{ a.message }}</td>
+          </tr>
+        } @empty {
+          <tr><td colspan="5">いません。</td></tr>
+        }
+      </tbody>
+    </table>
+
+    <h2>来月（{{ nextMonth() }}）に切り替わる人</h2>
+    <table class="list age-next">
+      <thead><tr><th>社員番号</th><th>氏名</th><th>年齢</th><th>切り替わりの日</th><th>内容</th></tr></thead>
+      <tbody>
+        @for (a of ageNextMonth(); track a.employeeId + a.kind) {
+          <tr>
+            <td>{{ a.employee.employeeNumber }}</td>
+            <td><a [routerLink]="['/employees', a.employeeId]">{{ a.employee.name }}</a></td>
+            <td>{{ a.age }}歳</td>
+            <td>{{ a.date }}</td>
+            <td>{{ a.message }}</td>
+          </tr>
+        } @empty {
+          <tr><td colspan="5">いません。</td></tr>
+        }
+      </tbody>
+    </table>
+    <p class="hint">40歳・65歳・70歳は誕生日の前日の月、75歳は誕生日の月から切り替わります。1日生まれの人は前の月になります（75歳を除く）。</p>
+
+    <h2>今月の保険料を計算できない人</h2>
+    <table class="list problems">
+      <thead><tr><th>社員番号</th><th>氏名</th><th>理由</th></tr></thead>
+      <tbody>
+        @for (p of problems(); track p.employee.id) {
+          <tr>
+            <td>{{ p.employee.employeeNumber }}</td>
+            <td><a [routerLink]="['/employees', p.employee.id]">{{ p.employee.name }}</a></td>
+            <td>{{ p.label }}</td>
+          </tr>
+        } @empty {
+          <tr><td colspan="3">いません。</td></tr>
+        }
+      </tbody>
+    </table>
+
+    <h2>今月（{{ thisMonth() }}）支払う給与で控除しきれない人</h2>
+    <table class="list deductions">
+      <thead><tr><th>社員番号</th><th>氏名</th><th>控除する保険料の月</th><th>本人負担</th><th>給与（お金で払う額）</th><th>判定</th></tr></thead>
+      <tbody>
+        @for (x of deductionAlerts(); track x.employee.id) {
+          <tr>
+            <td>{{ x.employee.employeeNumber }}</td>
+            <td><a [routerLink]="['/employees', x.employee.id]">{{ x.employee.name }}</a></td>
+            <td>{{ x.check.premiumMonths.join('・') }}分{{ x.check.premiumMonths.length === 2 ? '（最終給与で2か月分）' : '' }}</td>
+            <td class="num">{{ x.check.premium.toLocaleString('ja-JP') }}円</td>
+            <td class="num">{{ x.check.cash?.toLocaleString('ja-JP') }}円</td>
+            <td>{{ x.check.status === 'shortage' ? '控除不足 ' + x.check.shortage.toLocaleString('ja-JP') + '円' : '注意（給与の60%超）' }}</td>
+          </tr>
+        } @empty {
+          <tr><td colspan="6">いません（給与を入力した人だけを判定しています）。</td></tr>
+        }
+      </tbody>
+    </table>
+    <p class="hint">所得税・住民税などほかの控除は考えていない目安です。控除不足の人は、不足額を本人から別に集めるか確かめてください。</p>
+
+    <h2>{{ prevMonth() }}分で確定していない適用事業所</h2>
+    @if (unclosedPrev().length === 0) {
+      <p>ありません。</p>
+    } @else {
+      <ul class="unclosed">
+        @for (o of unclosedPrev(); track o.id) {
+          <li>{{ o.name }}</li>
+        }
+      </ul>
+      <p><a routerLink="/monthly">月次保険料一覧で確定する</a></p>
+    }
+  }
+</section>

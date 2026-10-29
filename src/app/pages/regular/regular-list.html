@@ -1,0 +1,97 @@
+<section class="page">
+  <header class="page-header">
+    <h1>定時決定の見込み</h1>
+    <label class="year">
+      <input type="number" min="2000" [value]="year()" (change)="onYearChange($any($event.target).value)" />年
+    </label>
+  </header>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <p class="help">
+      {{ year() }}年4〜6月に支払った報酬の平均から、{{ year() }}年9月分からの標準報酬月額を見込みます。算定基礎届は7月10日までに出します。
+      一覧はあくまで見込みの表示で、「見込みどおり登録」や一括登録をするまで、標準報酬月額も保険料も変わりません。
+    </p>
+
+    @if (notice()) {
+      <p class="notice">{{ notice() }}</p>
+    }
+
+    <p class="bulk">
+      <button type="button" class="primary" [disabled]="saving() || registrable().length === 0" (click)="registerAll()">
+        見込みどおり一括登録（{{ registrable().length }}人）
+      </button>
+      決定通知書が届いたら押します。通知書と違う人だけ、従業員の詳細から直してください。7〜9月に随時改定がある人・平均が出ない人は含めません。
+    </p>
+
+    <div class="table-wrap">
+      <table class="list regular">
+        <thead>
+          <tr>
+            <th>社員番号</th>
+            <th>氏名</th>
+            <th>4月</th>
+            <th>5月</th>
+            <th>6月</th>
+            <th>平均</th>
+            <th>健康保険</th>
+            <th>厚生年金</th>
+            <th>備考</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (r of rows(); track r.employeeId) {
+            <tr [class.excluded]="r.revisionInJulSep" [class.review]="r.needsReview || r.annualAverageCandidate">
+              <td>{{ r.employee.employeeNumber }}</td>
+              <td><a [routerLink]="['/employees', r.employeeId]">{{ r.employee.name }}</a></td>
+              @for (m of r.months; track m.yearMonth) {
+                <td class="month" [class.unused]="!m.used">
+                  @if (m.pay) {
+                    <div class="num">{{ yen(m.pay.total) }}円</div>
+                    <div class="days">{{ m.pay.days }}日</div>
+                  }
+                  @if (m.excludedReason) {
+                    <div class="reason">除く：{{ m.excludedReason }}</div>
+                  }
+                </td>
+              }
+              <td class="num">{{ yen(r.average) }}</td>
+              <td>{{ side(r.health) }}</td>
+              <td>{{ r.pension ? side(r.pension) : '判定しない（70歳以上）' }}</td>
+              <td>
+                @if (r.revisionInJulSep) {
+                  <span class="badge warn">対象外</span>
+                }
+                @if (r.needsReview) {
+                  <span class="badge warn">要確認</span>
+                }
+                @for (n of r.notes; track n) {
+                  <div class="note">{{ n }}</div>
+                }
+              </td>
+              <td>
+                @if (r.registered) {
+                  <span class="badge done">登録済み</span>
+                } @else if (!r.revisionInJulSep && r.average !== null) {
+                  <button type="button" [disabled]="saving()" (click)="register(r)">見込みどおり登録</button>
+                }
+              </td>
+            </tr>
+          } @empty {
+            <tr><td colspan="10">対象の人はいません。</td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    <p class="hint">
+      登録済み {{ registeredCount() }}人。6月1日以降に資格を取った人・7月1日に資格がない人（{{ outsideCount() }}人）は対象外のため出していません。<br />
+      各月の報酬は、固定的賃金と非固定的賃金の合計から遡及差額を除いた額です。支払基礎日数が17日未満の月・月の途中で資格を取った月・休業中で報酬がない月は平均から除きます。
+      報酬が大きく下がった月（固定的賃金が前月より2割以上少ない）がある人は「要確認」とし、休職などで除くかを担当者が判断します。
+    </p>
+    <p><a routerLink="/revisions">随時改定の候補を見る</a></p>
+  }
+</section>

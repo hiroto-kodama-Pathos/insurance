@@ -1,0 +1,107 @@
+<section class="page">
+  <h1>随時改定・休業終了時改定の候補</h1>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <p><a routerLink="/regular">定時決定の見込みを見る</a></p>
+    <p class="help">
+      固定的賃金が変わった人のうち、変わった月から3か月分の給与がそろい、等級が2つ以上変わる見込みの人です（直近{{ lookback }}か月の給与から探します）。
+      候補はあくまで見込みの表示で、「見込みどおり登録」をするまで、標準報酬月額も保険料も変わりません。
+      月額変更届を出し、決定の内容が見込みと違うときは、従業員の詳細から標準報酬月額を登録してください。
+    </p>
+
+    @if (notice()) {
+      <p class="notice">{{ notice() }}</p>
+    }
+
+    <div class="tabs" role="tablist">
+      <button type="button" role="tab" class="tab" [class.active]="tab() === 'active'" (click)="tab.set('active')">
+        対応中（{{ counts().active }}：未対応 {{ counts().open }}・届出済み {{ counts().filed }}）
+      </button>
+      <button type="button" role="tab" class="tab" [class.active]="tab() === 'registered'" (click)="tab.set('registered')">登録済み（{{ counts().registered }}）</button>
+      <button type="button" role="tab" class="tab" [class.active]="tab() === 'dismissed'" (click)="tab.set('dismissed')">確認済み（{{ counts().dismissed }}）</button>
+    </div>
+
+    <div class="table-wrap">
+      <table class="list candidates">
+        <thead>
+          <tr>
+            <th>社員番号</th>
+            <th>氏名</th>
+            <th>種類・変動月</th>
+            <th>3か月の報酬</th>
+            <th>平均</th>
+            <th>健康保険</th>
+            <th>厚生年金</th>
+            <th>適用見込み月</th>
+            <th>状態</th>
+            <th>備考</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (r of rows(); track r.employeeId + r.changeMonth) {
+            <tr [class.review]="r.needsReview">
+              <td>{{ r.employee.employeeNumber }}</td>
+              <td><a [routerLink]="['/employees', r.employeeId]">{{ r.employee.name }}</a></td>
+              <td>
+                @if (r.type === 'leaveEnd') {
+                  <span class="badge leave">休業終了時改定</span><div>{{ r.changeMonth }}に復帰</div>
+                } @else {
+                  {{ r.changeMonth }}（{{ r.direction === 'up' ? '昇給' : '降給' }}）
+                }
+              </td>
+              <td class="months">
+                @for (m of r.months; track m.yearMonth) {
+                  <div [class.unused]="r.excludedMonths.includes(m.yearMonth)">{{ m.yearMonth }}：{{ yen(m.total) }}円（{{ m.days }}日）{{ r.excludedMonths.includes(m.yearMonth) ? '除く' : '' }}</div>
+                }
+              </td>
+              <td class="num">{{ yen(r.average) }}</td>
+              <td [class.hit]="r.health.qualifies">{{ side(r.health) }}</td>
+              <td [class.hit]="r.pension?.qualifies">{{ side(r.pension) }}</td>
+              <td>{{ r.expectedFrom }}分から@if (r.expectedUntil) {<div class="until">{{ r.expectedUntil }}分まで</div>}</td>
+              <td><span class="status" [class]="'status ' + r.status">{{ statusLabel[r.status] }}</span></td>
+              <td>
+                @if (r.needsReview) {
+                  <span class="badge warn">要確認</span>
+                }
+                @for (n of r.notes; track n) {
+                  <span class="badge">{{ n }}</span>
+                }
+              </td>
+              <td class="actions">
+                @switch (r.status) {
+                  @case ('open') {
+                    <button type="button" [disabled]="saving()" (click)="setStatus(r, 'filed')">届出済みにする</button>
+                    <button type="button" [disabled]="saving()" (click)="register(r)">見込みどおり登録</button>
+                    <button type="button" class="secondary" [disabled]="saving()" (click)="setStatus(r, 'dismissed')">確認済みにする</button>
+                  }
+                  @case ('filed') {
+                    <button type="button" [disabled]="saving()" (click)="register(r)">見込みどおり登録</button>
+                    <button type="button" class="secondary" [disabled]="saving()" (click)="setStatus(r, 'open')">未対応に戻す</button>
+                    <button type="button" class="secondary" [disabled]="saving()" (click)="setStatus(r, 'dismissed')">確認済みにする</button>
+                  }
+                  @case ('dismissed') {
+                    <button type="button" class="secondary" [disabled]="saving()" (click)="setStatus(r, 'open')">未対応に戻す</button>
+                  }
+                }
+              </td>
+            </tr>
+          } @empty {
+            <tr><td colspan="11">{{ tab() === 'active' ? '対応が必要な随時改定の候補はいません。' : '該当する候補はありません。' }}</td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    <p class="hint">
+      休業終了時改定は、産休・育休から復帰した月から3か月分の給与がそろい、等級が1つ以上変わる見込みの人です。本人の申出があるときだけ届け出るので、申し出なかった場合は「確認済みにする」を押します。<br />
+      月額変更届・休業終了時報酬月額変更届を出したら「届出済みにする」、届出が不要だった・見込みと違う月で登録したなどの場合は「確認済みにする」を押します。
+      適用見込み月の標準報酬月額を登録すると、自動で「登録済み」になります。<br />
+      「見込みどおり登録」では、条件に当たる側を見込みの標準報酬月額に、当たらない側を今の値のままにして登録します。
+      3か月の報酬は、固定的賃金と非固定的賃金の合計から遡及差額を除いた額です。支払基礎日数が17日未満の月があると候補になりません。
+    </p>
+  }
+</section>

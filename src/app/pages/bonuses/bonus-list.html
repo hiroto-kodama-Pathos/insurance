@@ -1,0 +1,168 @@
+<section class="page">
+  <header class="page-header">
+    <h1>賞与</h1>
+    <label class="month">
+      対象月
+      <input type="month" [value]="yearMonth()" (change)="onMonthChange($any($event.target).value)" />
+    </label>
+  </header>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <form class="form" (submit)="add($event)">
+      <h2>賞与を登録</h2>
+      <p class="help">支払う前に登録すると、本人負担を確かめてから給与ソフトで賞与から控除できます。</p>
+      <div class="fields">
+        <label>従業員
+          <select [value]="form().employeeId" (change)="setForm('employeeId', $any($event.target).value)">
+            <option value="">選んでください</option>
+            @for (e of employeeOptions(); track e.id) {
+              <option [value]="e.id">{{ e.employeeNumber }} {{ e.name }}</option>
+            }
+          </select>
+          <span class="err">{{ errors().employeeId }}</span>
+        </label>
+        <label>支給日
+          <input type="date" [value]="form().paidDate" (input)="setForm('paidDate', $any($event.target).value)" />
+          <span class="err">{{ errors().paidDate }}</span>
+        </label>
+        <label>賞与額（円・現物を含む）
+          <input inputmode="numeric" [value]="form().amount ?? ''" (input)="setForm('amount', $any($event.target).value)" />
+          <span class="err">{{ errors().amount }}</span>
+        </label>
+        <button type="submit" [disabled]="saving()">登録</button>
+      </div>
+    </form>
+
+    @if (notice()) {
+      <p class="notice">{{ notice() }}</p>
+    }
+
+    <h2>{{ yearMonth() }}に支給する賞与</h2>
+    @if (hasClosed()) {
+      <p class="hint">確定済みの事業所の賞与は、確定したときの金額を表示しています。直すときは、月次保険料一覧で確定を解除してください。</p>
+    }
+    <div class="table-wrap">
+      <table class="list persons">
+        <thead>
+          <tr>
+            <th rowspan="2">支給日</th>
+            <th rowspan="2">社員番号</th>
+            <th rowspan="2">氏名</th>
+            <th rowspan="2">適用事業所</th>
+            <th rowspan="2">賞与額</th>
+            <th rowspan="2">標準賞与額</th>
+            <th colspan="2">健康保険</th>
+            <th colspan="2">介護保険</th>
+            <th colspan="2">支援金</th>
+            <th colspan="2">厚生年金</th>
+            <th rowspan="2">本人負担計</th>
+            <th rowspan="2">備考</th>
+            <th rowspan="2"></th>
+          </tr>
+          <tr>
+            <th>本人</th><th>会社</th><th>本人</th><th>会社</th><th>本人</th><th>会社</th><th>本人</th><th>会社</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (row of rows(); track row.result.bonus.id) {
+            <tr [class.muted]="row.result.status === 'outside'" [class.warn]="row.result.status === 'missingRate' || row.result.status === 'noOffice'">
+              <td>{{ row.result.bonus.paidDate }}</td>
+              <td>{{ row.employee.employeeNumber }}</td>
+              <td>{{ row.employee.name }}</td>
+              <td>{{ row.officeName }}</td>
+              <td class="num">{{ yen(row.result.bonus.amount) }}</td>
+              <td class="num">{{ yen(row.result.standardBonus) }}</td>
+              <td class="num">{{ yen(row.result.premium?.health?.employeeYen) }}</td>
+              <td class="num">{{ employerYen(row.result.premium?.health) }}</td>
+              <td class="num">{{ yen(row.result.premium?.care?.employeeYen) }}</td>
+              <td class="num">{{ employerYen(row.result.premium?.care) }}</td>
+              <td class="num">{{ yen(row.result.premium?.childSupport?.employeeYen) }}</td>
+              <td class="num">{{ employerYen(row.result.premium?.childSupport) }}</td>
+              <td class="num">{{ yen(row.result.premium?.pension?.employeeYen) }}</td>
+              <td class="num">{{ employerYen(row.result.premium?.pension) }}</td>
+              <td class="num strong">{{ employeeTotal(row.result) }}</td>
+              <td>
+                @for (n of notes(row.result); track n) {
+                  <span class="badge">{{ n }}</span>
+                }
+                @if (row.result.multiOffice) {
+                  <div class="multi">
+                    @if (row.result.decided; as dc) {
+                      <div>全事業所の合計 {{ yen(dc.totalAmount) }}円 → 按分後の本人負担 {{ decidedEmployeeTotal(row.result) }}円</div>
+                      <div class="diff" [class.plus]="(row.result.decidedDiff ?? 0) > 0" [class.minus]="(row.result.decidedDiff ?? 0) < 0">
+                        決定後の過不足 {{ signedYen(row.result.decidedDiff ?? 0) }}円（{{ (row.result.decidedDiff ?? 0) > 0 ? '追加で控除' : (row.result.decidedDiff ?? 0) < 0 ? '返金' : '過不足なし' }}）
+                      </div>
+                    }
+                    @if (editingTotal() === row.result.bonus.id) {
+                      <span class="total-form">
+                        <input inputmode="numeric" name="totalAmount" placeholder="全事業所の賞与額の合計（円）" [value]="totalInputs()[row.result.bonus.id] ?? ''"
+                          (input)="setTotalInput(row.result.bonus.id, $any($event.target).value)" />
+                        <button type="button" [disabled]="saving()" (click)="saveTotal(row)">保存</button>
+                      </span>
+                    } @else {
+                      <button type="button" class="secondary" (click)="openTotal(row)">{{ row.result.decided ? '合計を直す' : '全事業所の合計を登録' }}</button>
+                    }
+                  </div>
+                }
+              </td>
+              <td>
+                @if (row.closed) {
+                  <span class="badge">確定</span>
+                } @else {
+                  <button type="button" class="secondary" [disabled]="saving()" (click)="remove(row)">削除</button>
+                }
+              </td>
+            </tr>
+          } @empty {
+            <tr><td colspan="17">この月に支給する賞与は登録されていません。</td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+
+    <h2>賞与支払届の期限</h2>
+    <table class="list reports">
+      <thead><tr><th>適用事業所</th><th>支給日</th><th>人数</th><th>期限</th></tr></thead>
+      <tbody>
+        @for (r of reports(); track r.officeId + r.paidDate) {
+          <tr>
+            <td>{{ r.officeName }}</td>
+            <td>{{ r.paidDate }}</td>
+            <td class="num">{{ r.count }}人</td>
+            <td>{{ r.deadline }}</td>
+          </tr>
+        } @empty {
+          <tr><td colspan="4">届け出る賞与はありません。</td></tr>
+        }
+      </tbody>
+    </table>
+    <p class="hint">二以上事業所勤務の人の賞与は、支給日には自社の賞与額で計算します。決定通知や他社との情報共有で全事業所の賞与額の合計が分かったら「全事業所の合計を登録」を押すと、合算した標準賞与額の保険料を賞与額の割合で按分した額と、控除した額との過不足を出します。過不足の精算は給与ソフトで行ってください。</p>
+    <p class="hint">支給日から5日以内に届け出ます。産休・育休で免除された賞与や、資格喪失月の賞与も届け出が必要なので含めています。</p>
+
+    <h2>適用事業所別の小計</h2>
+    @for (office of summary().offices; track office.officeId + office.insurerId) {
+      <h3>{{ officeName(office.officeId) }}</h3>
+      <table class="list subtotal">
+        <thead><tr><th>納付書の欄</th><th>人数</th><th>納付見込額</th><th>本人負担計</th><th>会社負担計</th></tr></thead>
+        <tbody>
+          @for (line of lines; track line) {
+            <tr>
+              <td>{{ lineLabels[line] }}</td>
+              <td class="num">{{ office.lines[line].count }}</td>
+              <td class="num">{{ yen(office.lines[line].paymentYen) }}</td>
+              <td class="num">{{ yen(office.lines[line].employeeTotal) }}</td>
+              <td class="num">{{ yen(office.lines[line].employerTotal) }}</td>
+            </tr>
+          }
+        </tbody>
+      </table>
+    } @empty {
+      <p>保険料がかかる賞与はありません。</p>
+    }
+    <p class="hint">賞与の保険料は、同じ月の月額の保険料と一緒に、翌月に届く納付書で納めます。</p>
+  }
+</section>
