@@ -1,5 +1,7 @@
 // さかのぼる改定の差額（設計書 2.20）
 // 確定した金額は書き換えず、差額を表示し、精算した給与の月を記録するまで「未精算」として知らせる。
+import { Confirm } from '../../core/ui/confirm';
+import { NoticeMessage } from '../../core/ui/notice-message';
 import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import {
@@ -21,6 +23,8 @@ import { ClosingRepository } from '../../core/repository/closing-repository';
 import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
 import { MasterRepository } from '../../core/repository/master-repository';
 import { SettingsRepository } from '../../core/repository/settings-repository';
+import { YearMonthPipe } from '../../core/ui/year-month.pipe';
+import { yearMonthLabel } from '../../core/calc/year-month';
 
 /** 差額を探す確定済みの月の範囲（今月を含めた月数） */
 export const ADJUSTMENT_LOOKBACK_MONTHS = 13;
@@ -50,13 +54,14 @@ function today(): string {
 type Row = TrackedAdjustment & { employee: EmployeeRecord | null; currentOffice: string };
 
 @Component({
-  imports: [RouterLink],
+  imports: [RouterLink, NoticeMessage, YearMonthPipe],
   selector: 'app-adjustment-list',
   styleUrl: './adjustment-list.scss',
   templateUrl: './adjustment-list.html',
 })
 export class AdjustmentList implements OnInit {
   private readonly employeeRepo = inject(EmployeeRepository);
+  private readonly confirm = inject(Confirm);
   private readonly masterRepo = inject(MasterRepository);
   private readonly settingsRepo = inject(SettingsRepository);
   private readonly closingRepo = inject(ClosingRepository);
@@ -151,11 +156,17 @@ export class AdjustmentList implements OnInit {
       this.notice.set('精算する給与の月を入れてください。');
       return;
     }
+    const ok = await this.confirm.ask({
+      title: '精算済みにしますか',
+      message: `${row.employee?.name ?? ''}さんの${yearMonthLabel(row.yearMonth)}分の差額を、${yearMonthLabel(month)}の給与で精算したものとして記録します。`,
+      ok: '精算済みにする',
+    });
+    if (!ok) return;
     this.saving.set(true);
     try {
       await this.adjustmentRepo.settle(row, month, this.settlements().find((s) => s.id === row.id));
       this.settlements.set(await this.adjustmentRepo.loadSettlements());
-      this.notice.set(`${row.employee?.name ?? ''}さんの${row.yearMonth}分の差額を、${month}の給与で精算済みにしました。`);
+      this.notice.set(`${row.employee?.name ?? ''}さんの${yearMonthLabel(row.yearMonth)}分の差額を、${yearMonthLabel(month)}の給与で精算済みにしました。`);
     } catch (e) {
       console.error(e);
       this.notice.set('保存できませんでした。権限と通信を確かめてください。');

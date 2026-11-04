@@ -1,109 +1,286 @@
 <section class="page">
-  <h1>今月の要確認（{{ thisMonth() }}）</h1>
+  <h1>今月の要確認（{{ thisMonth() | ym }}）</h1>
 
   @if (loading()) {
-    <p>読み込み中…</p>
+    <p class="loading">読み込み中…</p>
   } @else if (error()) {
     <p class="error">{{ error() }}</p>
   } @else {
+    <p class="hint">件数のある項目を、左から順に確かめてください（赤を先頭に、毎月起き、保険料の金額や期限に関わるものほど左にあります）。<span class="legend urgent">赤</span>は給与計算・納付の前に必ず対応するもの、<span class="legend">オレンジ</span>は確かめるものです。押すとこの画面の下の欄に移り、「→」の付いた項目は担当の画面に移ります。</p>
     <div class="chips">
-      <span class="chip" [class.zero]="ageThisMonth().length === 0">年齢による切り替え {{ ageThisMonth().length }}件</span>
-      <span class="chip" [class.zero]="problems().length === 0">保険料を計算できない人 {{ problems().length }}件</span>
-      <a class="chip" routerLink="/revisions" [class.zero]="revisions().length === 0">改定の候補 {{ revisions().length }}件@if (revisionReviewCount() > 0) {（要確認 {{ revisionReviewCount() }}）}@if (revisionFiledCount() > 0) {（届出済み {{ revisionFiledCount() }}）}</a>
+      <button type="button" class="chip" [class.zero]="unclosedPrev().length === 0" [class.urgent]="unclosedPrev().length > 0" [style.order]="unclosedPrev().length ? -1 : 1" (click)="goTo('unclosed')">{{ prevMonth() | ym }}分の未確定 {{ unclosedPrev().length }}件</button>
+      <button type="button" class="chip" [class.zero]="problems().length === 0" [class.urgent]="problems().length > 0" [style.order]="problems().length ? -1 : 1" (click)="goTo('problems')">保険料を計算できない人 {{ problems().length }}件</button>
+      <button type="button" class="chip" [class.zero]="standardChanges().length === 0" [style.order]="standardChanges().length ? 0 : 1" (click)="goTo('standardChanges')">標準報酬月額が変わる人 {{ standardChanges().length }}人</button>
+      <button type="button" class="chip" [class.zero]="sectionCounts().age === 0" [style.order]="sectionCounts().age ? 0 : 1" (click)="goTo('age')">年齢による切り替え 今月 {{ ageThisMonth().length }}件@if (ageNextMonth().length > 0) {（来月 {{ ageNextMonth().length }}件）}</button>
+      <button type="button" class="chip" [class.zero]="urgentFilings().length === 0" [class.urgent]="overdueFilings() > 0" [style.order]="overdueFilings() > 0 ? -1 : urgentFilings().length ? 0 : 1" (click)="goTo('filings')">届出の期限 {{ urgentFilings().length }}件@if (overdueFilings() > 0) {（期限切れ {{ overdueFilings() }}）}</button>
+      <button type="button" class="chip" [class.zero]="deductionAlerts().length === 0" [class.urgent]="shortageCount() > 0" [style.order]="shortageCount() > 0 ? -1 : deductionAlerts().length ? 0 : 1" (click)="goTo('deductions')">今月の給与で控除不足 {{ shortageCount() }}人@if (deductionAlerts().length > shortageCount()) {（注意 {{ deductionAlerts().length - shortageCount() }}人）}</button>
+      <a class="chip" routerLink="/revisions" [class.zero]="revisions().length === 0" [style.order]="revisions().length ? 0 : 1">改定の候補 {{ revisions().length }}件@if (revisionReviewCount() > 0) {（要確認 {{ revisionReviewCount() }}）}@if (revisionFiledCount() > 0) {（届出済み {{ revisionFiledCount() }}）} →</a>
       @if (regularSeason()) {
-        <a class="chip" routerLink="/regular" [class.zero]="regularPending() === 0">定時決定の未登録 {{ regularPending() }}人</a>
+        <a class="chip" routerLink="/regular" [class.zero]="regularPending() === 0" [style.order]="regularPending() ? 0 : 1">定時決定の未登録 {{ regularPending() }}人 →</a>
       }
-      <a class="chip" routerLink="/adjustments" [class.zero]="openAdjustments().length === 0">未精算の差額 {{ openAdjustments().length }}件</a>
-      <span class="chip" [class.zero]="deductionAlerts().length === 0">今月の給与で控除不足 {{ shortageCount() }}人@if (deductionAlerts().length > shortageCount()) {（注意 {{ deductionAlerts().length - shortageCount() }}人）}</span>
-      <span class="chip" [class.zero]="unclosedPrev().length === 0">{{ prevMonth() }}分の未確定 {{ unclosedPrev().length }}件</span>
+      <a class="chip" routerLink="/adjustments" [class.zero]="openAdjustments().length === 0" [style.order]="openAdjustments().length ? 0 : 1">未精算の差額 {{ openAdjustments().length }}件 →</a>
+      <button type="button" class="chip" [class.zero]="provisionalStandards().length === 0" [style.order]="provisionalStandards().length ? 0 : 1" (click)="goTo('provisional')">通知書待ち {{ provisionalStandards().length }}件</button>
+      <button type="button" class="chip" [class.zero]="enrollmentPossibilities().length === 0" [style.order]="enrollmentPossibilities().length ? 0 : 1" (click)="goTo('enrollment')">加入の可能性 {{ enrollmentPossibilities().length }}人</button>
+      <button type="button" class="chip" [class.zero]="retroactivePossibilities().length === 0" [style.order]="retroactivePossibilities().length ? 0 : 1" (click)="goTo('retroactive')">遡及の可能性 {{ retroactivePossibilities().length }}件</button>
+      <button type="button" class="chip" [class.zero]="pendingRefunds().length === 0" [style.order]="pendingRefunds().length ? 0 : 1" (click)="goTo('refunds')">同月得喪の還付待ち {{ pendingRefunds().length }}人</button>
     </div>
     @if (total() === 0) {
       <p class="ok">今月、給与計算の前に確かめることはありません。</p>
     }
 
-    <h2>年齢で保険料が切り替わる人（今月）</h2>
-    <table class="list age-this">
-      <thead><tr><th>社員番号</th><th>氏名</th><th>年齢</th><th>切り替わりの日</th><th>内容</th></tr></thead>
-      <tbody>
-        @for (a of ageThisMonth(); track a.employeeId + a.kind) {
-          <tr>
-            <td>{{ a.employee.employeeNumber }}</td>
-            <td><a [routerLink]="['/employees', a.employeeId]">{{ a.employee.name }}</a></td>
-            <td>{{ a.age }}歳</td>
-            <td>{{ a.date }}</td>
-            <td>{{ a.message }}</td>
-          </tr>
-        } @empty {
-          <tr><td colspan="5">いません。</td></tr>
-        }
-      </tbody>
-    </table>
+    @for (k of activeSections(); track k) {
+      <ng-container *ngTemplateOutlet="section; context: { $implicit: k }" />
+    }
 
-    <h2>来月（{{ nextMonth() }}）に切り替わる人</h2>
-    <table class="list age-next">
-      <thead><tr><th>社員番号</th><th>氏名</th><th>年齢</th><th>切り替わりの日</th><th>内容</th></tr></thead>
-      <tbody>
-        @for (a of ageNextMonth(); track a.employeeId + a.kind) {
-          <tr>
-            <td>{{ a.employee.employeeNumber }}</td>
-            <td><a [routerLink]="['/employees', a.employeeId]">{{ a.employee.name }}</a></td>
-            <td>{{ a.age }}歳</td>
-            <td>{{ a.date }}</td>
-            <td>{{ a.message }}</td>
-          </tr>
-        } @empty {
-          <tr><td colspan="5">いません。</td></tr>
+    @if (clearSections().length > 0) {
+      <details class="clear" [open]="clearOpen()" (toggle)="clearOpen.set($any($event.target).open)">
+        <summary>確かめることがない項目（{{ clearSections().length }}件）：{{ clearLabels() }}</summary>
+        @for (k of clearSections(); track k) {
+          <ng-container *ngTemplateOutlet="section; context: { $implicit: k }" />
         }
-      </tbody>
-    </table>
-    <p class="hint">40歳・65歳・70歳は誕生日の前日の月、75歳は誕生日の月から切り替わります。1日生まれの人は前の月になります（75歳を除く）。</p>
-
-    <h2>今月の保険料を計算できない人</h2>
-    <table class="list problems">
-      <thead><tr><th>社員番号</th><th>氏名</th><th>理由</th></tr></thead>
-      <tbody>
-        @for (p of problems(); track p.employee.id) {
-          <tr>
-            <td>{{ p.employee.employeeNumber }}</td>
-            <td><a [routerLink]="['/employees', p.employee.id]">{{ p.employee.name }}</a></td>
-            <td>{{ p.label }}</td>
-          </tr>
-        } @empty {
-          <tr><td colspan="3">いません。</td></tr>
-        }
-      </tbody>
-    </table>
-
-    <h2>今月（{{ thisMonth() }}）支払う給与で控除しきれない人</h2>
-    <table class="list deductions">
-      <thead><tr><th>社員番号</th><th>氏名</th><th>控除する保険料の月</th><th>本人負担</th><th>給与（お金で払う額）</th><th>判定</th></tr></thead>
-      <tbody>
-        @for (x of deductionAlerts(); track x.employee.id) {
-          <tr>
-            <td>{{ x.employee.employeeNumber }}</td>
-            <td><a [routerLink]="['/employees', x.employee.id]">{{ x.employee.name }}</a></td>
-            <td>{{ x.check.premiumMonths.join('・') }}分{{ x.check.premiumMonths.length === 2 ? '（最終給与で2か月分）' : '' }}</td>
-            <td class="num">{{ x.check.premium.toLocaleString('ja-JP') }}円</td>
-            <td class="num">{{ x.check.cash?.toLocaleString('ja-JP') }}円</td>
-            <td>{{ x.check.status === 'shortage' ? '控除不足 ' + x.check.shortage.toLocaleString('ja-JP') + '円' : '注意（給与の60%超）' }}</td>
-          </tr>
-        } @empty {
-          <tr><td colspan="6">いません（給与を入力した人だけを判定しています）。</td></tr>
-        }
-      </tbody>
-    </table>
-    <p class="hint">所得税・住民税などほかの控除は考えていない目安です。控除不足の人は、不足額を本人から別に集めるか確かめてください。</p>
-
-    <h2>{{ prevMonth() }}分で確定していない適用事業所</h2>
-    @if (unclosedPrev().length === 0) {
-      <p>ありません。</p>
-    } @else {
-      <ul class="unclosed">
-        @for (o of unclosedPrev(); track o.id) {
-          <li>{{ o.name }}</li>
-        }
-      </ul>
-      <p><a routerLink="/monthly">月次保険料一覧で確定する</a></p>
+      </details>
     }
   }
 </section>
+
+<ng-template #section let-k>
+  <details class="section-detail" [id]="'sec-' + k">
+    <summary class="section-summary" [class.has-items]="hasItems(k)">
+      @switch (k) {
+        @case ('age') { 年齢で保険料が切り替わる人（今月） }
+        @case ('standardChanges') { 標準報酬月額が変わる人 }
+        @case ('filings') { 期限が近い・過ぎた届出 }
+        @case ('provisional') { 通知書待ちの標準報酬月額 }
+        @case ('refunds') { 同月得喪の還付待ち }
+        @case ('retroactive') { 遡及の可能性がある給与 }
+        @case ('enrollment') { 加入の可能性がある人（未加入で、実際の労働時間が2か月続けて基準以上） }
+        @case ('problems') { 今月の保険料を計算できない人 }
+        @case ('deductions') { 今月（{{ thisMonth() | ym }}）支払う給与で控除しきれない人 }
+        @case ('unclosed') { {{ prevMonth() | ym }}分で確定していない適用事業所 }
+      }
+    </summary>
+    <div class="section-content">
+      @switch (k) {
+        @case ('age') {
+          <div class="table-wrap">
+            <table class="list age-this sticky-head sticky-cols">
+              <thead><tr><th>社員番号</th><th>氏名</th><th>年齢</th><th>切り替わりの日</th><th>内容</th></tr></thead>
+              <tbody>
+                @for (a of ageThisMonth(); track a.employeeId + a.kind) {
+                  <tr>
+                    <td>{{ a.employee.employeeNumber }}</td>
+                    <td><a [routerLink]="['/employees', a.employeeId]">{{ a.employee.name }}</a></td>
+                    <td>{{ a.age }}歳</td>
+                    <td>{{ a.date | ymd }}</td>
+                    <td [class.required]="a.notice === 'required'" [class.unknown]="a.notice === 'unknown'">{{ a.message }}</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="5">いません。</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <h3>来月（{{ nextMonth() | ym }}）に切り替わる人</h3>
+          <div class="table-wrap">
+            <table class="list age-next sticky-head sticky-cols">
+              <thead><tr><th>社員番号</th><th>氏名</th><th>年齢</th><th>切り替わりの日</th><th>内容</th></tr></thead>
+              <tbody>
+                @for (a of ageNextMonth(); track a.employeeId + a.kind) {
+                  <tr>
+                    <td>{{ a.employee.employeeNumber }}</td>
+                    <td><a [routerLink]="['/employees', a.employeeId]">{{ a.employee.name }}</a></td>
+                    <td>{{ a.age }}歳</td>
+                    <td>{{ a.date | ymd }}</td>
+                    <td [class.required]="a.notice === 'required'" [class.unknown]="a.notice === 'unknown'">{{ a.message }}</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="5">いません。</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <p class="hint">40歳・65歳・70歳は誕生日の前日の月、75歳は誕生日の月から切り替わります。1日生まれの人は前の月になります（75歳を除く）。</p>
+        }
+
+        @case ('standardChanges') {
+          <div class="table-wrap">
+            <table class="list sticky-head sticky-cols standard-changes-table">
+              <thead><tr><th>社員番号</th><th>氏名</th><th>内容</th></tr></thead>
+              <tbody>
+                @for (c of standardChanges(); track c.employee.id) {
+                  <tr>
+                    <td>{{ c.employee.employeeNumber }}</td>
+                    <td><a [routerLink]="['/employees', c.employee.id]">{{ c.employee.name }}</a></td>
+                    <td>{{ c.label }}</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="3" class="none">いません。</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+
+        @case ('filings') {
+          <div class="table-wrap">
+            <table class="list sticky-head sticky-cols">
+              <thead><tr><th>期限</th><th>届出</th></tr></thead>
+              <tbody>
+                @for (f of urgentFilings(); track f.id) {
+                  <tr [class.overdue]="f.deadline !== null && f.deadline < today()">
+                    <td>{{ f.deadlineLabel }}</td>
+                    <td>{{ f.name }}</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="2" class="none">ありません。</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <p class="hint"><a routerLink="/filings">届出の期限</a>で「届出済みにする」と消えます。</p>
+        }
+
+        @case ('provisional') {
+          <div class="table-wrap">
+            <table class="list provisional sticky-head sticky-cols">
+              <thead><tr><th>社員番号</th><th>氏名</th><th>適用開始月</th><th class="num">健康保険（見込み）</th><th class="num">厚生年金（見込み）</th></tr></thead>
+              <tbody>
+                @for (p of provisionalStandards(); track p.employee.id + p.validFrom) {
+                  <tr>
+                    <td>{{ p.employee.employeeNumber }}</td>
+                    <td><a [routerLink]="['/employees', p.employee.id]">{{ p.employee.name }}</a></td>
+                    <td>{{ p.validFrom | ym }}分から</td>
+                    <td class="num">{{ p.healthStandard.toLocaleString('ja-JP') }}円</td>
+                    <td class="num">{{ p.pensionStandard.toLocaleString('ja-JP') }}円</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="5">ありません。</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <p class="hint">決定通知書が届いたら、<a routerLink="/decisions/import">決定通知書の取り込み</a>か従業員の詳細の「通知書の値で確定」で直してください。</p>
+        }
+
+        @case ('refunds') {
+          <div class="table-wrap">
+            <table class="list same-month sticky-head sticky-cols">
+              <thead><tr><th>社員番号</th><th>氏名</th><th>対象月</th><th>取得日・喪失日</th></tr></thead>
+              <tbody>
+                @for (p of pendingRefunds(); track p.employee.id + p.case.qualification.acquiredDate) {
+                  <tr>
+                    <td>{{ p.employee.employeeNumber }}</td>
+                    <td><a [routerLink]="['/employees', p.employee.id]">{{ p.employee.name }}</a></td>
+                    <td>{{ p.case.yearMonth | ym }}分</td>
+                    <td>{{ p.case.qualification.acquiredDate | ymd }}取得 / {{ p.case.qualification.lostDate | ymd }}喪失</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="4" class="none">いません。</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <p class="hint">厚生年金保険料が還付されたら本人負担分を本人に返し、従業員の詳細で「返金済み」にしてください。還付がない場合は「還付なし」にします。</p>
+        }
+
+        @case ('retroactive') {
+          <div class="table-wrap">
+            <table class="list retroactive sticky-head sticky-cols">
+              <thead><tr><th>社員番号</th><th>氏名</th><th>支払月</th><th>固定的賃金（前月→その月→翌月）</th></tr></thead>
+              <tbody>
+                @for (r of retroactivePossibilities(); track r.employee.id + r.yearMonth) {
+                  <tr>
+                    <td>{{ r.employee.employeeNumber }}</td>
+                    <td><a [routerLink]="['/employees', r.employee.id]">{{ r.employee.name }}</a></td>
+                    <td>{{ r.yearMonth | ym }}</td>
+                    <td>{{ r.before.toLocaleString('ja-JP') }} → {{ r.paid.toLocaleString('ja-JP') }} → {{ r.after.toLocaleString('ja-JP') }}円</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="4">ありません。</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <p class="hint">さかのぼった昇給の差額をまとめて払ったような動きです。差額なら、<a routerLink="/salaries">給与</a>の画面で「うち遡及差額」を入れてください（入れると随時改定の判定に使われます）。</p>
+        }
+
+        @case ('enrollment') {
+          <div class="table-wrap">
+            <table class="list enrollment sticky-head sticky-cols">
+              <thead><tr><th>社員番号</th><th>氏名</th><th>続いた2か月</th><th>週あたりの労働時間</th><th>加入の可能性がある月</th></tr></thead>
+              <tbody>
+                @for (p of enrollmentPossibilities(); track p.employeeId) {
+                  <tr>
+                    <td>{{ p.employee.employeeNumber }}</td>
+                    <td><a [routerLink]="['/employees', p.employeeId]">{{ p.employee.name }}</a></td>
+                    <td>{{ p.months | ym }}</td>
+                    <td>{{ p.weeklyHours[0] }}時間・{{ p.weeklyHours[1] }}時間（基準 週{{ p.threshold }}時間）</td>
+                    <td>{{ p.fromMonth | ym }}から</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="5">いません。</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <p class="hint">週あたりは、給与と一緒に入れた労働時間 × 12 ÷ 52 です。月は、給与を払った月ではなく働いた月（支払区分の締め日の月。月末締め・翌月払いなら支払月の前月）で数えます。この状態が続く見込みなら、3か月目から加入します。従業員の詳細の「加入を登録」で資格取得日を入れてください。</p>
+        }
+
+        @case ('problems') {
+          <div class="table-wrap">
+            <table class="list problems sticky-head sticky-cols">
+              <thead><tr><th>社員番号</th><th>氏名</th><th>理由</th></tr></thead>
+              <tbody>
+                @for (p of problems(); track p.employee.id) {
+                  <tr>
+                    <td>{{ p.employee.employeeNumber }}</td>
+                    <td><a [routerLink]="['/employees', p.employee.id]">{{ p.employee.name }}</a></td>
+                    <td>{{ p.label }}</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="3">いません。</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+        }
+
+        @case ('deductions') {
+          <div class="table-wrap">
+            <table class="list deductions sticky-head sticky-cols">
+              <thead><tr><th>社員番号</th><th>氏名</th><th>控除する保険料の月</th><th class="num">本人負担</th><th class="num">給与（お金で払う額）</th><th>判定</th></tr></thead>
+              <tbody>
+                @for (x of deductionAlerts(); track x.employee.id) {
+                  <tr>
+                    <td>{{ x.employee.employeeNumber }}</td>
+                    <td><a [routerLink]="['/employees', x.employee.id]">{{ x.employee.name }}</a></td>
+                    <td>{{ x.check.premiumMonths | ym }}分{{ x.check.premiumMonths.length === 2 ? '（最終給与で2か月分）' : '' }}</td>
+                    <td class="num">{{ x.check.premium.toLocaleString('ja-JP') }}円</td>
+                    <td class="num">{{ x.check.cash?.toLocaleString('ja-JP') }}円</td>
+                    <td>{{ x.check.status === 'shortage' ? '控除不足 ' + x.check.shortage.toLocaleString('ja-JP') + '円' : '注意（給与の60%超）' }}@if (x.note) {<br /><span class="note">{{ x.note }}</span>}</td>
+                  </tr>
+                } @empty {
+                  <tr><td colspan="6">いません（給与を入力した人だけを判定しています）。</td></tr>
+                }
+              </tbody>
+            </table>
+          </div>
+          <p class="hint">所得税・住民税などほかの控除は考えていない目安です。控除不足の人は、不足額を本人から別に集めるか確かめてください。</p>
+        }
+
+        @case ('unclosed') {
+          @if (unclosedPrev().length === 0) {
+            <p>ありません。</p>
+          } @else {
+            <ul class="unclosed">
+              @for (o of unclosedPrev(); track o.id) {
+                <li>{{ o.name }}</li>
+              }
+            </ul>
+            <p><a routerLink="/monthly">月次保険料一覧で確定する</a></p>
+          }
+        }
+      }
+    </div>
+  </details>
+</ng-template>

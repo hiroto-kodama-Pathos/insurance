@@ -3,11 +3,11 @@
 // 上限は、健康保険・介護保険・支援金が「同じ保険者での年度（4月〜翌3月）の累計573万円」、
 // 厚生年金が「同じ月に払った賞与の合計150万円」。
 import { isSpecialInsuredMonth } from './dependent';
-import { daysInMonth, formatDate, monthEnd, monthOf, parseDate } from './date';
+import { daysInMonth, formatDate, monthEnd, monthOf, parseDate, previousDay } from './date';
 import { exemptedInsurances, Leave, nextDay, Qualification } from './eligibility';
 import { EmployeeData, findEffective, Masters } from './employee-month';
 import { calcMonthlyPremium, ChildSupportRounding, MonthlyPremium, MonthlyPremiumInput, RateShare } from './monthly-premium';
-import { findOffice } from './office';
+import { Assignment, findOffice } from './office';
 import type { Insurer, InsurerRate } from './rate';
 
 export const HEALTH_BONUS_CAP = 5_730_000;
@@ -25,6 +25,12 @@ export type BonusRecord = {
    * 支給日には他社の額が分からないので、決定通知や他社との情報共有で分かってから登録する
    */
   totalAmount?: number | null;
+  /** うち現物の価額（円）。賞与支払届の通貨・現物の内訳に使う */
+  inKindAmount?: number | null;
+  /** 賞与の種類（bonusTypes のID） */
+  bonusTypeId?: string | null;
+  /** 年4回以上支給する賞与で、報酬扱い（賞与の保険料をかけず、年度累計にも含めない。設計書 2.4）。登録したときの種類の設定で決める */
+  isRemuneration?: boolean;
 };
 
 /**
@@ -38,7 +44,8 @@ export type BonusTarget = 'outside' | 'lostMonth' | 'charged';
 export type BonusResult = {
   bonus: BonusRecord;
   yearMonth: string;
-  status: 'ok' | 'outside' | 'noOffice' | 'missingRate';
+  /** remuneration：年4回以上支給する賞与で報酬扱い（賞与の保険料なし・賞与支払届なし） */
+  status: 'ok' | 'outside' | 'noOffice' | 'missingRate' | 'remuneration';
   target: BonusTarget;
   officeId: string | null;
   insurerId: string | null;
@@ -57,6 +64,11 @@ export type BonusResult = {
    * 支給日には他社の金額が分からないので、自社の賞与額で計算し「要確認」とする
    */
   multiOfficeReview?: boolean;
+  /**
+   * 異動した月に、異動日より前に元の事業所で払った賞与なら、その異動日（設計書 2.4）。
+   * 適用事業所を異動すると元の事業所では資格を失うため、資格喪失月の賞与として保険料をかけず、年度累計には含める
+   */
+  transferOut?: string;
   /** 支給月に二以上事業所勤務か（自社の報酬 ＜ 合計の報酬の標準報酬月額の履歴がある） */
   multiOffice?: boolean;
   /**
@@ -86,12 +98,18 @@ export function addDays(date: string, n: number): string {
   return d;
 }
 
-/** 1か月後の同じ日（その日がない月は末日） */
-function oneMonthLater(date: string): string {
-  const { y, m, d } = parseDate(date);
+/**
+ * 開始日から1か月の期間の最後の日（民法143条。休業は開始日の0時から始まるので、開始日を1日目に数える）
+ * - 翌月に開始日と同じ日があれば、その前日（12月1日 → 12月31日、6月15日 → 7月14日）
+ * - 翌月に同じ日がなければ、翌月の末日（1月31日 → 2月28日、うるう年は2月29日）
+ */
+export function oneMonthEnd(startDate: string): string {
+  const { y, m, d } = parseDate(startDate);
   const ny = m === 12 ? y + 1 : y;
   const nm = m === 12 ? 1 : m + 1;
-  return formatDate({ y: ny, m: nm, d: Math.min(d, daysInMonth(ny, nm)) });
+  const last = daysInMonth(ny, nm);
+  if (d > last) return formatDate({ y: ny, m: nm, d: last });
+  return formatDate(previousDay({ y: ny, m: nm, d }));
 }
 
 /** 支給日に資格があるか */
@@ -105,24 +123,44 @@ export function bonusTarget(qualifications: Qualification[], paidDate: string): 
 }
 
 /**
+ * 異動した月に、異動日より前に元の事業所で払った賞与か。そうなら異動日（なければ null）
+ * 元の事業所に同じ月に移ってきた人（その事業所で同月得喪）は、保険料がかかるので対象にしない
+ */
+export function transferOutDate(assignments: Assignment[], paidDate: string): string | null {
+  const sorted = [...assignments].sort((a, b) => a.validFrom.localeCompare(b.validFrom));
+  const current = sorted.filter((a) => a.validFrom <= paidDate).at(-1);
+  const next = sorted.find((a) => a.validFrom > paidDate);
+  if (!current || !next || next.officeId === current.officeId) return null;
+  if (monthOf(next.validFrom) !== monthOf(paidDate)) return null;
+  if (monthOf(current.validFrom) === monthOf(paidDate)) return null;
+  return next.validFrom;
+}
+
+/**
  * 産休・育休で賞与の保険料が免除されるか
  * - 産前産後休業：支払月が、月額の免除月（開始月〜終了日の翌日の月の前月）に当たる
  * - 育児休業：支払月の末日を含んで、連続して1か月を超える休業をしている
  */
 export function bonusExemption(leaves: Leave[], paidDate: string): BonusResult['exemption'] {
+  return bonusExemptingLeave(leaves, paidDate)?.type ?? 'none';
+}
+
+/** 賞与の保険料を免除にしている休業（免除されなければ null）。判定は bonusExemption と同じ */
+export function bonusExemptingLeave<L extends Leave>(leaves: L[], paidDate: string): L | null {
   const ym = monthOf(paidDate);
   const end = monthEnd(ym);
   for (const l of leaves) {
     if (l.type === 'maternity') {
       const until = l.endDate ? monthOf(nextDay(l.endDate)) : null;
-      if (monthOf(l.startDate) <= ym && (until === null || ym < until)) return 'maternity';
+      if (monthOf(l.startDate) <= ym && (until === null || ym < until)) return l;
     } else {
       const coversMonthEnd = l.startDate <= end && (l.endDate === null || l.endDate >= end);
-      const overOneMonth = l.endDate === null || l.endDate >= oneMonthLater(l.startDate);
-      if (coversMonthEnd && overOneMonth) return 'childcare';
+      // 「1か月を超える」：1か月の期間の最後の日より後まで休業している（ちょうど1か月は免除しない）
+      const overOneMonth = l.endDate === null || l.endDate > oneMonthEnd(l.startDate);
+      if (coversMonthEnd && overOneMonth) return l;
     }
   }
-  return 'none';
+  return null;
 }
 
 function findRate(
@@ -180,6 +218,14 @@ export function calcEmployeeBonuses(
       rates: null,
     };
     if (base.target === 'outside') return { ...base, status: 'outside' };
+    // 異動した月に元の事業所で払った賞与は、元の事業所では資格喪失月の賞与になる
+    const transferOut = base.target === 'charged' ? transferOutDate(employee.assignments, bonus.paidDate) : null;
+    if (transferOut) {
+      base.target = 'lostMonth';
+      base.transferOut = transferOut;
+    }
+    // 報酬扱いの賞与は、賞与の保険料をかけず、上限の累計にも含めない
+    if (bonus.isRemuneration) return { ...base, status: 'remuneration' };
 
     let office;
     try {

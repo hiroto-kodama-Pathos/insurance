@@ -1,0 +1,18 @@
+.file { display: flex; align-items: center; gap: 8px; margin: 8px 0; }
+.mapping { border: 1px solid #ccc; border-radius: 8px; padding: 8px 12px; margin: 8px 0; max-width: 1000px; }
+.mapping summary { cursor: pointer; font-weight: bold; }
+.fields { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0; }
+.fields label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.fields select { padding: 4px; }
+fieldset { border: 1px solid #ddd; margin: 8px 0; font-size: 13px; }
+.check { display: inline-flex; align-items: center; gap: 4px; margin-right: 12px; font-size: 13px; }
+tr.error { background: #ffecec; }
+
+tr.confirm { background: #fffbe6; }
+tr.same { color: #888; }
+tr.differs td:nth-child(6) { font-weight: bold; }
+.counts { margin: 8px 0; }
+.kind-help { margin: 4px 0 8px; font-size: 13px; }
+.badge.new { background: #dcfce7; color: #166534; }
+.badge.error { background: #fee2e2; color: #991b1b; }
+.badge.closed, .badge.outOfScope, .badge.same { background: #f1f5f9; color: #555; }

@@ -1,14 +1,18 @@
 // 随時改定の候補の対応状況（設計書 4章 revisionCandidates）
 // 候補そのものは給与から毎回計算する。担当者が切り替えた状態（届出済み・確認済み）だけを保存する。
-import { Service } from '@angular/core';
-import { getDocs, serverTimestamp, setDoc } from 'firebase/firestore';
+import { inject, Service } from '@angular/core';
+import { Auth } from '../auth/auth';
+import { scopeWhere } from './scope';
+import { getDocs, query, serverTimestamp, setDoc } from 'firebase/firestore';
 import { CandidateStatusRecord, TrackedCandidate } from '../calc/revision';
 import { siCol, siDoc } from '../firestore-paths';
 
 @Service()
 export class RevisionRepository {
+  private readonly auth = inject(Auth);
+
   async loadStatuses(): Promise<CandidateStatusRecord[]> {
-    const snap = await getDocs(siCol('revisionCandidates'));
+    const snap = await getDocs(query(siCol('revisionCandidates'), ...scopeWhere(this.auth)));
     return snap.docs.map((d) => ({ id: d.id, status: d.data()['status'] }));
   }
 

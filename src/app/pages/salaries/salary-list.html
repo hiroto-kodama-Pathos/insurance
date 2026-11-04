@@ -3,7 +3,7 @@
     <h1>給与</h1>
     <label class="month">
       支払月
-      <input type="month" [value]="yearMonth()" (change)="onMonthChange($any($event.target).value)" />
+      <input type="month" [value]="yearMonth()" (change)="onMonthChange($any($event.target))" />
     </label>
   </header>
 
@@ -12,22 +12,68 @@
   } @else if (error()) {
     <p class="error">{{ error() }}</p>
   } @else {
-    <p class="help">
-      給与計算が終わったら、その月に支払った給与を入れます。給与は随時改定の候補と定時決定の見込みを出すためだけに使い、保険料は変わりません（保険料は標準報酬月額で計算します）。
-    </p>
+    <details class="howto">
+      <summary>この画面の使い方</summary>
+      <p class="help">
+        給与計算が終わったら、その月に支払った給与を入れます。給与は随時改定の候補と定時決定の見込みを出すためだけに使い、保険料は変わりません（保険料は標準報酬月額で計算します）。
+      </p>
+      <p class="help">時給の人は時給単価も入れます。前月と時給単価が同じ月は、労働時間で額が変わっても「変動あり」にしません。<br />未加入の人（パート・アルバイトなど）は、この給与の計算期間に実際に働いた時間も入れます（加入の可能性は、働いた月で数えます）。2か月続けて週20時間以上になると、トップに「加入の可能性」が出ます。</p>
+    </details>
     <p><a routerLink="/salaries/import">CSVで取り込む</a>（給与ソフトの出力をまとめて取り込めます）</p>
     <p class="summary">入力済み {{ enteredCount() }} / {{ rows().length }}人　固定的賃金の変動あり {{ changedCount() }}人
       @if (changedCount() > 0) {
         <a routerLink="/revisions">随時改定の候補を見る</a>
       }
     </p>
-
-    @if (notice()) {
-      <p class="notice">{{ notice() }}</p>
+    @if (unsavedIds().length > 0) {
+      <div class="unsaved-bar" role="status">
+        <span><strong>保存していない入力が {{ unsavedIds().length }}人分</strong>あります（「未保存」の印がある行）。ほかの画面に移る・支払月を変える前に保存してください。</span>
+        <button type="button" [disabled]="saving() !== null" (click)="saveAll()">
+          {{ saving() === 'all' ? '保存中…' : '入力した行をまとめて保存（' + unsavedIds().length + '人）' }}
+        </button>
+      </div>
     }
 
+    @if (notice()) {
+      <app-notice [message]="notice()!" (closed)="notice.set(null)" />
+    }
+
+    <div class="filters">
+      <label>検索
+        <input name="query" placeholder="氏名・社員番号" [value]="criteria().query" (input)="setCriteria('query', $any($event.target).value)" />
+      </label>
+      @if (officeList().length > 1) {
+        <label>適用事業所
+          <select name="office" (change)="setCriteria('officeId', $any($event.target).value)">
+            <option value="" [selected]="criteria().officeId === ''">すべて（{{ officeAllCount() }}件）</option>
+            @for (o of officeOptions(); track o.value) { <option [value]="o.value" [selected]="criteria().officeId === o.value">{{ o.label }}（{{ o.count }}件）</option> }
+          </select>
+        </label>
+      }
+      @if (groupList().length > 1) {
+        <label>支払区分
+          <select name="group" (change)="setCriteria('groupId', $any($event.target).value)">
+            <option value="">すべて</option>
+            @for (g of groupList(); track g.id) { <option [value]="g.id" [selected]="criteria().groupId === g.id">{{ g.name }}</option> }
+          </select>
+        </label>
+      }
+      <label>絞り込み
+        <select name="status" (change)="setCriteria('status', $any($event.target).value)">
+          <option value="">すべての人</option>
+          @for (k of statusKeys; track k) { <option [value]="k" [selected]="criteria().status === k">{{ statusLabels[k] }}</option> }
+        </select>
+      </label>
+      <label>並び替え
+        <select name="sort" (change)="setCriteria('sort', $any($event.target).value)">
+          @for (k of sortKeys; track k) { <option [value]="k" [selected]="criteria().sort === k">{{ sortLabels[k] }}</option> }
+        </select>
+      </label>
+      <span class="count">{{ shownRows().length }}人を表示</span>
+    </div>
+
     <div class="table-wrap">
-      <table class="list salaries">
+      <table class="list salaries sticky-cols">
         <thead>
           <tr>
             <th>社員番号</th>
@@ -38,56 +84,118 @@
             <th>支払基礎日数</th>
             <th>うち遡及差額</th>
             <th>うち現物給与</th>
+            <th>労働時間</th>
+            <th>時給単価</th>
             <th>前月の固定的賃金</th>
             <th>状態</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          @for (row of rows(); track row.employee.id) {
-            <tr [class.changed]="row.change">
+          @for (row of shownRows(); track row.employee.id) {
+            <tr [class.changed]="row.change" [class.unsaved]="isUnsaved(row.employee.id)">
               <td>{{ row.employee.employeeNumber }}</td>
-              <td>{{ row.employee.name }}</td>
+              <td><a [routerLink]="['/employees', row.employee.id]" [title]="row.employee.name">{{ row.employee.name }}</a></td>
               <td>
                 <input type="date" [value]="draft(row.employee.id, 'paidDate')" [disabled]="row.closed"
                   (input)="setDraft(row.employee.id, 'paidDate', $any($event.target).value)" />
                 <span class="err">{{ err(row.employee.id, 'paidDate') }}</span>
               </td>
-              @for (key of ['fixedWages', 'nonFixedWages', 'paymentBaseDays', 'retroactiveDiff', 'inKindWages']; track key) {
+              @for (key of ['fixedWages', 'nonFixedWages', 'paymentBaseDays', 'retroactiveDiff', 'inKindWages', 'workingHours', 'hourlyRate']; track key) {
                 <td>
-                  <input class="num-input" [class.days]="key === 'paymentBaseDays'" inputmode="numeric" [attr.name]="key"
+                  <input class="num-input" [class.days]="key === 'paymentBaseDays' || key === 'workingHours'" inputmode="numeric" [attr.name]="key"
                     [value]="draft(row.employee.id, $any(key))" [disabled]="row.closed"
                     (input)="setDraft(row.employee.id, $any(key), $any($event.target).value)" />
+                  @if (key === 'paymentBaseDays' && isAutoBaseDays(row)) {
+                    <span class="auto" title="月給制で欠勤控除がない人の支払基礎日数は、給与の計算期間の暦日数です。欠勤控除がある月は、所定労働日数から欠勤日数を引いた日数に直してください。">暦日数（自動）</span>
+                  }
                   <span class="err">{{ err(row.employee.id, $any(key)) }}</span>
                 </td>
               }
               <td class="num">{{ yen(row.previousFixed) }}</td>
-              <td>
-                @if (row.closed) {
-                  <span class="badge">確定</span>
+              <td class="status">
+                <!-- 対応が要るもの（色つき）を先に、情報だけのもの（灰色）を後に並べる -->
+                <span class="err">{{ err(row.employee.id, 'form') }}</span>
+                @if (isUnsaved(row.employee.id)) {
+                  <span class="badge unsaved">未保存</span>
+                }
+                @if (row.periodChange; as c) {
+                  <div class="period-change" [class.warn]="needsExclusion(c) && !draft(row.employee.id, 'excludedAmount')">
+                    {{ periodNote(row) }}
+                    @if (needsExclusion(c)) {
+                      <label>算定から除く額
+                        <input class="num-input" inputmode="numeric" name="excludedAmount" [value]="draft(row.employee.id, 'excludedAmount')" [disabled]="row.closed"
+                          (input)="setDraft(row.employee.id, 'excludedAmount', $any($event.target).value)" />円
+                      </label>
+                      <span class="err">{{ err(row.employee.id, 'excludedAmount') }}</span>
+                    }
+                  </div>
+                }
+                @if (row.retroactive; as r) {
+                  <span class="badge warn">遡及の可能性あり（{{ r.yearMonth | ym }}：{{ yen(r.before) }}→{{ yen(r.paid) }}→{{ yen(r.after) }}円。遡及差額を確かめる）</span>
                 }
                 @if (row.change) {
-                  <span class="badge up">変動あり（{{ row.change.direction === 'up' ? '上がった' : '下がった' }}）</span>
+                  <span class="badge up">{{ changeLabel(row.change) }}</span>
+                }
+                @if (row.manual) {
+                  <span class="badge">登録した内容：{{ row.manual.note }}</span>
+                }
+                @if (row.closed) {
+                  <span class="badge info">確定</span>
                 }
                 @if (row.existing) {
-                  <span class="badge">入力済み</span>
+                  <span class="badge info">入力済み</span>
+                }
+                @if (row.uninsured) {
+                  <span class="badge info">未加入</span>
                 }
                 @if (row.others > 0) {
-                  <span class="badge">ほかに{{ row.others }}回の支払い（合算）</span>
+                  <span class="badge info">ほかに{{ row.others }}回の支払い（合算）</span>
                 }
-                <span class="err">{{ err(row.employee.id, 'form') }}</span>
               </td>
               <td class="actions">
                 @if (!row.closed) {
                   <button type="button" [disabled]="saving() !== null" (click)="save(row)">保存</button>
+                  @if (isUnsaved(row.employee.id)) {
+                    <button type="button" class="secondary" [disabled]="saving() !== null" (click)="revert(row)">入力を戻す</button>
+                  }
                   @if (row.existing) {
                     <button type="button" class="secondary" [disabled]="saving() !== null" (click)="remove(row)">削除</button>
+                  }
+                  @if (!row.uninsured) {
+                    @if (row.manual) {
+                      <button type="button" class="secondary" [disabled]="saving() !== null" (click)="removeManual(row)">変動の登録を取り消す</button>
+                    } @else {
+                      <button type="button" class="secondary" [disabled]="saving() !== null" (click)="openManual(row)" title="固定的賃金の変動として登録（労働時間の変更・手当の新設など、額や時給単価から分からない変動）">変動として登録</button>
+                    }
                   }
                 }
               </td>
             </tr>
+            @if (manualFor() === row.employee.id) {
+              <tr class="manual-form">
+                <td colspan="13">
+                  <strong>{{ row.employee.name }}さんの{{ yearMonth() | ym }}を、固定的賃金の変動として登録</strong>
+                  <span class="help">労働時間の変更・手当の新設など、額や時給単価から分からない変動を登録すると、この月から3か月の給与で随時改定を判定します。</span>
+                  <div class="row">
+                    <label>向き
+                      <select name="manualDirection" (change)="setManual('direction', $any($event.target).value)">
+                        <option value="up" [selected]="manualForm().direction === 'up'">上がった</option>
+                        <option value="down" [selected]="manualForm().direction === 'down'">下がった</option>
+                      </select>
+                    </label>
+                    <label>内容
+                      <input name="manualNote" [value]="manualForm().note" (input)="setManual('note', $any($event.target).value)" placeholder="所定労働時間の変更（週30→20時間）" />
+                    </label>
+                    <button type="button" [disabled]="saving() !== null" (click)="saveManual(row)">登録</button>
+                    <button type="button" class="secondary" (click)="closeManual()">やめる</button>
+                  </div>
+                  <span class="err">{{ manualError() }}</span>
+                </td>
+              </tr>
+            }
           } @empty {
-            <tr><td colspan="11">この月に資格のある従業員はいません。</td></tr>
+            <tr><td colspan="13">{{ rows().length === 0 ? 'この月に資格のある従業員はいません。' : '条件に合う人はいません。' }}</td></tr>
           }
         </tbody>
       </table>

@@ -1,3 +1,8 @@
+import { provideRouter } from '@angular/router';
+import { Confirm, ConfirmRequest } from '../../core/ui/confirm';
+import { FilingRepository } from '../../core/repository/filing-repository';
+const filed = new Set<string>();
+import { legacyGroup } from '../../core/calc/payroll-group';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { BonusRecord } from '../../core/calc/bonus-premium';
 import { Masters } from '../../core/calc/employee-month';
@@ -33,6 +38,10 @@ const person = (id: string, no: string, name: string, lostDate: string | null = 
   standardHistory: [{ validFrom: '2024-04', healthStandard: 300_000, pensionStandard: 300_000 }],
 });
 
+
+/** 確認ダイアログ：出した確認を記録し、「実行する」を押したことにする */
+const asked: ConfirmRequest[] = [];
+const confirmStub = { provide: Confirm, useValue: { ask: async (r: ConfirmRequest) => { asked.push(r); return true; } } };
 describe('BonusList', () => {
   let fixture: ComponentFixture<BonusList>;
   let store: BonusRecord[];
@@ -44,6 +53,8 @@ describe('BonusList', () => {
     await TestBed.configureTestingModule({
       imports: [BonusList],
       providers: [
+        confirmStub,
+        provideRouter([]),
         {
           provide: EmployeeRepository,
           useValue: {
@@ -59,7 +70,15 @@ describe('BonusList', () => {
           },
         },
         { provide: MasterRepository, useValue: { loadMasters: async () => masters } },
-        { provide: SettingsRepository, useValue: { loadSettings: async () => DEFAULT_SETTINGS } },
+        {
+          provide: SettingsRepository,
+          useValue: {
+            loadSettings: async () => DEFAULT_SETTINGS,
+            loadPayrollGroups: async () => [legacyGroup(DEFAULT_SETTINGS)],
+            loadBonusTypes: async () => [{ id: 'q', name: '四半期賞与', isRemuneration: true, validFrom: '2026-04' }],
+          },
+        },
+        { provide: FilingRepository, useValue: { loadFiledIds: async () => filed } },
         { provide: ClosingRepository, useValue: { loadMonth: async (ym: string) => closings.filter((c) => c.yearMonth === ym) } },
         {
           provide: BonusRepository,
@@ -90,19 +109,50 @@ describe('BonusList', () => {
     fixture.detectChanges();
   }
 
+  type Unsaved = { unsavedCount(): number };
+  const unsaved = () => (fixture.componentInstance as unknown as Unsaved).unsavedCount();
+
+  it('登録欄に従業員・支給額を入れたまま画面を移ろうとしたら確かめる', () => {
+    expect(unsaved()).toBe(0);
+    (fixture.componentInstance as unknown as { setForm(k: string, v: string): void }).setForm('amount', '500000');
+    expect(unsaved()).toBe(1);
+  });
+
   it('登録した賞与の保険料と、賞与支払届の期限を表示する', () => {
     const text = el().querySelector('table.persons tbody')!.textContent!;
     expect(text).toContain('山田 太郎');
     expect(text).toContain('24,625'); // 健康保険の本人負担
     expect(text).toContain('45,750'); // 厚生年金の本人負担
-    expect(el().querySelector('table.reports')!.textContent).toContain('2026-12-15');
+    expect(el().querySelector('table.reports')!.textContent).toContain('2026年12月15日');
+  });
+
+  it('氏名・社員番号で検索して表示する賞与を絞り込める', () => {
+    const q = el().querySelector('input[name="bonusQuery"]') as HTMLInputElement;
+    q.value = '山田太郎';
+    q.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(el().querySelector('table.persons tbody')!.textContent).toContain('山田 太郎');
+    q.value = 'いない人';
+    q.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    expect(el().querySelector('table.persons tbody')!.textContent).toContain('条件に合う賞与はありません');
+  });
+
+  it('登録欄で従業員を氏名で探すと選択肢が絞られ、1人に絞れたらその人を選ぶ', () => {
+    const q = el().querySelector('input[name="employeeQuery"]') as HTMLInputElement;
+    q.value = '山田太郎';
+    q.dispatchEvent(new Event('input'));
+    fixture.detectChanges();
+    const sel = el().querySelector('select[name=employeeId]') as HTMLSelectElement;
+    expect([...sel.options].map((o) => o.textContent!.trim())).toEqual(['選んでください', '0001 山田 太郎']);
+    expect(sel.value).toBe('e1');
   });
 
   it('登録すると一覧に加わり、喪失月の賞与は保険料なしでも届出に数える', async () => {
-    const sel = el().querySelector('select') as HTMLSelectElement;
+    const sel = el().querySelector('select[name=employeeId]') as HTMLSelectElement;
     sel.value = 'e2';
     sel.dispatchEvent(new Event('change'));
-    const [date, amount] = el().querySelectorAll('form input') as NodeListOf<HTMLInputElement>;
+    const [date, amount] = [el().querySelector('form input[name=paidDate]'), el().querySelector('form input[name=amount]')] as HTMLInputElement[];
     date.value = '2026-12-10';
     date.dispatchEvent(new Event('input'));
     amount.value = '300,000';
@@ -113,6 +163,84 @@ describe('BonusList', () => {
     expect(store[1]).toMatchObject({ employeeId: 'e2', paidDate: '2026-12-10', amount: 300_000 });
     expect(el().textContent).toContain('資格喪失月（保険料なし・累計に含める）');
     expect(el().querySelector('table.reports tbody tr')!.textContent).toContain('2人');
+  });
+
+  it('同じ月の2回目の賞与は届け出る額に合算し、うち現物を分けて出す。登録すると期限と届け出る額を知らせる', async () => {
+    const sel = el().querySelector('select[name=employeeId]') as HTMLSelectElement;
+    sel.value = 'e1';
+    sel.dispatchEvent(new Event('change'));
+    const [date, amount, inKind] = [el().querySelector('form input[name=paidDate]'), el().querySelector('form input[name=amount]'), el().querySelector('form input[name=inKindAmount]')] as HTMLInputElement[];
+    date.value = '2026-12-25';
+    date.dispatchEvent(new Event('input'));
+    amount.value = '100,500';
+    amount.dispatchEvent(new Event('input'));
+    inKind.value = '30000';
+    inKind.dispatchEvent(new Event('input'));
+    el().querySelector('form')!.dispatchEvent(new Event('submit'));
+    await settle();
+    expect(store[1]).toMatchObject({ employeeId: 'e1', amount: 100_500, inKindAmount: 30_000 });
+    const row = [...el().querySelectorAll('table.report-amounts tbody tr')].find((tr) => tr.textContent!.includes('山田 太郎'))!.textContent!;
+    expect(row).toContain('2026年12月10日・2026年12月25日');
+    expect(row).toContain('600,000');
+    expect(row).toContain('30,000');
+    expect(row).toContain('同じ月に2回の支給を合算');
+    expect(el().querySelector('.notice')!.textContent).toContain('賞与支払届は2026年12月30日までに届け出ます');
+  });
+
+  it('年4回以上支給の種類を選ぶと報酬扱いで登録し、賞与の保険料をかけず、届出にも含めない', async () => {
+    const sel = el().querySelector('select[name=employeeId]') as HTMLSelectElement;
+    sel.value = 'e1';
+    sel.dispatchEvent(new Event('change'));
+    const [date, amount] = [el().querySelector('form input[name=paidDate]'), el().querySelector('form input[name=amount]')] as HTMLInputElement[];
+    date.value = '2026-12-20';
+    date.dispatchEvent(new Event('input'));
+    amount.value = '100000';
+    amount.dispatchEvent(new Event('input'));
+    const type = el().querySelector('select[name=bonusType]') as HTMLSelectElement;
+    type.value = 'q';
+    type.dispatchEvent(new Event('change'));
+    await settle();
+    expect(el().querySelector('form')!.textContent).toContain('報酬扱い（賞与の保険料なし）');
+    el().querySelector('form')!.dispatchEvent(new Event('submit'));
+    await settle();
+    expect(store[1]).toMatchObject({ bonusTypeId: 'q', isRemuneration: true });
+    expect(el().textContent).toContain('報酬扱い（年4回以上支給の賞与');
+    expect(el().querySelector('table.reports tbody tr')!.textContent).toContain('1人');
+  });
+
+  it('種類を選ばずに同じ年度で4回目の賞与を登録しようとすると警告する', async () => {
+    store.push(
+      { id: 'b2', employeeId: 'e1', paidDate: '2026-06-10', amount: 100_000 },
+      { id: 'b3', employeeId: 'e1', paidDate: '2026-09-10', amount: 100_000 },
+    );
+    fixture.componentRef.instance['fyBonuses'].set([...store]);
+    await settle();
+    const sel = el().querySelector('select[name=employeeId]') as HTMLSelectElement;
+    sel.value = 'e1';
+    sel.dispatchEvent(new Event('change'));
+    const [date] = [el().querySelector('form input[name=paidDate]'), el().querySelector('form input[name=amount]')] as HTMLInputElement[];
+    date.value = '2027-03-10';
+    date.dispatchEvent(new Event('input'));
+    await settle();
+    expect(el().querySelector('p.warn')!.textContent).toContain('同じ年度で4回目の賞与です');
+  });
+
+  it('対象月と支給日の年度が違っても、支給日の年度の賞与で4回目を数える', async () => {
+    store.push(
+      { id: 'b2', employeeId: 'e1', paidDate: '2026-06-10', amount: 100_000 },
+      { id: 'b3', employeeId: 'e1', paidDate: '2026-09-10', amount: 100_000 },
+    );
+    fixture.componentRef.instance['onMonthChange']('2027-04');
+    await settle();
+    const sel = el().querySelector('select[name=employeeId]') as HTMLSelectElement;
+    sel.value = 'e1';
+    sel.dispatchEvent(new Event('change'));
+    const [date] = [el().querySelector('form input[name=paidDate]'), el().querySelector('form input[name=amount]')] as HTMLInputElement[];
+    date.value = '2027-03-10';
+    date.dispatchEvent(new Event('input'));
+    await settle();
+    await settle();
+    expect(el().querySelector('p.warn')!.textContent).toContain('同じ年度で4回目の賞与です');
   });
 
   it('入力が足りなければ登録しない', async () => {
@@ -137,14 +265,14 @@ describe('BonusList', () => {
     ];
     // 開き直す
     fixture.componentRef.instance['onMonthChange']('2026-11');
-    fixture.componentRef.instance['onMonthChange']('2026-12');
+    fixture.componentRef.instance['fyBonuses'].set([...store]);
     await settle();
     await settle();
     expect([...el().querySelectorAll('button')].some((b) => b.textContent?.trim() === '削除')).toBe(false);
-    const sel = el().querySelector('select') as HTMLSelectElement;
+    const sel = el().querySelector('select[name=employeeId]') as HTMLSelectElement;
     sel.value = 'e1';
     sel.dispatchEvent(new Event('change'));
-    const [date, amount] = el().querySelectorAll('form input') as NodeListOf<HTMLInputElement>;
+    const [date, amount] = [el().querySelector('form input[name=paidDate]'), el().querySelector('form input[name=amount]')] as HTMLInputElement[];
     date.value = '2026-12-20';
     date.dispatchEvent(new Event('input'));
     amount.value = '100000';

@@ -1,5 +1,12 @@
 <section class="page">
-  <p><a routerLink="/employees">← 従業員一覧へ戻る</a></p>
+  <p class="back-links">
+    @if (back) {
+      <a class="back" [routerLink]="back.url">← {{ back.label }}へ戻る</a>
+    }
+    @if (back?.label !== '従業員一覧') {
+      <a routerLink="/employees">{{ back ? '従業員一覧へ' : '← 従業員一覧へ戻る' }}</a>
+    }
+  </p>
 
   @if (loading() && !detail()) {
     <p>読み込み中…</p>
@@ -8,382 +15,693 @@
   } @else if (detail(); as d) {
     <header class="page-header">
       <h1>{{ d.name }}</h1>
+      <button type="button" class="secondary small" (click)="open('name')">氏名を変更</button>
       <span>社員番号 {{ d.employeeNumber }}</span>
-      <span>生年月日 {{ d.birthDate }}</span>
+      <button type="button" class="secondary small" (click)="open('employeeNumber')">社員番号を変更</button>
+      <span>生年月日 {{ d.birthDate | ymd }}</span>
       <span class="badge">{{ isInsuredNow() ? '加入中' : '資格なし' }}</span>
       <span class="badge">{{ insuredTypeLabel[currentInsuredType()] }}</span>
+      <span class="badge">{{ currentPayrollGroup().name }}</span>
+      @if (absentNow(); as a) {
+        <span class="badge absent">休職中（{{ absenceReasonLabel[a.reason] }}）</span>
+      }
     </header>
 
     @if (notice()) {
-      <p class="notice">{{ notice() }}</p>
+      <app-notice [message]="notice()!" (closed)="notice.set(null)" />
     }
 
-    <div class="actions">
-      @if (isInsuredNow()) {
-        <button type="button" (click)="open('retire')">退職を登録</button>
-        <button type="button" (click)="open('loss')">退職以外の資格喪失</button>
-        <button type="button" (click)="open('transfer')">異動を登録</button>
-      } @else {
-        <button type="button" (click)="open('reacquire')">再加入を登録</button>
+    <nav class="sections" aria-label="この画面の欄">
+      @for (c of cards; track c.id) {
+        <button type="button" class="link" (click)="goTo(c.id)">{{ c.label }}</button>
       }
-      <button type="button" (click)="open('standard')">標準報酬月額を追加</button>
-      <button type="button" (click)="open('leave')">休業を追加</button>
-      <button type="button" (click)="open('insuredType')">被保険者区分を変える</button>
-      <button type="button" (click)="open('dependent')">被扶養者を追加</button>
-      <button type="button" (click)="open('exemption')">適用除外を追加</button>
-    </div>
+    </nav>
 
-    @if (mode() !== null) {
-      <form class="form" (submit)="save($event)">
-        @switch (mode()) {
-          @case ('retire') {
-            <h2>退職を登録</h2>
-            <label>退職日
-              <input type="date" [value]="date()" (input)="date.set($any($event.target).value)" />
-            </label>
-            <p class="help">資格喪失日は退職日の翌日になります。喪失日の属する月から保険料がかかりません。</p>
-            <span class="err">{{ errors()['retirementDate'] }}</span>
+    <section class="card" id="card-qual">
+      <header>
+        <h2>資格・所属</h2>
+        <div class="actions">
+          @if (isInsuredNow()) {
+            <button type="button" class="secondary" (click)="open('retire')">退職を登録</button>
+            <button type="button" class="secondary" (click)="open('loss')">退職以外の資格喪失</button>
+            <button type="button" class="secondary" (click)="open('transfer')">異動を登録</button>
+          } @else {
+            <button type="button" class="secondary" (click)="open('reacquire')">{{ d.qualifications.length ? '再加入を登録' : '加入を登録' }}</button>
           }
-          @case ('loss') {
-            <h2>退職以外の資格喪失</h2>
-            <label>資格喪失日
-              <input type="date" [value]="date()" (input)="date.set($any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['lostDate'] }}</span>
-            <label>理由
-              <select [value]="reason()" (change)="reason.set($any($event.target).value)">
-                <option value="">選んでください</option>
-                @for (k of lostReasonKeys; track k) {
-                  <option [value]="k">{{ lostReasons[k] }}</option>
-                }
-              </select>
-            </label>
-            <span class="err">{{ errors()['reason'] }}</span>
-          }
-          @case ('reacquire') {
-            <h2>再加入を登録</h2>
-            <label>資格取得日
-              <input type="date" [value]="date()" (input)="date.set($any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['acquiredDate'] }}</span>
-          }
-          @case ('transfer') {
-            <h2>異動を登録</h2>
-            <label>異動日
-              <input type="date" [value]="date()" (input)="date.set($any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['transferDate'] }}</span>
-            <label>異動先の適用事業所
-              <select [value]="officeId()" (change)="officeId.set($any($event.target).value)">
-                <option value="">選んでください</option>
-                @for (o of masters()?.offices ?? []; track o.id) {
-                  <option [value]="o.id">{{ o.name }}</option>
-                }
-              </select>
-            </label>
-            <span class="err">{{ errors()['officeId'] }}</span>
-            <p class="help">異動先では、異動日の月から標準報酬月額を登録し直します（今の額を入れてあります）。</p>
-            <label>健康保険の標準報酬月額（円）
-              <input inputmode="numeric" [value]="standardForm().healthStandard ?? ''" (input)="setStandard('healthStandard', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['healthStandard'] }}</span>
-            <label>厚生年金の標準報酬月額（円）
-              <input inputmode="numeric" [value]="standardForm().pensionStandard ?? ''" (input)="setStandard('pensionStandard', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['pensionStandard'] }}{{ errors()['validFrom'] }}</span>
-          }
-          @case ('dependent') {
-            <h2>被扶養者を追加</h2>
-            <label>氏名
-              <input name="dependentName" [value]="dependentForm().name" (input)="setDependent('name', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['name'] }}</span>
-            <label>生年月日
-              <input type="date" name="dependentBirth" [value]="dependentForm().birthDate" (input)="setDependent('birthDate', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['birthDate'] }}</span>
-            <label>扶養に入った日（認定日）
-              <input type="date" name="dependentCertified" [value]="dependentForm().certifiedDate" (input)="setDependent('certifiedDate', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['certifiedDate'] }}</span>
-            <p class="help">被扶養者の有無で健康保険料は変わりません。特定被保険者制度のある組合健保では、40〜64歳の被扶養者がいると、本人が40歳未満・65歳以上でも介護保険料がかかります。</p>
-          }
-          @case ('dependentRemove') {
-            <h2>扶養から外す（{{ dependentName(editingDependentId()) }}さん）</h2>
-            <label>扶養から外れた日
-              <input type="date" name="dependentRemoved" [value]="date()" (input)="date.set($any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['removedDate'] }}</span>
-          }
-          @case ('exemption') {
-            <h2>適用除外を追加</h2>
-            <label>種類
-              <select name="exemptionType" [value]="exemptionForm().type" (change)="setExemption('type', $any($event.target).value)">
-                @for (t of exemptionTypes; track t) {
-                  <option [value]="t">{{ exemptionLabel[t] }}</option>
-                }
-              </select>
-            </label>
-            <p class="help">0円にする保険：{{ exemptionTargets[exemptionForm().type] }}。社会保障協定で年金と医療保険の両方が免除される人は、2件登録します。</p>
-            <label>該当年月日（届出に書く日）
-              <input type="date" name="exemptionStart" [value]="exemptionForm().startDate" (input)="setExemption('startDate', $any($event.target).value)" />
-            </label>
-            <span class="help">{{ exemptionHint[exemptionForm().type] }}</span>
-            <span class="err">{{ errors()['startDate'] }}</span>
-            <label>非該当年月日（未定なら空欄）
-              <input type="date" name="exemptionEnd" [value]="exemptionForm().endDate" (input)="setExemption('endDate', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['endDate'] }}</span>
-            <p class="help">該当年月日の月から0円にし、非該当年月日の月から元に戻します。75歳以上は年齢で自動で判定するので登録しません。</p>
-          }
-          @case ('exemptionEnd') {
-            <h2>適用除外の非該当年月日</h2>
-            <p>{{ exemptionLabel[exemptionForm().type] }}（該当年月日 {{ exemptionForm().startDate }}）</p>
-            <label>非該当年月日（未定なら空欄）
-              <input type="date" name="exemptionEnd" [value]="exemptionForm().endDate" (input)="setExemption('endDate', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['endDate'] }}{{ errors()['startDate'] }}</span>
-          }
-          @case ('insuredType') {
-            <h2>被保険者区分を変える</h2>
-            <label>変わった日
-              <input type="date" name="insuredTypeDate" [value]="date()" (input)="date.set($any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['insuredTypeDate'] }}</span>
-            <label>新しい区分
-              <select name="insuredType" [value]="insuredType()" (change)="insuredType.set($any($event.target).value)">
-                @for (t of insuredTypeKeys; track t) {
-                  <option [value]="t">{{ insuredTypeLabel[t] }}</option>
-                }
-              </select>
-            </label>
-            <p class="help">労働時間や日数の変更で区分が変わったときに登録します。随時改定・定時決定では、各月の給与の締め日時点の区分で、支払基礎日数の基準（短時間労働者は11日、ほかは17日）を選びます。</p>
-          }
-          @case ('standard') {
-            <h2>標準報酬月額を追加</h2>
-            <label>適用開始月
-              <input type="month" [value]="standardForm().validFrom" (input)="setStandardText('validFrom', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['validFrom'] }}</span>
-            <label>決定の理由
-              <select [value]="standardForm().reason" (change)="setStandardText('reason', $any($event.target).value)">
-                @for (k of standardReasonKeys; track k) {
-                  <option [value]="k">{{ standardReasons[k] }}</option>
-                }
-              </select>
-            </label>
-            <label>報酬月額（円・任意）
-              <span class="row">
-                <input inputmode="numeric" [value]="remuneration() ?? ''" (input)="setRemuneration($any($event.target).value)" />
-                <button type="button" class="secondary" (click)="suggest()">提案を入力</button>
-              </span>
-            </label>
-            <span class="err">{{ errors()['remuneration'] }}</span>
-            <label>健康保険の標準報酬月額（円）
-              <input inputmode="numeric" [value]="standardForm().healthStandard ?? ''" (input)="setStandard('healthStandard', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['healthStandard'] }}</span>
-            <label>厚生年金の標準報酬月額（円）
-              <input inputmode="numeric" [value]="standardForm().pensionStandard ?? ''" (input)="setStandard('pensionStandard', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['pensionStandard'] }}</span>
-            <label class="check">
-              <input type="checkbox" name="multiOffice" [checked]="multiOffice()" (change)="multiOffice.set($any($event.target).checked)" />
-              二以上事業所勤務（ほかの適用事業所・会社でも被保険者になっている）
-            </label>
-            @if (multiOffice()) {
-              <label>自社の報酬（円）
-                <input inputmode="numeric" name="ownRemuneration" [value]="standardForm().ownRemuneration ?? ''" (input)="setMultiAmount('ownRemuneration', $any($event.target).value)" />
+          <button type="button" class="secondary" (click)="open('insuredType')">被保険者区分を変える</button>
+          <button type="button" class="secondary" (click)="open('payrollGroup')">支払区分を変える</button>
+        </div>
+      </header>
+      @if (modeCard() === 'qual') { <ng-container *ngTemplateOutlet="editForm" /> }
+      <h3>資格の期間</h3>
+      <div class="table-wrap">
+        <table class="list">
+          <thead><tr><th>資格取得日</th><th>資格喪失日</th><th>喪失の理由</th></tr></thead>
+          <tbody>
+            @for (q of sortedQualifications(); track q.id) {
+              <tr>
+                <td>{{ q.acquiredDate | ymd }}</td>
+                <td>{{ (q.lostDate ?? '（加入中）') | ymd }}</td>
+                <td>{{ q.lostReason ? (lostReasons[q.lostReason] ?? q.lostReason) : '' }}</td>
+              </tr>
+            } @empty {
+              <tr><td colspan="3">社会保険に加入していません。</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      @if (sameMonth().length > 0) {
+        <h3>同月得喪</h3>
+        <p class="help">
+          同じ月に資格を取得・喪失したため、その月の保険料が1か月分かかっています。
+          その後、同じ月に国民年金や他社の厚生年金に加入すると、厚生年金保険料が日本年金機構から還付されます。還付されたら、本人負担分を本人に返してください。
+        </p>
+        <div class="table-wrap">
+          <table class="list same-month">
+            <thead><tr><th>保険料の月</th><th>資格の期間</th><th>厚生年金の本人負担</th><th>還付の状態</th></tr></thead>
+            <tbody>
+              @for (c of sameMonth(); track c.qualification.id) {
+                <tr>
+                  <td>{{ c.yearMonth | ym }}</td>
+                  <td>{{ c.qualification.acquiredDate | ymd }} 〜 {{ c.qualification.lostDate | ymd }}（喪失日）</td>
+                  <td class="num">{{ c.pension === null ? '—' : c.pension.toLocaleString('ja-JP') + '円' }}</td>
+                  <td>
+                    <select [name]="'refund_' + c.qualification.id" [value]="c.status" [disabled]="saving()"
+                      (change)="setRefundStatus(c.qualification.id, $any($event.target).value)">
+                      @for (k of refundKeys; track k) { <option [value]="k" [selected]="k === c.status">{{ refundLabels[k] }}</option> }
+                    </select>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </div>
+        <p class="hint">還付額の計算はしません（日本年金機構の通知で確かめてください）。「還付待ち」の間は、トップの要確認に出ます。</p>
+      }
+
+      <h3>被保険者区分</h3>
+      <div class="table-wrap">
+        <table class="list insured-types">
+          <thead><tr><th>開始日</th><th>区分</th></tr></thead>
+          <tbody>
+            @for (t of sortedInsuredTypes(); track t.id) {
+              <tr><td>{{ t.validFrom | ym }}</td><td>{{ insuredTypeLabel[t.type] }}</td></tr>
+            } @empty {
+              <tr><td colspan="2">登録されていません（一般被保険者として扱います）。</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      @if (d.eligibility; as el) {
+        <h3>入社時の加入対象の判定</h3>
+        <div class="eligibility">
+          <p>
+            {{ employmentTypeLabel[el.employmentType] }}・週{{ el.weeklyHours }}時間・月{{ el.monthlyDays }}日
+            @if (el.contractEnd) {・契約の終わり {{ el.contractEnd }}（{{ el.renewalExpected ? '更新の見込みあり' : '更新の見込みなし' }}）}
+            @if (el.isStudent) {・昼間の学生}
+          </p>
+          <p><strong>示した候補：{{ candidateLabel[el.candidate] }}</strong></p>
+          <ul>@for (r of el.reasons; track r) { <li>{{ r }}</li> }</ul>
+        </div>
+      }
+
+      <h3>給与の支払区分</h3>
+      <div class="table-wrap">
+        <table class="list payroll-assignments">
+          <thead><tr><th>開始日</th><th>支払区分</th></tr></thead>
+          <tbody>
+            @for (a of sortedPayrollAssignments(); track a.validFrom) {
+              <tr><td>{{ a.validFrom | ym }}</td><td>{{ groupName(a.payrollGroupId) }}</td></tr>
+            } @empty {
+              <tr><td colspan="2">登録されていません（「{{ currentPayrollGroup().name }}」として扱います）。</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <h3>所属する適用事業所</h3>
+      <div class="table-wrap">
+        <table class="list">
+          <thead><tr><th>開始日</th><th>適用事業所</th></tr></thead>
+          <tbody>
+            @for (a of sortedAssignments(); track a.id) {
+              <tr><td>{{ a.validFrom | ym }}</td><td>{{ officeName(a.officeId) }}</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+    </section>
+
+    <section class="card" id="card-standard">
+      <header>
+        <h2>標準報酬月額</h2>
+        <div class="actions">
+          <button type="button" class="secondary" (click)="open('standard')">標準報酬月額を追加</button>
+        </div>
+      </header>
+      @if (modeCard() === 'standard') { <ng-container *ngTemplateOutlet="editForm" /> }
+    
+      <div class="table-wrap">
+        <table class="list">
+          <thead><tr><th>適用開始月</th><th>理由</th><th>健康保険</th><th>厚生年金</th><th>報酬月額</th><th>二以上事業所勤務</th></tr></thead>
+          <tbody>
+            @for (s of sortedStandards(); track s.id) {
+              <tr>
+                <td>{{ s.validFrom | ym }}</td>
+                <td>
+                  {{ $any(standardReasons)[s.reason] ?? s.reason }}
+                  @if (s.provisional) {
+                    <span class="badge warn">通知書待ち</span>
+                    <button type="button" class="secondary" (click)="openConfirm(s.id)">通知書の値で確定</button>
+                  }
+                </td>
+                <td class="num">{{ man(s.healthStandard) }}</td>
+                <td class="num">{{ man(s.pensionStandard) }}</td>
+                <td class="num">
+                  {{ s.remuneration === null ? '' : s.remuneration.toLocaleString('ja-JP') }}
+                  @if (breakdownText(s.remunerationBreakdown); as t) { <span class="breakdown-text">{{ t }}</span> }
+                </td>
+                <td>{{ multiLabel(s) }}</td>
+              </tr>
+            } @empty {
+              <tr><td colspan="6">登録されていません。</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+    </section>
+
+    <section class="card" id="card-leave">
+      <header>
+        <h2>休業・休職</h2>
+        <div class="actions">
+          <button type="button" class="secondary" (click)="open('leave')">休業を追加</button>
+          <button type="button" class="secondary" (click)="open('absence')">休職を追加</button>
+        </div>
+      </header>
+      @if (modeCard() === 'leave') { <ng-container *ngTemplateOutlet="editForm" /> }
+      <h3>産前産後休業・育児休業</h3>
+      <div class="table-wrap">
+        <table class="list">
+          <thead><tr><th>種類</th><th>開始日</th><th>終了日</th><th>就業日数</th><th>取得者申出書</th><th></th></tr></thead>
+          <tbody>
+            @for (l of sortedLeaves(); track l.id) {
+              <tr class="leave-row">
+                <td>{{ l.type === 'maternity' ? '産前産後休業' : '育児休業' }}</td>
+                <td>{{ l.startDate | ymd }}</td>
+                <td>{{ (l.endDate ?? '（休業中）') | ymd }}</td>
+                <td class="num">{{ l.workedDays ?? '' }}</td>
+                <td>
+                  @if (leaveFiled(l.startDate)) {
+                    <span class="badge">届出済み</span>
+                    <button type="button" class="link" [disabled]="saving()" (click)="toggleLeaveFiled(l.startDate)">未対応に戻す</button>
+                  } @else {
+                    <span class="badge pending">申出待ち</span>
+                    <button type="button" class="secondary" [disabled]="saving()" (click)="toggleLeaveFiled(l.startDate)">届出済みにする</button>
+                  }
+                </td>
+                <td><button type="button" class="secondary" (click)="open({ leaveId: l.id })">期間を変更</button></td>
+              </tr>
+            } @empty {
+              <tr><td colspan="6">登録されていません。</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <p class="hint">保険料の免除は、休業を登録すると計算に反映されます。取得者申出書を届け出たら「届出済みにする」を押してください（届出の画面と同じ記録です）。それまで一覧では「申出待ち」と表示します。</p>
+
+      <h3>休職</h3>
+      <div class="table-wrap">
+        <table class="list absences">
+          <thead><tr><th>理由</th><th>期間</th><th></th></tr></thead>
+          <tbody>
+            @for (a of sortedAbsences(); track a.id) {
+              <tr>
+                <td>{{ absenceReasonLabel[a.reason] }}</td>
+                <td>{{ absencePeriod(a) }}</td>
+                <td><button type="button" class="secondary" (click)="open({ absenceId: a.id })">期間を変更</button></td>
+              </tr>
+            } @empty {
+              <tr><td colspan="3">登録されていません。</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="hint">休職中も保険料は通常どおりかかります（免除はありません）。給与から控除しきれない月は、月次保険料一覧・トップに控除不足として出ます。</p>
+
+    </section>
+
+    <section class="card" id="card-family">
+      <header>
+        <h2>被扶養者・適用除外</h2>
+        <div class="actions">
+          <button type="button" class="secondary" (click)="open('dependent')">被扶養者を追加</button>
+          <button type="button" class="secondary" (click)="open('exemption')">適用除外を追加</button>
+        </div>
+      </header>
+      @if (modeCard() === 'family') { <ng-container *ngTemplateOutlet="editForm" /> }
+      <h3>被扶養者</h3>
+      <div class="table-wrap">
+        <table class="list dependents">
+          <thead><tr><th>氏名</th><th>生年月日</th><th>扶養に入った日</th><th>扶養から外れた日</th><th>被扶養者異動届の期限</th><th>介護保険の適用除外</th><th></th></tr></thead>
+          <tbody>
+            @for (x of sortedDependents(); track x.id) {
+              @let out = outNow(x);
+              <tr [class.muted]="out !== null">
+                <td>{{ x.name }}</td>
+                <td>{{ x.birthDate | ymd }}</td>
+                <td>{{ x.certifiedDate | ymd }}</td>
+                <td>
+                  @if (out === null) { （扶養中） } @else { {{ out.date | ymd }}@if (out.reason === 'age75') {<div class="note">75歳到達（後期高齢者医療へ）</div>} }
+                </td>
+                <td>{{ (dependentDeadline(out?.date ?? x.certifiedDate)) | ymd }}まで</td>
+                <td class="care-exemptions">
+                  @for (c of x.careExemptions ?? []; track c.startDate; let i = $index) {
+                    <div>
+                      {{ careExemptionLabel(c) }}
+                      @if (c.endDate === null) {
+                        <button type="button" class="link small" (click)="openDependentExemptionEnd(x.id, i)">非該当年月日を入れる</button>
+                      }
+                    </div>
+                  } @empty {
+                    <span class="muted">なし</span>
+                  }
+                </td>
+                <td class="actions">
+                  @if (out === null) {
+                    <button type="button" class="secondary" (click)="openDependentRemove(x.id)">扶養から外す</button>
+                    <button type="button" class="secondary" (click)="openDependentExemption(x.id)">介護保険の適用除外を追加</button>
+                  }
+                </td>
+              </tr>
+            } @empty {
+              <tr><td colspan="7">登録されていません。</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+      <h3>適用除外</h3>
+      <div class="table-wrap">
+        <table class="list exemptions">
+          <thead><tr><th>種類</th><th>0円にする保険</th><th>該当年月日</th><th>非該当年月日</th><th>届け出ること</th><th></th></tr></thead>
+          <tbody>
+            @for (x of sortedExemptions(); track x.id) {
+              <tr>
+                <td>{{ exemptionLabel[x.type] }}</td>
+                <td>{{ exemptionTargets[x.type] }}</td>
+                <td>{{ x.startDate | ymd }}</td>
+                <td>{{ (x.endDate ?? '（該当中）') | ymd }}</td>
+                <td>{{ exemptionNotice(x.type, x.startDate).name }}：{{ exemptionNotice(x.type, x.startDate).deadline | ymd }}</td>
+                <td><button type="button" class="secondary" (click)="openExemptionEnd(x.id)">{{ x.endDate ? '非該当年月日を直す' : '非該当年月日を入れる' }}</button></td>
+              </tr>
+            } @empty {
+              <tr><td colspan="6">登録されていません。</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
+
+    </section>
+
+    <section class="card" id="card-history">
+      <header><h2>直近12か月の保険料</h2></header>
+    
+      <div class="table-wrap">
+        <table class="list">
+          <thead><tr><th>月</th><th>適用事業所</th><th>健康保険</th><th>介護保険</th><th>支援金</th><th>厚生年金</th><th>本人負担計</th><th>会社負担計</th><th>備考</th></tr></thead>
+          <tbody>
+            @for (r of history(); track r.yearMonth) {
+              <tr [class.muted]="r.status === 'notInsured'">
+                <td>{{ r.yearMonth | ym }}</td>
+                <td>{{ r.officeId ? officeName(r.officeId) : '' }}</td>
+                <td class="num">{{ yen(r.premium?.health?.employeeYen) }}</td>
+                <td class="num">{{ yen(r.premium?.care?.employeeYen) }}</td>
+                <td class="num">{{ yen(r.premium?.childSupport?.employeeYen) }}</td>
+                <td class="num">{{ yen(r.premium?.pension?.employeeYen) }}</td>
+                <td class="num strong">{{ employeeTotal(r) }}</td>
+                <td class="num">{{ employerTotal(r) }}</td>
+                <td>{{ historyNote(r) }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+      </div>
+      <p class="help">各保険の欄は本人負担です。会社負担は円未満を切り捨てて表示しています。</p>
+
+    </section>
+
+    @if (isAdmin()) {
+      <h2>誤登録の削除</h2>
+      <p class="help">
+        誤って登録した従業員を、給与・賞与などと一緒に削除します。月次確定に一度も含まれていない人だけ削除できます（含まれている人は、退職として登録してください）。
+        退職者の個人データは、最後の月次確定から保管期間（設定に表示）がたつと自動で消去されます。
+      </p>
+      @if (deleteError()) {
+        <p class="error">{{ deleteError() }}</p>
+      }
+      <div class="actions">
+        <button type="button" class="danger" [disabled]="saving()" (click)="deleteMistaken()">誤登録として削除</button>
+      </div>
+    }
+    <ng-template #editForm>
+        <form class="form" (submit)="save($event)">
+          @switch (mode()) {
+            @case ('retire') {
+              <h2>退職を登録</h2>
+              <label>退職日
+                <input type="date" [value]="date()" (input)="date.set($any($event.target).value)" />
               </label>
-              <span class="err">{{ errors()['ownRemuneration'] }}</span>
-              <label>全事業所の合計の報酬（円）
-                <input inputmode="numeric" name="totalRemuneration" [value]="standardForm().totalRemuneration ?? ''" (input)="setMultiAmount('totalRemuneration', $any($event.target).value)" />
+              <p class="help">資格喪失日は退職日の翌日になります。喪失日の属する月から保険料がかかりません。</p>
+              @if (retirePreview(); as p) {
+                <div class="retire-preview">
+                  <p>資格喪失日：<strong>{{ p.lostDate | ymd }}</strong></p>
+                  <p>
+                    @if (p.retireMonthCharged) {
+                      月末の退職のため、退職月（{{ monthJa(p.lastPremiumMonth) }}）の保険料も<strong>かかります</strong>。
+                    } @else {
+                      月の途中の退職のため、退職月の保険料は<strong>かかりません</strong>（{{ monthJa(p.lastPremiumMonth) }}分まで）。
+                    }
+                  </p>
+                  <p>
+                    最終給与（{{ monthJa(p.finalPayMonth) }}支給）で、{{ p.finalPremiumMonths.map(monthJa).join('・') }}分を控除します
+                    @if (p.finalPremiumMonths.length === 2) { <span class="badge pending">最終給与で2か月分控除</span> }
+                  </p>
+                  <p class="hint">資格喪失届の期限は、資格喪失日から5日以内です。控除しきれないときは、控除不足として表示されます。</p>
+                </div>
+              }
+              <span class="err">{{ errors()['retirementDate'] }}</span>
+            }
+            @case ('loss') {
+              <h2>退職以外の資格喪失</h2>
+              <label>資格喪失日
+                <input type="date" [value]="date()" (input)="date.set($any($event.target).value)" />
               </label>
-              <span class="err">{{ errors()['totalRemuneration'] }}</span>
-              <label>本人が選んだ保険者
-                <select name="selectedInsurer" [value]="standardForm().selectedInsurerId ?? ''" (change)="setSelectedInsurer($any($event.target).value)">
+              <span class="err">{{ errors()['lostDate'] }}</span>
+              <label>理由
+                <select [value]="reason()" (change)="reason.set($any($event.target).value)">
                   <option value="">選んでください</option>
-                  @for (i of masters()?.insurers ?? []; track i.id) {
-                    <option [value]="i.id">{{ i.name }}</option>
+                  @for (k of lostReasonKeys; track k) {
+                    <option [value]="k">{{ lostReasons[k] }}</option>
                   }
                 </select>
               </label>
-              <span class="err">{{ errors()['selectedInsurerId'] }}</span>
-              <p class="help">決定通知書や他社との情報共有の値を入れます。保険料は、全額 × 自社の報酬 ÷ 合計の報酬で自社の分を求めます。他社の組合健保を選んだときは、設定画面でその保険者と料率を登録してください。</p>
+              <span class="err">{{ errors()['reason'] }}</span>
             }
-          }
-          @default {
-            <h2>{{ mode() === 'leave' ? '休業を追加' : '休業の期間を変更' }}</h2>
-            @if (mode() === 'leave') {
-              <label>種類
-                <select [value]="leaveForm().type" (change)="setLeave('type', $any($event.target).value)">
-                  <option value="childcare">育児休業</option>
-                  <option value="maternity">産前産後休業</option>
+            @case ('reacquire') {
+              <h2>{{ d.qualifications.length ? '再加入を登録' : '加入を登録' }}</h2>
+              <label>資格取得日
+                <input type="date" [value]="date()" (input)="date.set($any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['acquiredDate'] }}</span>
+            }
+            @case ('transfer') {
+              <h2>異動を登録</h2>
+              <label>異動日
+                <input type="date" [value]="date()" (input)="date.set($any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['transferDate'] }}</span>
+              <label>異動先の適用事業所
+                <select [value]="officeId()" (change)="officeId.set($any($event.target).value)">
+                  <option value="">選んでください</option>
+                  @for (o of masters()?.offices ?? []; track o.id) {
+                    <option [value]="o.id">{{ o.name }}</option>
+                  }
                 </select>
               </label>
-              <label>開始日
-                <input type="date" [value]="leaveForm().startDate" (input)="setLeave('startDate', $any($event.target).value)" />
+              <span class="err">{{ errors()['officeId'] }}</span>
+              <p class="help">異動先では、異動日の月から標準報酬月額を登録し直します（今の額を入れてあります）。</p>
+              <label>健康保険の標準報酬月額（円）
+                <input inputmode="numeric" [value]="standardForm().healthStandard ?? ''" (input)="setStandard('healthStandard', $any($event.target).value)" />
               </label>
-            } @else {
-              <p>開始日 {{ leaveForm().startDate }}</p>
+              <span class="err">{{ errors()['healthStandard'] }}</span>
+              <label>厚生年金の標準報酬月額（円）
+                <input inputmode="numeric" [value]="standardForm().pensionStandard ?? ''" (input)="setStandard('pensionStandard', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['pensionStandard'] }}{{ errors()['validFrom'] }}</span>
             }
-            <span class="err">{{ errors()['startDate'] }}</span>
-            <label>終了日（未定なら空欄）
-              <input type="date" [value]="leaveForm().endDate" (input)="setLeave('endDate', $any($event.target).value)" />
-            </label>
-            <span class="err">{{ errors()['endDate'] }}</span>
-            @if (leaveForm().type === 'childcare') {
-              <label>休業中に就業した日数（産後パパ育休のみ・任意）
-                <input type="number" min="0" [value]="leaveForm().workedDays ?? ''" (input)="setWorkedDays($any($event.target).value)" />
+            @case ('name') {
+              <h2>氏名を変更</h2>
+              <label>新しい氏名
+                <input name="newName" [value]="nameForm()" (input)="nameForm.set($any($event.target).value)" />
               </label>
-              <span class="err">{{ errors()['workedDays'] }}</span>
+              <span class="err">{{ errors()['name'] }}</span>
+              <p class="help">結婚などで氏名が変わったとき・登録の誤りを直すときに使います。確定済みの月の記録は、確定したときの氏名のまま残ります。</p>
+            }
+            @case ('employeeNumber') {
+              <h2>社員番号を変更</h2>
+              <label>新しい社員番号
+                <input name="newEmployeeNumber" data-halfwidth [value]="numberForm()" (input)="numberForm.set($any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['employeeNumber'] }}</span>
+              <p class="help">半角英数字とハイフンで20文字以内。ほかの従業員と同じ番号は使えません。給与・賞与などの記録はそのまま引き継がれ、確定済みの月の記録は確定したときの社員番号のまま残ります。給与ソフトの社員番号も同じ番号に変えてください（CSVの取り込みは社員番号で照らし合わせるため）。</p>
+            }
+            @case ('dependent') {
+              <h2>被扶養者を追加</h2>
+              <label>氏名
+                <input name="dependentName" [value]="dependentForm().name" (input)="setDependent('name', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['name'] }}</span>
+              <label>生年月日
+                <input type="date" name="dependentBirth" [max]="todayDate" [value]="dependentForm().birthDate" (input)="setDependent('birthDate', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['birthDate'] }}</span>
+              <label>扶養に入った日（認定日）
+                <input type="date" name="dependentCertified" [value]="dependentForm().certifiedDate" (input)="setDependent('certifiedDate', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['certifiedDate'] }}</span>
+              <p class="help">被扶養者の有無で健康保険料は変わりません。特定被保険者制度のある組合健保では、40〜64歳の被扶養者がいると、本人が40歳未満・65歳以上でも介護保険料がかかります。</p>
+            }
+            @case ('dependentRemove') {
+              <h2>扶養から外す（{{ dependentName(editingDependentId()) }}さん）</h2>
+              <label>扶養から外れた日
+                <input type="date" name="dependentRemoved" [value]="date()" (input)="date.set($any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['removedDate'] }}</span>
+            }
+            @case ('dependentExemption') {
+              <h2>介護保険の適用除外を追加（{{ dependentName(editingDependentId()) }}さん）</h2>
+              <label>該当年月日
+                <input type="date" name="depExemptionStart" [value]="depExemptionForm().startDate" (input)="setDepExemption('startDate', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['startDate'] }}</span>
+              <label>非該当年月日（該当中なら空欄）
+                <input type="date" name="depExemptionEnd" [value]="depExemptionForm().endDate" (input)="setDepExemption('endDate', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['endDate'] }}</span>
+              <p class="help">国外転出・適用除外施設への入所は、その日の翌日が該当年月日です。帰国して住所を持った日・施設の退所日が非該当年月日です。</p>
+              <p class="help">特定被保険者制度のある組合健保では、この期間はこの人を40〜64歳の被扶養者として数えません（該当年月日の月から、非該当年月日の月の前月まで）。</p>
+            }
+            @case ('dependentExemptionEnd') {
+              <h2>介護保険の適用除外の非該当年月日（{{ dependentName(editingDependentId()) }}さん・{{ depExemptionForm().startDate | ymd }}から）</h2>
+              <label>非該当年月日
+                <input type="date" name="depExemptionEnd" [value]="depExemptionForm().endDate" (input)="setDepExemption('endDate', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['endDate'] }}{{ errors()['startDate'] }}</span>
+              <p class="help">帰国して住所を持った日・施設の退所日です。この日の月から、40〜64歳の被扶養者としてまた数えます。</p>
+            }
+            @case ('exemption') {
+              <h2>適用除外を追加</h2>
+              <label>種類
+                <select name="exemptionType" [value]="exemptionForm().type" (change)="setExemption('type', $any($event.target).value)">
+                  @for (t of exemptionTypes; track t) {
+                    <option [value]="t">{{ exemptionLabel[t] }}</option>
+                  }
+                </select>
+              </label>
+              <p class="help">0円にする保険：{{ exemptionTargets[exemptionForm().type] }}。社会保障協定で年金と医療保険の両方が免除される人は、2件登録します。</p>
+              <label>該当年月日（届出に書く日）
+                <input type="date" name="exemptionStart" [value]="exemptionForm().startDate" (input)="setExemption('startDate', $any($event.target).value)" />
+              </label>
+              <span class="help">{{ exemptionHint[exemptionForm().type] }}</span>
+              <span class="err">{{ errors()['startDate'] }}</span>
+              <label>非該当年月日（未定なら空欄）
+                <input type="date" name="exemptionEnd" [value]="exemptionForm().endDate" (input)="setExemption('endDate', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['endDate'] }}</span>
+              <p class="help">該当年月日の月から0円にし、非該当年月日の月から元に戻します。75歳以上は年齢で自動で判定するので登録しません。</p>
+            }
+            @case ('exemptionEnd') {
+              <h2>適用除外の非該当年月日</h2>
+              <p>{{ exemptionLabel[exemptionForm().type] }}（該当年月日 {{ exemptionForm().startDate | ymd }}）</p>
+              <label>非該当年月日（未定なら空欄）
+                <input type="date" name="exemptionEnd" [value]="exemptionForm().endDate" (input)="setExemption('endDate', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['endDate'] }}{{ errors()['startDate'] }}</span>
+            }
+            @case ('insuredType') {
+              <h2>被保険者区分を変える</h2>
+              <label>変わった日
+                <input type="date" name="insuredTypeDate" [value]="date()" (input)="date.set($any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['insuredTypeDate'] }}</span>
+              <label>新しい区分
+                <select name="insuredType" [value]="insuredType()" (change)="insuredType.set($any($event.target).value)">
+                  @for (t of insuredTypeKeys; track t) {
+                    <option [value]="t">{{ insuredTypeLabel[t] }}</option>
+                  }
+                </select>
+              </label>
+              <p class="help">労働時間や日数の変更で区分が変わったときに登録します。随時改定・定時決定では、各月の給与の締め日時点の区分で、支払基礎日数の基準（短時間労働者は11日、ほかは17日）を選びます。</p>
+            }
+            @case ('payrollGroup') {
+              <h2>給与の支払区分を変える</h2>
+              <label>変わった日
+                <input type="date" name="payrollDate" [value]="date()" (input)="date.set($any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['payrollDate'] }}</span>
+              <label>新しい支払区分
+                <select name="payrollGroup" (change)="payrollGroupId.set($any($event.target).value)">
+                  @for (g of payrollGroups(); track g.id) {
+                    <option [value]="g.id" [selected]="payrollGroupId() === g.id">{{ g.name }}（{{ groupLabel(g) }}）</option>
+                  }
+                </select>
+              </label>
+              <p class="help">月給からパートになったときなどに登録します。変わった日以後の給与の締め日・控除する月は、新しい区分で決まります。</p>
+            }
+            @case ('standard') {
+              <h2>標準報酬月額を追加</h2>
+              <label>適用開始月
+                <input type="month" [value]="standardForm().validFrom" (input)="setStandardText('validFrom', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['validFrom'] }}</span>
+              <label>決定の理由
+                <select [value]="standardForm().reason" (change)="setStandardText('reason', $any($event.target).value)">
+                  @for (k of standardReasonKeys; track k) {
+                    <option [value]="k">{{ standardReasons[k] }}</option>
+                  }
+                </select>
+              </label>
+              @if (standardForm().reason === 'acquisition') {
+                <fieldset class="breakdown">
+                  <legend>報酬月額の内訳（円・任意。入れると合計が報酬月額になります）</legend>
+                  @for (k of breakdownKeys; track k) {
+                    <label>{{ breakdownLabel[k] }}
+                      <input inputmode="numeric" [name]="'breakdown-' + k" [value]="breakdown()[k] ?? ''" (input)="setBreakdown(k, $any($event.target).value)" />
+                    </label>
+                    <span class="err">{{ errors()[k] }}</span>
+                  }
+                  <p class="total">報酬月額 {{ remuneration() === null ? '―' : remuneration()!.toLocaleString('ja-JP') + '円' }}
+                    <button type="button" class="secondary" (click)="suggest()">提案を入力</button>
+                  </p>
+                </fieldset>
+              } @else {
+                <label>報酬月額（円・任意）
+                  <span class="row">
+                    <input inputmode="numeric" [value]="remuneration() ?? ''" (input)="setRemuneration($any($event.target).value)" />
+                    <button type="button" class="secondary" (click)="suggest()">提案を入力</button>
+                  </span>
+                </label>
+              }
+              <span class="err">{{ errors()['remuneration'] }}</span>
+              <label>健康保険の標準報酬月額（円）
+                <input inputmode="numeric" [value]="standardForm().healthStandard ?? ''" (input)="setStandard('healthStandard', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['healthStandard'] }}</span>
+              <label>厚生年金の標準報酬月額（円）
+                <input inputmode="numeric" [value]="standardForm().pensionStandard ?? ''" (input)="setStandard('pensionStandard', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['pensionStandard'] }}</span>
+              <label class="check">
+                <input type="checkbox" name="provisional" [checked]="standardForm().provisional === true" (change)="setProvisional($any($event.target).checked)" />
+                通知書待ち（決定通知書が届く前に、見込みの額を先に登録する）
+              </label>
+              <label class="check">
+                <input type="checkbox" name="multiOffice" [checked]="multiOffice()" (change)="multiOffice.set($any($event.target).checked)" />
+                二以上事業所勤務（ほかの適用事業所・会社でも被保険者になっている）
+              </label>
+              @if (multiOffice()) {
+                <label>自社の報酬（円）
+                  <input inputmode="numeric" name="ownRemuneration" [value]="standardForm().ownRemuneration ?? ''" (input)="setMultiAmount('ownRemuneration', $any($event.target).value)" />
+                </label>
+                <span class="err">{{ errors()['ownRemuneration'] }}</span>
+                <label>全事業所の合計の報酬（円）
+                  <input inputmode="numeric" name="totalRemuneration" [value]="standardForm().totalRemuneration ?? ''" (input)="setMultiAmount('totalRemuneration', $any($event.target).value)" />
+                </label>
+                <span class="err">{{ errors()['totalRemuneration'] }}</span>
+                <label>本人が選んだ保険者
+                  <select name="selectedInsurer" [value]="standardForm().selectedInsurerId ?? ''" (change)="setSelectedInsurer($any($event.target).value)">
+                    <option value="">選んでください</option>
+                    @for (i of masters()?.insurers ?? []; track i.id) {
+                      <option [value]="i.id">{{ i.name }}</option>
+                    }
+                  </select>
+                </label>
+                <span class="err">{{ errors()['selectedInsurerId'] }}</span>
+                <p class="help">決定通知書や他社との情報共有の値を入れます。保険料は、全額 × 自社の報酬 ÷ 合計の報酬で自社の分を求めます。他社の組合健保を選んだときは、設定画面でその保険者と料率を登録してください。</p>
+              }
+            }
+            @case ('confirmStandard') {
+              <h2>通知書の値で確定</h2>
+              <p>{{ confirmTarget()?.validFrom | ym }}分から（通知書待ちで登録した額：健保 {{ man(confirmTarget()?.healthStandard ?? 0) }}／厚年 {{ man(confirmTarget()?.pensionStandard ?? 0) }}）</p>
+              <label>健康保険の標準報酬月額（円）
+                <input inputmode="numeric" name="confirmHealth" [value]="standardForm().healthStandard ?? ''" (input)="setStandard('healthStandard', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['healthStandard'] }}</span>
+              <label>厚生年金の標準報酬月額（円）
+                <input inputmode="numeric" name="confirmPension" [value]="standardForm().pensionStandard ?? ''" (input)="setStandard('pensionStandard', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['pensionStandard'] }}</span>
+              <p class="help">決定通知書の値を入れて保存すると、「通知書待ち」が外れます。額が変わり、その月がすでに確定済みなら、差額の画面にさかのぼる改定の差額が出ます。</p>
+            }
+            @default {
+             @if (absenceMode()) {
+              <h2>{{ mode() === 'absence' ? '休職を追加' : '休職の期間を変更' }}</h2>
+              <p class="help">休職には産休・育休のような保険料の免除はありません。保険料は通常どおりかかり、無給の月は控除不足として表示されます。</p>
+              <label>理由
+                <select name="absenceReason" [value]="absenceForm().reason" (change)="setAbsence('reason', $any($event.target).value)">
+                  @for (r of absenceReasons; track r) { <option [value]="r" [selected]="r === absenceForm().reason">{{ absenceReasonLabel[r] }}</option> }
+                </select>
+              </label>
+              <span class="err">{{ errors()['reason'] }}</span>
+              <label>開始日
+                <input type="date" name="absenceStart" [value]="absenceForm().startDate" (input)="setAbsence('startDate', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['startDate'] }}</span>
+              <label>終了日（未定なら空欄）
+                <input type="date" name="absenceEnd" [value]="absenceForm().endDate" (input)="setAbsence('endDate', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['endDate'] }}</span>
+             } @else {
+              <h2>{{ mode() === 'leave' ? '休業を追加' : '休業の期間を変更' }}</h2>
+              @if (mode() === 'leave') {
+                <label>種類
+                  <select [value]="leaveForm().type" (change)="setLeave('type', $any($event.target).value)">
+                    <option value="childcare">育児休業</option>
+                    <option value="maternity">産前産後休業</option>
+                  </select>
+                </label>
+                <label>開始日
+                  <input type="date" [value]="leaveForm().startDate" (input)="setLeave('startDate', $any($event.target).value)" />
+                </label>
+              } @else {
+                <p>開始日 {{ leaveForm().startDate | ymd }}</p>
+              }
+              <span class="err">{{ errors()['startDate'] }}</span>
+              <label>終了日（未定なら空欄）
+                <input type="date" [value]="leaveForm().endDate" (input)="setLeave('endDate', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['endDate'] }}</span>
+              @if (leaveForm().type === 'childcare') {
+                <label>休業中に就業した日数（産後パパ育休のみ・任意）
+                  <input inputmode="numeric" name="workedDays" [value]="leaveForm().workedDays ?? ''" (input)="setWorkedDays($any($event.target).value)" />
+                </label>
+                <span class="err">{{ errors()['workedDays'] }}</span>
+              }
+             }
             }
           }
-        }
-        <span class="err">{{ errors()['form'] }}</span>
-        <div class="actions">
-          <button type="submit" [disabled]="saving()">{{ saving() ? '保存中…' : '保存' }}</button>
-          <button type="button" class="secondary" (click)="cancel()">やめる</button>
-        </div>
-      </form>
-    }
-
-    <h2>資格の期間</h2>
-    <table class="list">
-      <thead><tr><th>資格取得日</th><th>資格喪失日</th><th>喪失の理由</th></tr></thead>
-      <tbody>
-        @for (q of sortedQualifications(); track q.id) {
-          <tr>
-            <td>{{ q.acquiredDate }}</td>
-            <td>{{ q.lostDate ?? '（加入中）' }}</td>
-            <td>{{ q.lostReason ? (lostReasons[q.lostReason] ?? q.lostReason) : '' }}</td>
-          </tr>
-        } @empty {
-          <tr><td colspan="3">社会保険に加入していません。</td></tr>
-        }
-      </tbody>
-    </table>
-
-    <h2>被保険者区分</h2>
-    <table class="list insured-types">
-      <thead><tr><th>開始日</th><th>区分</th></tr></thead>
-      <tbody>
-        @for (t of sortedInsuredTypes(); track t.id) {
-          <tr><td>{{ t.validFrom }}</td><td>{{ insuredTypeLabel[t.type] }}</td></tr>
-        } @empty {
-          <tr><td colspan="2">登録されていません（一般被保険者として扱います）。</td></tr>
-        }
-      </tbody>
-    </table>
-
-    <h2>所属する適用事業所</h2>
-    <table class="list">
-      <thead><tr><th>開始日</th><th>適用事業所</th></tr></thead>
-      <tbody>
-        @for (a of sortedAssignments(); track a.id) {
-          <tr><td>{{ a.validFrom }}</td><td>{{ officeName(a.officeId) }}</td></tr>
-        }
-      </tbody>
-    </table>
-
-    <h2>標準報酬月額</h2>
-    <table class="list">
-      <thead><tr><th>適用開始月</th><th>理由</th><th>健康保険</th><th>厚生年金</th><th>報酬月額</th><th>二以上事業所勤務</th></tr></thead>
-      <tbody>
-        @for (s of sortedStandards(); track s.id) {
-          <tr>
-            <td>{{ s.validFrom }}</td>
-            <td>{{ $any(standardReasons)[s.reason] ?? s.reason }}</td>
-            <td class="num">{{ man(s.healthStandard) }}</td>
-            <td class="num">{{ man(s.pensionStandard) }}</td>
-            <td class="num">{{ s.remuneration === null ? '' : s.remuneration.toLocaleString('ja-JP') }}</td>
-            <td>{{ multiLabel(s) }}</td>
-          </tr>
-        } @empty {
-          <tr><td colspan="6">登録されていません。</td></tr>
-        }
-      </tbody>
-    </table>
-
-    <h2>産前産後休業・育児休業</h2>
-    <table class="list">
-      <thead><tr><th>種類</th><th>開始日</th><th>終了日</th><th>就業日数</th><th></th></tr></thead>
-      <tbody>
-        @for (l of sortedLeaves(); track l.id) {
-          <tr>
-            <td>{{ l.type === 'maternity' ? '産前産後休業' : '育児休業' }}</td>
-            <td>{{ l.startDate }}</td>
-            <td>{{ l.endDate ?? '（休業中）' }}</td>
-            <td class="num">{{ l.workedDays ?? '' }}</td>
-            <td><button type="button" class="secondary" (click)="open({ leaveId: l.id })">期間を変更</button></td>
-          </tr>
-        } @empty {
-          <tr><td colspan="5">登録されていません。</td></tr>
-        }
-      </tbody>
-    </table>
-
-    <h2>被扶養者</h2>
-    <table class="list dependents">
-      <thead><tr><th>氏名</th><th>生年月日</th><th>扶養に入った日</th><th>扶養から外れた日</th><th>被扶養者異動届の期限</th><th></th></tr></thead>
-      <tbody>
-        @for (x of sortedDependents(); track x.id) {
-          <tr [class.muted]="x.removedDate !== null">
-            <td>{{ x.name }}</td>
-            <td>{{ x.birthDate }}</td>
-            <td>{{ x.certifiedDate }}</td>
-            <td>{{ x.removedDate ?? '（扶養中）' }}</td>
-            <td>{{ dependentDeadline(x.removedDate ?? x.certifiedDate) }}まで</td>
-            <td>
-              @if (x.removedDate === null) {
-                <button type="button" class="secondary" (click)="openDependentRemove(x.id)">扶養から外す</button>
-              }
-            </td>
-          </tr>
-        } @empty {
-          <tr><td colspan="6">登録されていません。</td></tr>
-        }
-      </tbody>
-    </table>
-
-    <h2>適用除外</h2>
-    <table class="list exemptions">
-      <thead><tr><th>種類</th><th>0円にする保険</th><th>該当年月日</th><th>非該当年月日</th><th>届け出ること</th><th></th></tr></thead>
-      <tbody>
-        @for (x of sortedExemptions(); track x.id) {
-          <tr>
-            <td>{{ exemptionLabel[x.type] }}</td>
-            <td>{{ exemptionTargets[x.type] }}</td>
-            <td>{{ x.startDate }}</td>
-            <td>{{ x.endDate ?? '（該当中）' }}</td>
-            <td>{{ exemptionNotice(x.type, x.startDate).name }}：{{ exemptionNotice(x.type, x.startDate).deadline }}</td>
-            <td><button type="button" class="secondary" (click)="openExemptionEnd(x.id)">{{ x.endDate ? '非該当年月日を直す' : '非該当年月日を入れる' }}</button></td>
-          </tr>
-        } @empty {
-          <tr><td colspan="6">登録されていません。</td></tr>
-        }
-      </tbody>
-    </table>
-
-    <h2>直近12か月の保険料</h2>
-    <table class="list">
-      <thead><tr><th>月</th><th>適用事業所</th><th>健康保険</th><th>介護保険</th><th>支援金</th><th>厚生年金</th><th>本人負担計</th><th>会社負担計</th><th>備考</th></tr></thead>
-      <tbody>
-        @for (r of history(); track r.yearMonth) {
-          <tr [class.muted]="r.status === 'notInsured'">
-            <td>{{ r.yearMonth }}</td>
-            <td>{{ r.officeId ? officeName(r.officeId) : '' }}</td>
-            <td class="num">{{ yen(r.premium?.health?.employeeYen) }}</td>
-            <td class="num">{{ yen(r.premium?.care?.employeeYen) }}</td>
-            <td class="num">{{ yen(r.premium?.childSupport?.employeeYen) }}</td>
-            <td class="num">{{ yen(r.premium?.pension?.employeeYen) }}</td>
-            <td class="num strong">{{ employeeTotal(r) }}</td>
-            <td class="num">{{ employerTotal(r) }}</td>
-            <td>{{ historyNote(r) }}</td>
-          </tr>
-        }
-      </tbody>
-    </table>
-    <p class="help">各保険の欄は本人負担です。会社負担は円未満を切り捨てて表示しています。</p>
+          <span class="err">{{ errors()['form'] }}</span>
+          <div class="actions">
+            <button type="submit" [disabled]="saving()">{{ saving() ? '保存中…' : '保存' }}</button>
+            <button type="button" class="secondary" (click)="cancel()">やめる</button>
+          </div>
+        </form>
+    </ng-template>
   }
 </section>

@@ -1,4 +1,4 @@
-import { exemptedInsurances, isInsuredInMonth, isLeaveExemptMonth, nextDay } from './eligibility';
+import { exemptedInsurances, exemptingLeave, isInsuredInMonth, isLeaveExemptMonth, leaveExemptLabel, leaveFilingId, nextDay } from './eligibility';
 
 describe('翌日', () => {
   it('月末・年末・うるう年をまたぐ', () => {
@@ -107,5 +107,26 @@ describe('適用除外', () => {
       { type: 'pensionAgreement' as const, startDate: '2026-04-01', endDate: null },
     ];
     expect(exemptedInsurances(e, '2026-10')).toEqual({ health: true, care: false, pension: true });
+  });
+});
+
+describe('産休・育休の申出待ちの表示', () => {
+  const maternity = { type: 'maternity' as const, startDate: '2026-08-10', endDate: '2026-11-05', workedDays: null };
+  const short1 = { type: 'childcare' as const, startDate: '2026-12-01', endDate: '2026-12-07', workedDays: null };
+  const short2 = { type: 'childcare' as const, startDate: '2026-12-15', endDate: '2026-12-22', workedDays: null };
+
+  it('免除にしている休業', () => {
+    expect(exemptingLeave([maternity], '2026-10')).toBe(maternity);
+    expect(exemptingLeave([maternity], '2026-11')).toBeNull();
+    // 同じ月の短い育休は合計14日以上で免除。その月の最初の休業を返す
+    expect(exemptingLeave([short1, short2], '2026-12')).toBe(short1);
+    expect(exemptingLeave([short1], '2026-12')).toBeNull();
+  });
+
+  it('取得者申出書を届出済みにするまで「申出待ち」と添える', () => {
+    expect(leaveFilingId('e1', maternity)).toBe('e1_leave_2026-08-10');
+    expect(leaveExemptLabel('e1', maternity, new Set())).toBe('産休免除（申出待ち）');
+    expect(leaveExemptLabel('e1', maternity, new Set(['e1_leave_2026-08-10']))).toBe('産休免除');
+    expect(leaveExemptLabel('e1', short1, new Set())).toBe('育休免除（申出待ち）');
   });
 });

@@ -1,1 +1,289 @@
-/* You can add global styles to this file, and also import other style files */
+// 全画面で共通の見た目（色・文字・ボタン・表・フォーム・メッセージ）
+// 画面ごとの scss には、その画面だけの見た目を書く。
+
+:root {
+  --c-primary: #2f5597;
+  --c-primary-dark: #22427a;
+  --c-primary-weak: #e7f1fb;
+  --c-text: #1f2937;
+  --c-muted: #6b7280;
+  --c-border: #d0d7e2;
+  --c-head: #f0f3f8;
+  --c-bg: #f6f8fb;
+  --c-surface: #fff;
+  --c-danger: #b91c1c;
+  --c-danger-weak: #fee2e2;
+  --c-warn: #92400e;
+  --c-warn-weak: #fef3c7;
+  --c-ok: #166534;
+  --c-ok-weak: #e5f4e4;
+  --radius: 6px;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: 'Hiragino Sans', 'Hiragino Kaku Gothic ProN', 'Noto Sans JP', 'Yu Gothic UI', Meiryo, sans-serif;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--c-text);
+  background: var(--c-bg);
+}
+
+a { color: #1d4ed8; }
+a:hover { color: var(--c-primary-dark); }
+
+// ---- ページ ----
+.page {
+  // 広い画面では横幅を使い切り、表の列がすべて見えるようにする
+  max-width: 1880px;
+  margin: 16px;
+  padding: 16px 20px 32px;
+  background: var(--c-surface);
+  border: 1px solid #e5e9f0;
+  border-radius: 8px;
+}
+.page h1 { font-size: 20px; margin: 0 0 12px; }
+.page h2 {
+  font-size: 16px;
+  margin: 24px 0 8px;
+  padding: 2px 0 2px 10px;
+  border-left: 4px solid var(--c-primary);
+}
+.page-header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin-bottom: 8px; }
+.page-header h1 { margin: 0; }
+
+// ---- ボタン ----
+// 何もつけないボタンは、その場の主な操作（塗りつぶし）。.secondary は補助の操作、.danger は消す・取り消す操作
+button {
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  padding: 6px 14px;
+  border: 1px solid var(--c-primary);
+  border-radius: var(--radius);
+  background: var(--c-primary);
+  color: #fff;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { background: var(--c-primary-dark); border-color: var(--c-primary-dark); }
+// ボタンの文字は折り返さない（表の操作の列で「見込みどおり登録」が2行・3行に割れないように）。
+// 文の中に置く文字のリンクの形のボタン（.link）は、文に合わせて折り返す
+button:not(.link) { white-space: nowrap; }
+button:disabled { opacity: 0.45; cursor: not-allowed; }
+button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
+  outline: 2px solid #60a5fa;
+  outline-offset: 2px;
+}
+button.secondary { background: #fff; color: var(--c-primary); border-color: #9db7dd; }
+button.secondary:hover:not(:disabled) { background: var(--c-primary-weak); color: var(--c-primary-dark); }
+button.danger { background: #fff; color: var(--c-danger); border-color: #fca5a5; }
+button.danger:hover:not(:disabled) { background: var(--c-danger-weak); color: var(--c-danger); border-color: #f87171; }
+button.danger.solid { background: var(--c-danger); color: #fff; border-color: var(--c-danger); }
+button.link { background: none; border: none; padding: 0; color: #1d4ed8; text-decoration: underline; }
+button.link:hover:not(:disabled) { background: none; color: var(--c-primary-dark); }
+button.small, .small { font-size: 12px; padding: 2px 8px; }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
+// 表のセルに .actions を付けたときは、セルのまま（display: flex にすると、その列だけ行の高さと罫線の位置がずれる）。
+// ボタンどうしの間は、ボタンの余白で空ける
+.list td.actions { display: table-cell; margin: 0; }
+.list td.actions > button, .list td.actions > a { margin: 2px 6px 2px 0; }
+
+// ---- 入力 ----
+input:not([type='checkbox']):not([type='radio']):not([type='file']), select, textarea {
+  font: inherit;
+  font-size: 14px;
+  padding: 5px 8px;
+  border: 1px solid #b8c2d1;
+  border-radius: 4px;
+  background: #fff;
+  color: var(--c-text);
+}
+input:disabled, select:disabled { background: #f3f4f6; color: var(--c-muted); }
+.form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 480px;
+  padding: 16px;
+  margin: 12px 0;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: #fbfcfe;
+}
+.page .form h2, .form h3 { margin: 0; padding: 0; border: none; font-size: 16px; }
+.form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
+.form label.check { flex-direction: row; align-items: center; gap: 6px; }
+// 必須の欄の印（入力しないと登録できない欄）。文字の横に小さく出す
+.req {
+  display: inline-block;
+  margin-left: 4px;
+  padding: 0 6px;
+  border-radius: 8px;
+  background: var(--c-danger-weak);
+  color: var(--c-danger);
+  font-size: 11px;
+  font-weight: bold;
+  line-height: 1.6;
+  vertical-align: 1px;
+}
+.row { display: flex; gap: 8px; }
+.row input { flex: 1; }
+.filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; margin: 8px 0; font-size: 13px; }
+.filters label { display: flex; flex-direction: column; gap: 2px; }
+.filters label.check { flex-direction: row; align-items: center; gap: 4px; }
+
+// ---- 表 ----
+.table-wrap { overflow-x: auto; margin-bottom: 8px; }
+// 罫線は、固定した見出し・列でも消えないよう separate にして、各セルの右と下に引く
+// （collapse のままだと、固定したセルの罫線がスクロールで消えるため）
+.list {
+  border-collapse: separate;
+  border-spacing: 0;
+  border-top: 1px solid var(--c-border);
+  border-left: 1px solid var(--c-border);
+  font-size: 13px;
+  margin-bottom: 8px;
+  background: #fff;
+}
+.list th, .list td {
+  border: 0;
+  border-right: 1px solid var(--c-border);
+  border-bottom: 1px solid var(--c-border);
+  padding: 4px 6px;
+  // 画面の幅に収まるよう、文字の列は折り返す。数字・日付・社員番号は折り返さない（.num と下の指定）
+  white-space: normal;
+  vertical-align: top;
+}
+.list .num, .list td.nowrap, .list th.nowrap { white-space: nowrap; }
+// 表の中の入力欄は、列の幅いっぱいにしない（数字が読める最小の幅にする）
+.list input:not([type='checkbox']):not([type='radio']) { padding: 3px 4px; font-size: 13px; }
+.list th { background: var(--c-head); font-weight: 600; text-align: left; }
+.list tbody tr:hover td { background: #f8fafd; }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+.list th.num { text-align: right; }
+.strong { font-weight: bold; }
+.muted { color: var(--c-muted); }
+
+// ---- 長い表：見出し行と、左の列（社員番号・氏名など）を固定する ----
+// sticky-head：下にスクロールしても見出し行が上に残る
+// sticky-cols：さらに左の2列（社員番号・氏名）が、右にスクロールしても残る。sticky-cols-3 なら左の3列
+// 固定する列の幅は --sticky-w1〜3 で決める（表ごとに上書きできる）
+.list.sticky-head thead, .list.sticky-cols thead {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+// 表の枠（table-wrap）の中で縦にもスクロールさせ、見出しを枠の上に残す
+.table-wrap:has(> .list.sticky-head), .table-wrap:has(> .list.sticky-cols) {
+  max-height: calc(100vh - 140px);
+  overflow: auto;
+}
+.list.sticky-cols {
+  --sticky-w1: 5.5em;
+  --sticky-w2: 8.5em;
+  --sticky-w3: 8.5em;
+}
+.list.sticky-cols thead tr:first-child > th:nth-child(-n + 2),
+.list.sticky-cols tbody td:nth-child(-n + 2):not([colspan]),
+.list.sticky-cols-3 thead tr:first-child > th:nth-child(3),
+.list.sticky-cols-3 tbody td:nth-child(3):not([colspan]) {
+  position: sticky;
+  z-index: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+// 固定した列のセルは、下を流れる文字が透けないよう背景を塗る。色は行（tr）から受け継ぎ、
+// 行の色（期限切れの赤・要確認のオレンジなど）が固定した列でも消えないようにする。
+// :where() で詳細度を0にして、画面ごとの行・セルの色の指定が勝つようにする
+:where(.list.sticky-cols tbody tr) { background: var(--c-surface); }
+:where(.list.sticky-cols tbody td:nth-child(-n + 3):not([colspan])) { background: inherit; }
+.list.sticky-cols thead tr:first-child > th:nth-child(1),
+.list.sticky-cols tbody td:nth-child(1):not([colspan]) { left: 0; min-width: var(--sticky-w1); max-width: var(--sticky-w1); }
+.list.sticky-cols thead tr:first-child > th:nth-child(2),
+.list.sticky-cols tbody td:nth-child(2):not([colspan]) { left: var(--sticky-w1); min-width: var(--sticky-w2); max-width: var(--sticky-w2); }
+.list.sticky-cols-3 thead tr:first-child > th:nth-child(3),
+.list.sticky-cols-3 tbody td:nth-child(3):not([colspan]) {
+  left: calc(var(--sticky-w1) + var(--sticky-w2));
+  min-width: var(--sticky-w3);
+  max-width: var(--sticky-w3);
+}
+// 見出しの上の罫線（表の枠の罫線はスクロールで隠れるため、見出し側にも引く）
+.list.sticky-head thead tr:first-child > th, .list.sticky-cols thead tr:first-child > th { box-shadow: inset 0 1px 0 var(--c-border); }
+// 固定した列の右端に影をつけ、ほかの列と区切る
+.list.sticky-cols:not(.sticky-cols-3) tbody td:nth-child(2):not([colspan]),
+.list.sticky-cols:not(.sticky-cols-3) thead tr:first-child > th:nth-child(2),
+.list.sticky-cols-3 tbody td:nth-child(3):not([colspan]),
+.list.sticky-cols-3 thead tr:first-child > th:nth-child(3) {
+  box-shadow: 2px 0 0 var(--c-border);
+}
+.list.sticky-cols:not(.sticky-cols-3) thead tr:first-child > th:nth-child(2),
+.list.sticky-cols-3 thead tr:first-child > th:nth-child(3) {
+  box-shadow: 2px 0 0 var(--c-border), inset 0 1px 0 var(--c-border);
+}
+
+// ---- タブ ----
+.tabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 8px 0; }
+button.tab {
+  background: #fff;
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: 16px;
+  padding: 4px 14px;
+  font-size: 13px;
+}
+button.tab:hover:not(:disabled) { background: var(--c-primary-weak); color: var(--c-text); border-color: #9db7dd; }
+button.tab.active { background: var(--c-primary-weak); border-color: var(--c-primary); color: var(--c-primary-dark); font-weight: bold; }
+
+// ---- 小さなラベル ----
+.badge {
+  display: inline-block;
+  background: var(--c-primary-weak);
+  color: #1e3a8a;
+  border-radius: 4px;
+  padding: 0 6px;
+  margin-right: 4px;
+  font-size: 12px;
+  font-weight: normal;
+  line-height: 1.7;
+}
+.badge.warn, .badge.pending, .badge.absent, .badge.provisional { background: var(--c-warn-weak); color: var(--c-warn); }
+.badge.done, .badge.match, .badge.new { background: #dcfce7; color: var(--c-ok); }
+
+// ---- メッセージ ----
+.help, .hint { color: var(--c-muted); font-size: 12px; margin: 4px 0 8px; max-width: 1000px; }
+.form .help { margin: 0; }
+.err, .error { color: var(--c-danger); font-size: 12px; }
+.err:empty { display: none; }
+p.error { font-size: 14px; background: var(--c-danger-weak); padding: 6px 10px; border-radius: 4px; }
+.notice { background: var(--c-ok-weak); color: #14532d; padding: 6px 10px; border-radius: 4px; }
+.loading { color: var(--c-muted); }
+
+@media (max-width: 720px) {
+  .page { margin: 0; border-radius: 0; border-left: none; border-right: none; padding: 12px 16px 24px; }
+}
+
+// ---- この画面の使い方（毎月使う画面の説明は畳んでおき、必要なときに開く） ----
+details.howto { margin: 4px 0 8px; font-size: 13px; color: var(--c-muted); max-width: 1000px; }
+details.howto > summary { cursor: pointer; width: fit-content; color: var(--c-primary); }
+details.howto > summary:hover { text-decoration: underline; }
+details.howto[open] { padding: 6px 10px; border: 1px solid var(--c-border); border-radius: var(--radius); background: #fbfcfe; }
+details.howto .help { margin: 6px 0 0; }
+
+// ---- 欄へのジャンプのリンク（従業員の詳細・設定など、長い画面の上に置く。下に動かしても上に残る） ----
+nav.sections {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 6px 0;
+  margin: 4px 0 8px;
+  background: #fff;
+  border-bottom: 1px solid #e5e9f0;
+  font-size: 13px;
+}
+// ジャンプ先の見出しが、上に残ったリンクの下に隠れないようにする
+.jump-target { scroll-margin-top: 48px; }

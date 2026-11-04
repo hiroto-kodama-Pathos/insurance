@@ -1,23 +1,46 @@
 // 賞与の読み書き（設計書 4章 bonuses）
 // 上限（年度累計573万円）の計算には同じ年度の賞与がすべて要るので、年度（4月〜翌3月）単位で読む。
-import { Service } from '@angular/core';
-import { addDoc, deleteDoc, getDocs, query, serverTimestamp, updateDoc, where } from 'firebase/firestore';
+import { inject, Service } from '@angular/core';
+import { Auth } from '../auth/auth';
+import { scopeWhere } from './scope';
+import { addDoc, deleteDoc, doc, getDocs, query, serverTimestamp, updateDoc, where, writeBatch } from 'firebase/firestore';
+import { db } from '../firebase';
 import { BonusRecord } from '../calc/bonus-premium';
 import { siCol, siDoc } from '../firestore-paths';
 
 @Service()
 export class BonusRepository {
+  private readonly auth = inject(Auth);
+
   /** 年度（例：'2026' → 2026年4月1日〜2027年3月31日）の賞与 */
   async loadFiscalYear(fiscalYear: string): Promise<BonusRecord[]> {
     const from = `${fiscalYear}-04-01`;
     const to = `${Number(fiscalYear) + 1}-03-31`;
-    const snap = await getDocs(query(siCol('bonuses'), where('paidDate', '>=', from), where('paidDate', '<=', to)));
+    const snap = await getDocs(query(siCol('bonuses'), ...scopeWhere(this.auth), where('paidDate', '>=', from), where('paidDate', '<=', to)));
     return snap.docs.map((d) => ({
       id: d.id,
       employeeId: d.data()['employeeId'],
       paidDate: d.data()['paidDate'],
       amount: d.data()['amount'],
       totalAmount: d.data()['totalAmount'] ?? null,
+      inKindAmount: d.data()['inKindAmount'] ?? null,
+      bonusTypeId: d.data()['bonusTypeId'] ?? null,
+      isRemuneration: d.data()['isRemuneration'] === true,
+    }));
+  }
+
+  /** 支給日が from〜to（'YYYY-MM-DD'、両端を含む）の賞与（届出の一覧に使う） */
+  async loadRange(from: string, to: string): Promise<BonusRecord[]> {
+    const snap = await getDocs(query(siCol('bonuses'), ...scopeWhere(this.auth), where('paidDate', '>=', from), where('paidDate', '<=', to)));
+    return snap.docs.map((d) => ({
+      id: d.id,
+      employeeId: d.data()['employeeId'],
+      paidDate: d.data()['paidDate'],
+      amount: d.data()['amount'],
+      totalAmount: d.data()['totalAmount'] ?? null,
+      inKindAmount: d.data()['inKindAmount'] ?? null,
+      bonusTypeId: d.data()['bonusTypeId'] ?? null,
+      isRemuneration: d.data()['isRemuneration'] === true,
     }));
   }
 
@@ -32,6 +55,17 @@ export class BonusRepository {
       officeId,
       createdAt: serverTimestamp(),
     });
+  }
+
+  /** CSVで取り込んだ賞与をまとめて登録する（設計書 3.8） */
+  async importMany(list: (Omit<BonusRecord, 'id'> & { officeId: string })[]): Promise<void> {
+    for (let i = 0; i < list.length; i += 400) {
+      const batch = writeBatch(db);
+      for (const { officeId, ...b } of list.slice(i, i + 400)) {
+        batch.set(doc(siCol('bonuses')), { ...b, yearMonth: b.paidDate.slice(0, 7), officeId, createdAt: serverTimestamp() });
+      }
+      await batch.commit();
+    }
   }
 
   /**

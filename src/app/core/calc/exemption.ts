@@ -3,6 +3,7 @@
 import { addDays } from './bonus-premium';
 import { Exemption, exemptedInsurances } from './eligibility';
 import { isValidDate } from './new-employee';
+import { dateLabel } from './year-month';
 
 export type ExemptionType = Exemption['type'];
 
@@ -32,17 +33,21 @@ export const EXEMPTION_DATE_HINT: Record<ExemptionType, string> = {
   pensionAgreement: '適用証明書の期間',
 };
 
-/** 届け出ること（日本年金機構の案内による） */
-export function exemptionNotice(type: ExemptionType, startDate: string): { name: string; deadline: string } {
+/** 届け出ること（日本年金機構の案内による）。deadline は画面に出す期限の文、deadlineDate は期限の日（日付で決まらないものは null） */
+export function exemptionNotice(type: ExemptionType, startDate: string): { name: string; deadline: string; deadlineDate: string | null } {
   switch (type) {
     case 'care':
-      return { name: '介護保険適用除外等該当・非該当届', deadline: '遅滞なく' };
-    case 'healthNhiUnion':
-      return { name: '健康保険被保険者適用除外承認申請書', deadline: `${addDays(startDate, 14)}まで（事実発生日から14日以内）` };
-    case 'healthLateElderly':
-      return { name: '健康保険被保険者資格喪失届（後期高齢者医療の被保険者になるため）', deadline: `${addDays(startDate, 5)}まで（5日以内）` };
+      return { name: '介護保険適用除外等該当・非該当届', deadline: '遅滞なく', deadlineDate: null };
+    case 'healthNhiUnion': {
+      const d = addDays(startDate, 14);
+      return { name: '健康保険被保険者適用除外承認申請書', deadline: `${dateLabel(d)}まで（事実発生日から14日以内）`, deadlineDate: d };
+    }
+    case 'healthLateElderly': {
+      const d = addDays(startDate, 5);
+      return { name: '健康保険被保険者資格喪失届（後期高齢者医療の被保険者になるため）', deadline: `${dateLabel(d)}まで（5日以内）`, deadlineDate: d };
+    }
     default:
-      return { name: '適用証明書の写しを添えた届出（年金事務所の案内に沿って）', deadline: '適用証明書の交付後、速やかに' };
+      return { name: '適用証明書の写しを添えた届出（年金事務所の案内に沿って）', deadline: '適用証明書の交付後、速やかに', deadlineDate: null };
   }
 }
 

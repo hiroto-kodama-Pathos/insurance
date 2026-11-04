@@ -7,6 +7,7 @@ import { EmployeeMonthResult } from './employee-month';
 import { MonthlyPremium } from './monthly-premium';
 import { summarizeMonth, PaymentLine } from './monthly-summary';
 import { PremiumResult } from './premium-calculator';
+import { dateLabel } from './year-month';
 
 /** 保存する1つの保険の結果 */
 export type StoredPremium = { fullSen: number; employeeYen: number; employerSen: number };
@@ -102,7 +103,7 @@ export function closeBlockers(
   const myBonuses = bonuses.filter((b) => b.result.yearMonth === yearMonth && b.result.officeId === officeId);
   for (const b of myBonuses) {
     if (b.result.status === 'missingRate')
-      problems.push(`${b.employee.employeeNumber} ${b.employee.name}：賞与（${b.result.bonus.paidDate}）の料率が未登録`);
+      problems.push(`${b.employee.employeeNumber} ${b.employee.name}：賞与（${dateLabel(b.result.bonus.paidDate)}）の料率が未登録`);
   }
   if (mine.filter((r) => r.result.status === 'ok').length === 0 && myBonuses.length === 0 && problems.length === 0) {
     problems.push('この月に保険料がかかる従業員がいません');

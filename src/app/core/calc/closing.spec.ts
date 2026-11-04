@@ -1,13 +1,17 @@
 import { describe, expect, it } from 'vitest';
 import {
+  bonusAsMonthResult,
   buildOfficeClosing,
   canCloseOffice,
   closeBlockers,
+  mergeBonusesWithClosings,
   mergeWithClosings,
+  restoreBonus,
   restoreRow,
   RowInput,
 } from './closing';
 import { calcEmployeeMonth, EmployeeData, Masters } from './employee-month';
+import { calcEmployeeBonuses } from './bonus-premium';
 import { summarizeMonth } from './monthly-summary';
 
 const masters: Masters = {
@@ -117,5 +121,63 @@ describe('canCloseOffice', () => {
     expect(canCloseOffice('osaka', 'osaka')).toBe(true);
     expect(canCloseOffice('osaka', 'honsha')).toBe(false);
     expect(canCloseOffice(null, 'honsha')).toBe(false);
+  });
+});
+
+// ---- 漏れていた範囲：確定済みの賞与を、確定したときの金額で出す ----
+describe('確定済みの賞与（restoreBonus・mergeBonusesWithClosings）', () => {
+  const bonusesOf = (list: ReturnType<typeof emp>[], m: Masters = masters) =>
+    list.flatMap((e) =>
+      calcEmployeeBonuses(e, [{ id: `b-${e.id}`, employeeId: e.id, paidDate: '2026-10-10', amount: 500_000 }], m).map((result) => ({ employee: e, result })),
+    );
+  const people = [emp('e1', 'honsha', 300_000), emp('e3', 'osaka', 410_000)];
+  const closing = buildOfficeClosing('2026-10', 'honsha', rowsOf(people), 'u1', bonusesOf(people));
+
+  it('確定した事業所の賞与だけを、保険料つきで保存する', () => {
+    expect(closing.bonusRows.map((b) => b.bonusId)).toEqual(['b-e1']);
+    expect(closing.bonusRows[0].premiums?.health?.employeeYen).toBe(Number(bonusesOf(people)[0].result.premium!.health!.employeeYen));
+  });
+
+  it('確定後に料率が変わっても、確定した事業所の賞与は確定時の金額のまま。ほかの事業所はその場で計算する', () => {
+    // 確定後に東京都・大阪府の健康保険料率を上げた
+    const raised: Masters = {
+      ...masters,
+      insurerRates: masters.insurerRates.map((r) => (r.rateType === 'health' ? { ...r, rate: r.rate + 100 } : r)),
+    };
+    const live = bonusesOf(people, raised);
+    const merged = mergeBonusesWithClosings(live, [closing]);
+    expect(merged).toHaveLength(2);
+    const e1 = merged.find((r) => r.employee.id === 'e1')!;
+    const e3 = merged.find((r) => r.employee.id === 'e3')!;
+    expect(e1.closed).toBe(true);
+    expect(e1.result.premium!.health!.employeeYen).toBe(bonusesOf(people)[0].result.premium!.health!.employeeYen);
+    expect(e1.result.premium!.health!.employeeYen).not.toBe(live[0].result.premium!.health!.employeeYen);
+    expect(e3.closed).toBe(false);
+    expect(e3.result.premium!.health!.employeeYen).toBe(live[1].result.premium!.health!.employeeYen);
+  });
+
+  it('戻した賞与から求めた小計は、確定前と同じ（月・事業所・支給日・額も戻る）', () => {
+    const before = bonusesOf(people).filter((b) => b.result.officeId === 'honsha');
+    const restored = closing.bonusRows.map((b) => restoreBonus(closing, b));
+    expect(restored[0].result).toMatchObject({ yearMonth: '2026-10', officeId: 'honsha', status: 'ok' });
+    expect(restored[0].result.bonus).toEqual({ id: 'b-e1', employeeId: 'e1', paidDate: '2026-10-10', amount: 500_000 });
+    expect(summarizeMonth('2026-10', restored.map((r) => bonusAsMonthResult(r.result)))).toEqual(
+      summarizeMonth('2026-10', before.map((r) => bonusAsMonthResult(r.result))),
+    );
+  });
+
+  it('保険料のない賞与（産休中など）は、保険料なしのまま戻す（介護の区分がなければ対象外）', () => {
+    const row = { ...closing.bonusRows[0], premiums: null, careLabel: null };
+    const r = restoreBonus(closing, row);
+    expect(r.result.premium).toBeNull();
+    const withCare = restoreBonus(closing, { ...closing.bonusRows[0], careLabel: null });
+    expect(withCare.result.premium!.careLabel).toBe('none');
+  });
+
+  it('確定した事業所から、確定後に異動した人の賞与も二重に出さない', () => {
+    const moved = bonusesOf([emp('e1', 'osaka', 300_000)]);
+    const merged = mergeBonusesWithClosings(moved, [closing]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].closed).toBe(true);
   });
 });

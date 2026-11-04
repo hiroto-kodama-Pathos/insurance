@@ -12,12 +12,12 @@
     </p>
 
     @if (notice()) {
-      <p class="notice">{{ notice() }}</p>
+      <app-notice [message]="notice()!" (closed)="notice.set(null)" />
     }
 
     <div class="tabs" role="tablist">
-      <button type="button" role="tab" class="tab" [class.active]="tab() === 'open'" (click)="tab.set('open')">未精算（{{ openRows().length }}）</button>
-      <button type="button" role="tab" class="tab" [class.active]="tab() === 'settled'" (click)="tab.set('settled')">精算済み（{{ settledRows().length }}）</button>
+      <button type="button" role="tab" class="tab" [class.active]="tab() === 'open'" [attr.aria-selected]="tab() === 'open'" (click)="tab.set('open')">未精算（{{ openRows().length }}）</button>
+      <button type="button" role="tab" class="tab" [class.active]="tab() === 'settled'" [attr.aria-selected]="tab() === 'settled'" (click)="tab.set('settled')">精算済み（{{ settledRows().length }}）</button>
     </div>
 
     <div class="table-wrap">
@@ -46,7 +46,7 @@
         <tbody>
           @for (r of rows(); track r.id) {
             <tr>
-              <td>{{ r.yearMonth }}</td>
+              <td>{{ r.yearMonth | ym }}</td>
               <td>{{ officeName(r.officeId) }}</td>
               <td>{{ r.employee?.employeeNumber }}</td>
               <td>
@@ -67,7 +67,7 @@
               <td>{{ r.currentOffice }}</td>
               <td>
                 @if (r.settledMonth) {
-                  <span class="badge done">{{ r.settledMonth }}の給与で精算済み</span>
+                  <span class="badge done">{{ r.settledMonth | ym }}の給与で精算済み</span>
                 } @else {
                   <span class="settle">
                     <input type="month" [value]="settleMonth(r.id)" (change)="setSettleMonth(r.id, $any($event.target).value)" />

@@ -1,6 +1,8 @@
 // 給与の読み書き（設計書 4章 salaries）
 // 同じ人・同じ支払日の給与は1件にする（ドキュメントIDを 従業員ID_支払日 にして上書きする）。
-import { Service } from '@angular/core';
+import { inject, Service } from '@angular/core';
+import { Auth } from '../auth/auth';
+import { scopeWhere } from './scope';
 import { deleteDoc, getDocs, query, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { monthEnd } from '../calc/date';
@@ -13,10 +15,12 @@ export function salaryDocId(employeeId: string, paidDate: string): string {
 
 @Service()
 export class SalaryRepository {
+  private readonly auth = inject(Auth);
+
   /** 支払月が from〜to（'YYYY-MM'、両端を含む）の給与 */
   async loadRange(fromYm: string, toYm: string): Promise<SalaryRecord[]> {
     const snap = await getDocs(
-      query(siCol('salaries'), where('paidDate', '>=', `${fromYm}-01`), where('paidDate', '<=', monthEnd(toYm))),
+      query(siCol('salaries'), ...scopeWhere(this.auth), where('paidDate', '>=', `${fromYm}-01`), where('paidDate', '<=', monthEnd(toYm))),
     );
     return snap.docs.map((d) => {
       const x = d.data();
@@ -29,6 +33,9 @@ export class SalaryRepository {
         paymentBaseDays: x['paymentBaseDays'],
         retroactiveDiff: x['retroactiveDiff'] ?? null,
         inKindWages: x['inKindWages'] ?? null,
+        workingHours: x['workingHours'] ?? null,
+        hourlyRate: x['hourlyRate'] ?? null,
+        excludedAmount: x['excludedAmount'] ?? null,
       };
     });
   }

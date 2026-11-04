@@ -2,6 +2,7 @@
 import { ChildSupportRounding } from './monthly-premium';
 import type { Insurer, InsurerRate } from './rate';
 import { Office } from './office';
+import { toHalfWidth } from './half-width';
 
 export type Errors = Record<string, string>;
 
@@ -20,7 +21,7 @@ export const PREFECTURES = [
  * 浮動小数点の誤差を避けるため、文字列のまま桁をずらす
  */
 export function percentToRate(text: string): number | null {
-  const m = /^(\d{1,2})(?:\.(\d{1,3}))?$/.exec(text.trim());
+  const m = /^(\d{1,2})(?:\.(\d{1,3}))?$/.exec(toHalfWidth(text).trim());
   if (!m) return null;
   return Number(m[1]) * 1000 + Number((m[2] ?? '').padEnd(3, '0'));
 }
@@ -135,6 +136,9 @@ export type CompanySettings = {
   payrollCutoff: { day: number | 'end'; paidIn: 'sameMonth' | 'nextMonth' };
   /** 退職者の個人データの保管期間（年）。運営者だけが変更する */
   retentionYears: number;
+  /** 通常の労働者（正社員）の週の所定労働時間・月の所定労働日数（加入対象の判定。設計書 2.24） */
+  fullTimeWeeklyHours: number;
+  fullTimeMonthlyDays: number;
 };
 
 export const DEFAULT_SETTINGS: CompanySettings = {
@@ -142,6 +146,8 @@ export const DEFAULT_SETTINGS: CompanySettings = {
   deductionTiming: 'nextMonth',
   payrollCutoff: { day: 'end', paidIn: 'nextMonth' },
   retentionYears: 2,
+  fullTimeWeeklyHours: 40,
+  fullTimeMonthlyDays: 20,
 };
 
 export function checkSettings(s: CompanySettings): Errors {
@@ -149,5 +155,9 @@ export function checkSettings(s: CompanySettings): Errors {
   const d = s.payrollCutoff.day;
   if (d !== 'end' && !(Number.isInteger(d) && d >= 1 && d <= 30))
     errors['cutoffDay'] = '締め日は1〜30日か「末日」にしてください';
+  if (!(s.fullTimeWeeklyHours > 0 && s.fullTimeWeeklyHours <= 60 && Math.round(s.fullTimeWeeklyHours * 10) === s.fullTimeWeeklyHours * 10))
+    errors['fullTimeWeeklyHours'] = '週の所定労働時間を1〜60時間で入力してください（小数第1位まで）';
+  if (!(Number.isInteger(s.fullTimeMonthlyDays) && s.fullTimeMonthlyDays >= 1 && s.fullTimeMonthlyDays <= 31))
+    errors['fullTimeMonthlyDays'] = '月の所定労働日数を1〜31日で入力してください';
   return errors;
 }

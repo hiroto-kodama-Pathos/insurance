@@ -1,3 +1,8 @@
+import { provideRouter } from '@angular/router';
+import { Confirm, ConfirmRequest } from '../../../core/ui/confirm';
+import { FilingRepository } from '../../../core/repository/filing-repository';
+let filed = new Set<string>();
+import { legacyGroup } from '../../../core/calc/payroll-group';
 import { SalaryRepository } from '../../../core/repository/salary-repository';
 import { AdjustmentRepository } from '../../../core/repository/adjustment-repository';
 import { SalaryRecord } from '../../../core/calc/salary';
@@ -51,6 +56,10 @@ const employees: EmployeeRecord[] = [
   },
 ];
 
+
+/** 確認ダイアログ：出した確認を記録し、「実行する」を押したことにする */
+const asked: ConfirmRequest[] = [];
+const confirmStub = { provide: Confirm, useValue: { ask: async (r: ConfirmRequest) => { asked.push(r); return true; } } };
 describe('MonthlyList', () => {
   let fixture: ComponentFixture<MonthlyList>;
   let saved: OfficeClosing[];
@@ -58,14 +67,17 @@ describe('MonthlyList', () => {
   let scope: string;
   let salaries: SalaryRecord[];
 
-  async function setup() {
+  async function setup(openPersons = true) {
     await TestBed.configureTestingModule({
       imports: [MonthlyList],
       providers: [
-        { provide: EmployeeRepository, useValue: { loadAll: async () => employees } },
+        confirmStub,
+        provideRouter([]),
+        { provide: FilingRepository, useValue: { loadFiledIds: async () => filed } },
+        { provide: EmployeeRepository, useValue: { loadAll: async () => employees, clearCache: () => {} } },
         {
           provide: SettingsRepository,
-          useValue: { loadSettings: async () => DEFAULT_SETTINGS },
+          useValue: { loadSettings: async () => DEFAULT_SETTINGS, loadPayrollGroups: async () => [legacyGroup(DEFAULT_SETTINGS)] },
         },
         { provide: MasterRepository, useValue: { loadMasters: async () => masters } },
         {
@@ -91,6 +103,11 @@ describe('MonthlyList', () => {
     fixture.componentRef.instance['yearMonth'].set('2026-10');
     await fixture.whenStable();
     fixture.detectChanges();
+    if (openPersons) {
+      // 1人ずつの表は最初は閉じているので、「全員を表示」で開く
+      ([...(fixture.nativeElement as HTMLElement).querySelectorAll('button')].find((b) => b.textContent?.trim() === '全員を表示') as HTMLButtonElement).click();
+      fixture.detectChanges();
+    }
   }
 
   beforeEach(async () => {
@@ -110,9 +127,31 @@ describe('MonthlyList', () => {
     fixture.detectChanges();
   }
 
+  it('育休で免除の月は「育休免除（申出待ち）」、取得者申出書を届出済みにすると「育休免除」', async () => {
+    const original = employees[0].leaves;
+    employees[0].leaves = [{ type: 'childcare', startDate: '2026-09-01', endDate: null, workedDays: null }];
+    TestBed.resetTestingModule();
+    await setup();
+    expect(el().querySelector('table.persons')!.textContent).toContain('育休免除（申出待ち）');
+    filed = new Set(['e1_leave_2026-09-01']);
+    TestBed.resetTestingModule();
+    await setup();
+    const t = el().querySelector('table.persons')!.textContent!;
+    expect(t).toContain('育休免除');
+    expect(t).not.toContain('申出待ち');
+    employees[0].leaves = original;
+    filed = new Set();
+  });
+
+  it('氏名から従業員の詳細を開ける', () => {
+    const link = el().querySelector('table.persons tbody a') as HTMLAnchorElement;
+    expect(link.getAttribute('href')).toBe('/employees/e1');
+  });
+
   it('確定すると結果を保存し、後から標準報酬月額を直しても確定した金額のまま表示する', async () => {
     expect(el().textContent).toContain('一部未確定');
     await click('確定');
+    expect(asked.at(-1)!.message).toContain('確定すると、その月の給与・賞与は変更できなくなります');
     expect(saved).toHaveLength(1);
     expect(saved[0].officeId).toBe('honsha');
     expect(saved[0].rows[0].premiums.health?.employeeYen).toBe(14775);
@@ -183,8 +222,94 @@ describe('MonthlyList', () => {
     expect(text()).toContain('注意（給与の60%超）');
   });
 
+  it('開いたときは、会社合計と事業所別の小計を先に出し、1人ずつの表は閉じておく', async () => {
+    TestBed.resetTestingModule();
+    await setup(false);
+    const text = el().textContent!;
+    expect(text.indexOf('会社合計')).toBeLessThan(text.indexOf('適用事業所別の小計と確定'));
+    expect(text.indexOf('適用事業所別の小計と確定')).toBeLessThan(text.indexOf('1人ずつの保険料'));
+    expect(el().querySelector('table.persons')).toBeNull();
+    expect(text).toContain('前月から保険料が変わった人を見る');
+  });
+
+  it('「この事業所の人を見る」で、その事業所の人だけの表を開く', async () => {
+    TestBed.resetTestingModule();
+    await setup(false);
+    const b = [...el().querySelectorAll('button')].find((x) => x.textContent?.includes('この事業所の人を見る')) as HTMLButtonElement;
+    b.click();
+    fixture.detectChanges();
+    expect(el().querySelector('table.persons')).not.toBeNull();
+    expect((el().querySelector('select[name=office]') as HTMLSelectElement).value).toBe('honsha');
+  });
+
   it('適用事業所別の小計を表示する', () => {
     expect((fixture.nativeElement as HTMLElement).textContent).toContain('適用事業所別の小計');
     expect((fixture.nativeElement as HTMLElement).textContent).toContain('本社');
+  });
+});
+
+describe('MonthlyList 並び替え・絞り込み', () => {
+  it('氏名で検索し、前月から変わった人・入社した人で絞り込み、本人負担の大きい順に並べる', async () => {
+    const p = (id: string, no: string, name: string, std: number, acquired = '2024-04-01', history = [{ validFrom: '2024-04', healthStandard: std, pensionStandard: std }]): EmployeeRecord => ({
+      id, employeeNumber: no, name, birthDate: '1980-05-10',
+      qualifications: [{ acquiredDate: acquired, lostDate: null }], leaves: [], exemptions: [],
+      assignments: [{ validFrom: acquired, officeId: 'honsha' }], standardHistory: history,
+    });
+    const list = [
+      p('a', '0001', '山田 太郎', 300_000),
+      p('b', '0002', '佐藤 花子', 260_000, '2024-04-01', [{ validFrom: '2024-04', healthStandard: 260_000, pensionStandard: 260_000 }, { validFrom: '2026-10', healthStandard: 410_000, pensionStandard: 410_000 }]),
+      p('c', '0003', '木村 拓也', 240_000, '2026-10-26', [{ validFrom: '2026-10', healthStandard: 240_000, pensionStandard: 240_000 }]),
+    ];
+    await TestBed.configureTestingModule({
+      imports: [MonthlyList],
+      providers: [
+        provideRouter([]),
+        { provide: Auth, useValue: { user: signal({ uid: 'u1', email: '', siRole: 'admin', siScope: 'all' }), isAdmin: signal(true) } },
+        { provide: FilingRepository, useValue: { loadFiledIds: async () => filed } },
+        { provide: EmployeeRepository, useValue: { loadAll: async () => list, clearCache: () => {} } },
+        { provide: MasterRepository, useValue: { loadMasters: async () => masters } },
+        { provide: SettingsRepository, useValue: { loadSettings: async () => DEFAULT_SETTINGS, loadPayrollGroups: async () => [legacyGroup(DEFAULT_SETTINGS)] } },
+        { provide: ClosingRepository, useValue: { loadMonth: async () => [] } },
+        { provide: BonusRepository, useValue: { loadFiscalYear: async () => [] } },
+        { provide: SalaryRepository, useValue: { loadRange: async () => [] } },
+        { provide: AdjustmentRepository, useValue: { loadSettlements: async () => [] } },
+      ],
+    }).compileComponents();
+    const fixture = TestBed.createComponent(MonthlyList);
+    fixture.componentRef.instance['yearMonth'].set('2026-10');
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    ([...el.querySelectorAll('button')].find((x) => x.textContent?.trim() === '全員を表示') as HTMLButtonElement).click();
+    fixture.detectChanges();
+    const names = () => [...el.querySelectorAll('table.persons tbody tr')].map((tr) => tr.children[1].textContent);
+    const set = (name: string, value: string) => {
+      const x = el.querySelector(`[name=${name}]`) as HTMLInputElement | HTMLSelectElement;
+      x.value = value;
+      x.dispatchEvent(new Event(x.tagName === 'SELECT' ? 'change' : 'input'));
+      fixture.detectChanges();
+    };
+
+    expect(names()).toEqual(['山田 太郎', '佐藤 花子', '木村 拓也']);
+    expect(el.textContent).toContain('前月から +');
+    expect(el.textContent).toContain('標準報酬月額の改定');
+
+    set('query', '佐藤花子');
+    expect(names()).toEqual(['佐藤 花子']);
+    set('query', '');
+
+    set('extra', 'changed');
+    expect(names()).toEqual(['佐藤 花子', '木村 拓也']);
+    set('extra', 'joined');
+    expect(names()).toEqual(['木村 拓也']);
+    set('extra', '');
+
+    set('sort', 'employeeTotal');
+    const desc = el.querySelector('[name=desc]') as HTMLInputElement;
+    desc.checked = true;
+    desc.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    expect(names()).toEqual(['佐藤 花子', '山田 太郎', '木村 拓也']);
+    expect(el.textContent).toContain('3 / 3人');
   });
 });

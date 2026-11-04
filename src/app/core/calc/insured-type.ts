@@ -23,6 +23,13 @@ export type InsuredTypeHistory = { validFrom: string; type: InsuredType };
 export type PayrollCutoff = CompanySettings['payrollCutoff'];
 export const DEFAULT_CUTOFF: PayrollCutoff = { day: 'end', paidIn: 'nextMonth' };
 
+/** 締め日の指定：会社で1つ、または人と支払月ごと（その人の支払区分。設計書 2.10） */
+export type CutoffArg = PayrollCutoff | ((employeeId: string, paidMonth: string) => PayrollCutoff);
+
+export function resolveCutoff(arg: CutoffArg, employeeId: string, paidMonth: string): PayrollCutoff {
+  return typeof arg === 'function' ? arg(employeeId, paidMonth) : arg;
+}
+
 /** その日の区分。履歴がなければ一般被保険者 */
 export function insuredTypeAt(history: InsuredTypeHistory[] | undefined, date: string): InsuredType {
   const h = (history ?? []).filter((x) => x.validFrom <= date).sort((a, b) => b.validFrom.localeCompare(a.validFrom))[0];
@@ -42,7 +49,10 @@ export function typeForPayMonth(history: InsuredTypeHistory[] | undefined, paidM
   return insuredTypeAt(history, payPeriodEnd(paidMonth, cutoff));
 }
 
-/** 支払基礎日数の基準（短時間労働者は11日、それ以外は17日） */
+/**
+ * 支払基礎日数の基準（短時間労働者は11日、それ以外は17日）
+ * 特定減額特例対象者は短時間労働者のうちの区分（日本年金機構）なので、11日
+ */
 export function minBaseDays(type: InsuredType): number {
-  return type === 'shortTime' ? 11 : 17;
+  return type === 'shortTime' || type === 'specialReduction' ? 11 : 17;
 }

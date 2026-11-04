@@ -1,26 +1,28 @@
-.page { padding: 16px 24px; }
-.page-header { display: flex; align-items: center; gap: 24px; }
 .month { display: flex; align-items: center; gap: 8px; }
-.table-wrap { overflow-x: auto; }
-.list { border-collapse: collapse; margin-bottom: 16px; font-size: 13px; }
-.list th, .list td { border: 1px solid #ccc; padding: 4px 8px; white-space: nowrap; }
-.list th { background: #f0f3f8; }
-.num { text-align: right; font-variant-numeric: tabular-nums; }
-.strong { font-weight: bold; }
 .note { color: #666; text-align: center; }
 .warn { background: #fff4e5; }
-.badge { background: #e7f1fb; border-radius: 4px; padding: 0 6px; margin-right: 4px; }
-.error { color: #c00; }
-.hint { color: #666; font-size: 12px; }
 .closing { margin: 8px 0 16px; }
 .closing h3 { margin: 4px 0; }
-.notice { background: #e5f4e4; padding: 6px 10px; }
 .blockers { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
 .closed td { background: #f7f9fc; }
-.secondary { background: #fff; }
 .deduction { font-size: 12px; }
 .badge.shortage { background: #ffc9c9; font-weight: bold; }
 .badge.caution { background: #ffe8cc; }
 .badge.two { background: #e5dbff; }
 .badge.muted { background: #f1f3f5; color: #666; }
 .timing { margin: 0 0 8px; }
+
+.badge.change { background: #dbeafe; color: #1e40af; }
+
+.filters .count { color: #555; }
+.badge.diff { background: #f3f4f6; color: #374151; }
+.deduction .note { color: #92400e; font-size: 12px; }
+
+/* 事業所ごとの小計と確定 */
+.office-card { border: 1px solid #e5e9f0; border-radius: 8px; padding: 4px 12px 8px; margin: 8px 0; }
+.office-card > header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.office-card h3 { margin: 6px 0; font-size: 15px; }
+.office-card .spacer { flex: 1; }
+.persons-start { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.persons-start .hint { flex-basis: 100%; margin: 0; }
+#persons { scroll-margin-top: 8px; }

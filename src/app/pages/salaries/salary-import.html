@@ -16,7 +16,7 @@
     </label>
 
     @if (notice()) {
-      <p class="notice">{{ notice() }}</p>
+      <app-notice [message]="notice()!" (closed)="notice.set(null)" />
     }
 
     @if (headers().length > 0) {
@@ -66,27 +66,33 @@
       } @else {
         <p class="counts">
           新規 {{ counts().new }}件・上書き {{ counts().overwrite }}件・エラー {{ counts().error }}件・確定済み {{ counts().closed }}件・担当範囲外 {{ counts().outOfScope }}件
+          <label class="check">
+            <input type="checkbox" name="onlyIssues" [checked]="onlyIssues()" (change)="onlyIssues.set($any($event.target).checked)" />
+            上書き・エラー・確定済み・担当範囲外の行だけ表示
+          </label>
         </p>
         <div class="table-wrap">
           <table class="list preview">
             <thead>
               <tr>
                 <th>行</th><th>社員番号</th><th>氏名</th><th>支払日</th><th>固定的賃金</th><th>非固定的賃金</th>
-                <th>支払基礎日数</th><th>うち遡及差額</th><th>うち現物給与</th><th>状態</th>
+                <th>支払基礎日数</th><th>うち遡及差額</th><th>うち現物給与</th><th>労働時間</th><th>時給単価</th><th>状態</th>
               </tr>
             </thead>
             <tbody>
-              @for (r of preview(); track r.line) {
+              @for (r of shownPreview(); track r.line) {
                 <tr [class]="r.status">
                   <td class="num">{{ r.line }}</td>
                   <td>{{ r.employeeNumber }}</td>
                   <td>{{ r.name }}</td>
-                  <td>{{ r.salary?.paidDate }}</td>
+                  <td>{{ r.salary?.paidDate | ymd }}</td>
                   <td class="num">{{ yen(r.salary?.fixedWages) }}</td>
                   <td class="num">{{ yen(r.salary?.nonFixedWages) }}</td>
                   <td class="num">{{ r.salary?.paymentBaseDays }}</td>
                   <td class="num">{{ yen(r.salary?.retroactiveDiff) }}</td>
                   <td class="num">{{ yen(r.salary?.inKindWages) }}</td>
+                  <td class="num">{{ r.salary?.workingHours ?? '' }}</td>
+                  <td class="num">{{ yen(r.salary?.hourlyRate) }}</td>
                   <td>
                     <span class="badge">{{ statusLabel[r.status] }}</span>
                     @for (e of r.errors; track e) {

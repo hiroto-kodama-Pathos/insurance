@@ -1,3 +1,5 @@
+import { BonusRepository } from '../../core/repository/bonus-repository';
+import { legacyGroup } from '../../core/calc/payroll-group';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { buildKyokaiGrades, buildKyokaiThresholds } from '../../core/calc/grade-suggest';
@@ -49,10 +51,15 @@ describe('RegularList', () => {
         },
         {
           provide: MasterRepository,
-          useValue: { loadGrades: async () => buildKyokaiGrades('2020-09'), loadGradeThresholds: async () => buildKyokaiThresholds('2020-09') },
+          useValue: {
+            loadGrades: async () => buildKyokaiGrades('2020-09'),
+            loadGradeThresholds: async () => buildKyokaiThresholds('2020-09'),
+            loadMasters: async () => ({ offices: [{ id: 'honsha', name: '本社', prefecture: '東京都', insurerId: 'kyokai' }], insurers: [], insurerRates: [], pensionRates: [] }),
+          },
         },
-        { provide: SettingsRepository, useValue: { loadSettings: async () => DEFAULT_SETTINGS } },
+        { provide: SettingsRepository, useValue: { loadSettings: async () => DEFAULT_SETTINGS, loadPayrollGroups: async () => [legacyGroup(DEFAULT_SETTINGS)] } },
         { provide: SalaryRepository, useValue: { loadRange: async () => salaries } },
+        { provide: BonusRepository, useValue: { loadRange: async () => [] } },
       ],
     }).compileComponents();
     fixture = TestBed.createComponent(RegularList);

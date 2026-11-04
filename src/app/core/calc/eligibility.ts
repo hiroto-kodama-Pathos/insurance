@@ -7,6 +7,10 @@ export type Qualification = {
   acquiredDate: string;
   /** 資格喪失日。在籍中は null */
   lostDate: string | null;
+  /** 喪失の理由（'reemployment' は継続再雇用の同日得喪） */
+  lostReason?: string | null;
+  /** 同月得喪のときの厚生年金保険料の還付の状態（担当者が決めたもの。未設定は還付待ちとして扱う） */
+  refundStatus?: 'pending' | 'returned' | 'none' | null;
 };
 
 /** 産前産後休業・育児休業（leaves） */
@@ -59,19 +63,43 @@ export function isInsuredInMonth(qualifications: Qualification[], yearMonth: str
  *   （同じ月の複数回は合計し、就業した日数は引く）が14日以上なら免除する
  */
 export function isLeaveExemptMonth(leaves: Leave[], yearMonth: string): boolean {
+  return exemptingLeave(leaves, yearMonth) !== null;
+}
+
+/**
+ * 対象月を免除にしている休業（免除されない月は null）。判定は isLeaveExemptMonth と同じ
+ * 同じ月の短い育児休業を合計して14日以上になるときは、その月の最初の休業を返す
+ */
+export function exemptingLeave<L extends Leave>(leaves: L[], yearMonth: string): L | null {
   let shortDays = 0;
+  let firstShort: L | null = null;
   for (const l of leaves) {
     const start = monthOf(l.startDate);
     if (yearMonth < start) continue;
-    if (l.endDate === null) return true; // まだ終わっていない
+    if (l.endDate === null) return l; // まだ終わっていない
     const resume = monthOf(nextDay(l.endDate));
-    if (yearMonth < resume) return true;
+    if (yearMonth < resume) return l;
     if (l.type === 'childcare' && start === resume && start === yearMonth) {
       const days = parseDate(l.endDate).d - parseDate(l.startDate).d + 1;
       shortDays += days - (l.workedDays ?? 0);
+      firstShort ??= l;
     }
   }
-  return shortDays >= 14;
+  return shortDays >= 14 ? firstShort : null;
+}
+
+/** 休業の取得者申出書の届出のID（届出の期限の一覧・filings と同じ「従業員ID_leave_開始日」） */
+export function leaveFilingId(employeeId: string, leave: Pick<Leave, 'startDate'>): string {
+  return `${employeeId}_leave_${leave.startDate}`;
+}
+
+/**
+ * 免除の表示（「産休免除」「育休免除」）。取得者申出書を届出済みにするまでは「（申出待ち）」と添える
+ * @param filedIds 届出済みにした届出のID
+ */
+export function leaveExemptLabel(employeeId: string, leave: Leave, filedIds: Set<string>): string {
+  const name = leave.type === 'maternity' ? '産休免除' : '育休免除';
+  return filedIds.has(leaveFilingId(employeeId, leave)) ? name : `${name}（申出待ち）`;
 }
 
 /** 対象月に適用除外になっている保険 */

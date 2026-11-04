@@ -2,7 +2,7 @@
   <header class="page-header">
     <h1>賞与</h1>
     <label class="month">
-      対象月
+      対象月（一覧に出す支給月）
       <input type="month" [value]="yearMonth()" (change)="onMonthChange($any($event.target).value)" />
     </label>
   </header>
@@ -15,38 +15,82 @@
     <form class="form" (submit)="add($event)">
       <h2>賞与を登録</h2>
       <p class="help">支払う前に登録すると、本人負担を確かめてから給与ソフトで賞与から控除できます。</p>
+      <p class="help">大勢に支給するときは、1人ずつ入れずに<a routerLink="/imports" [queryParams]="{ kind: 'bonus' }">CSVでまとめて取り込めます</a>（給与ソフトの出力をそのまま使えます）。</p>
       <div class="fields">
-        <label>従業員
-          <select [value]="form().employeeId" (change)="setForm('employeeId', $any($event.target).value)">
-            <option value="">選んでください</option>
-            @for (e of employeeOptions(); track e.id) {
-              <option [value]="e.id">{{ e.employeeNumber }} {{ e.name }}</option>
+        <label>従業員を探す（氏名・社員番号）
+          <input name="employeeQuery" placeholder="例：山田、0001" [value]="employeeQuery()" (input)="setEmployeeQuery($any($event.target).value)" />
+        </label>
+        <label>従業員（{{ filteredEmployeeOptions().length }}人）
+          <select name="employeeId" (change)="setForm('employeeId', $any($event.target).value)">
+            <option value="" [selected]="form().employeeId === ''">選んでください</option>
+            @for (e of filteredEmployeeOptions(); track e.id) {
+              <option [value]="e.id" [selected]="form().employeeId === e.id">{{ e.employeeNumber }} {{ e.name }}</option>
             }
           </select>
           <span class="err">{{ errors().employeeId }}</span>
         </label>
-        <label>支給日
-          <input type="date" [value]="form().paidDate" (input)="setForm('paidDate', $any($event.target).value)" />
+        <label>支給日（登録すると、上の対象月がこの日の月に切り替わります）
+          <input type="date" name="paidDate" [value]="form().paidDate" (input)="setForm('paidDate', $any($event.target).value)" />
           <span class="err">{{ errors().paidDate }}</span>
         </label>
         <label>賞与額（円・現物を含む）
-          <input inputmode="numeric" [value]="form().amount ?? ''" (input)="setForm('amount', $any($event.target).value)" />
+          <input inputmode="numeric" name="amount" [value]="form().amount ?? ''" (input)="setForm('amount', $any($event.target).value)" />
           <span class="err">{{ errors().amount }}</span>
+        </label>
+        <label>賞与の種類
+          <select name="bonusType" (change)="setForm('bonusTypeId', $any($event.target).value)">
+            <option value="">（種類なし）</option>
+            @for (t of bonusTypes(); track t.id) {
+              <option [value]="t.id" [selected]="form().bonusTypeId === t.id">{{ t.name }}{{ t.isRemuneration ? '（年4回以上支給）' : '' }}</option>
+            }
+          </select>
+          @if (formIsRemuneration()) { <span class="help">報酬扱い（賞与の保険料なし）</span> }
+        </label>
+        <label>うち現物（円・任意）
+          <input inputmode="numeric" name="inKindAmount" [value]="form().inKindAmount ?? ''" (input)="setForm('inKindAmount', $any($event.target).value)" />
+          <span class="err">{{ errors().inKindAmount }}</span>
         </label>
         <button type="submit" [disabled]="saving()">登録</button>
       </div>
+      @if (fourthWarning(); as w) {
+        <p class="warn">{{ w }}</p>
+      }
     </form>
 
     @if (notice()) {
-      <p class="notice">{{ notice() }}</p>
+      <app-notice [message]="notice()!" (closed)="notice.set(null)" />
     }
 
-    <h2>{{ yearMonth() }}に支給する賞与</h2>
+    <h2>{{ yearMonth() | ym }}に支給する賞与</h2>
     @if (hasClosed()) {
       <p class="hint">確定済みの事業所の賞与は、確定したときの金額を表示しています。直すときは、月次保険料一覧で確定を解除してください。</p>
     }
+    @if (rows().length > 0) {
+      <div class="filters">
+        <label>検索
+          <input name="bonusQuery" placeholder="氏名・社員番号" [value]="query()" (input)="query.set($any($event.target).value)" />
+        </label>
+        @if (officeOptions().length > 1) {
+          <label>適用事業所
+            <select name="bonusOffice" (change)="officeFilter.set($any($event.target).value)">
+              <option value="">すべて</option>
+              @for (o of officeOptions(); track o) { <option [value]="o" [selected]="officeFilter() === o">{{ o }}</option> }
+            </select>
+          </label>
+        }
+        @if (paidDateOptions().length > 1) {
+          <label>支給日
+            <select name="bonusPaidDate" (change)="paidDateFilter.set($any($event.target).value)">
+              <option value="">すべて</option>
+              @for (d of paidDateOptions(); track d) { <option [value]="d" [selected]="paidDateFilter() === d">{{ d }}</option> }
+            </select>
+          </label>
+        }
+        <span class="count">{{ shownRows().length }} / {{ rows().length }}件を表示</span>
+      </div>
+    }
     <div class="table-wrap">
-      <table class="list persons">
+      <table class="list persons sticky-cols sticky-cols-3 bonus-persons">
         <thead>
           <tr>
             <th rowspan="2">支給日</th>
@@ -68,11 +112,11 @@
           </tr>
         </thead>
         <tbody>
-          @for (row of rows(); track row.result.bonus.id) {
+          @for (row of shownRows(); track row.result.bonus.id) {
             <tr [class.muted]="row.result.status === 'outside'" [class.warn]="row.result.status === 'missingRate' || row.result.status === 'noOffice'">
-              <td>{{ row.result.bonus.paidDate }}</td>
+              <td>{{ row.result.bonus.paidDate | ymd }}</td>
               <td>{{ row.employee.employeeNumber }}</td>
-              <td>{{ row.employee.name }}</td>
+              <td><a [routerLink]="['/employees', row.employee.id]" [title]="row.employee.name">{{ row.employee.name }}</a></td>
               <td>{{ row.officeName }}</td>
               <td class="num">{{ yen(row.result.bonus.amount) }}</td>
               <td class="num">{{ yen(row.result.standardBonus) }}</td>
@@ -118,7 +162,7 @@
               </td>
             </tr>
           } @empty {
-            <tr><td colspan="17">この月に支給する賞与は登録されていません。</td></tr>
+            <tr><td colspan="17">{{ rows().length === 0 ? 'この月に支給する賞与は登録されていません。' : '条件に合う賞与はありません。' }}</td></tr>
           }
         </tbody>
       </table>
@@ -131,9 +175,9 @@
         @for (r of reports(); track r.officeId + r.paidDate) {
           <tr>
             <td>{{ r.officeName }}</td>
-            <td>{{ r.paidDate }}</td>
+            <td>{{ r.paidDate | ymd }}</td>
             <td class="num">{{ r.count }}人</td>
-            <td>{{ r.deadline }}</td>
+            <td>{{ r.deadline | ymd }}</td>
           </tr>
         } @empty {
           <tr><td colspan="4">届け出る賞与はありません。</td></tr>
@@ -142,6 +186,27 @@
     </table>
     <p class="hint">二以上事業所勤務の人の賞与は、支給日には自社の賞与額で計算します。決定通知や他社との情報共有で全事業所の賞与額の合計が分かったら「全事業所の合計を登録」を押すと、合算した標準賞与額の保険料を賞与額の割合で按分した額と、控除した額との過不足を出します。過不足の精算は給与ソフトで行ってください。</p>
     <p class="hint">支給日から5日以内に届け出ます。産休・育休で免除された賞与や、資格喪失月の賞与も届け出が必要なので含めています。</p>
+
+    <h2>届け出る賞与額</h2>
+    <table class="list report-amounts sticky-cols">
+      <thead><tr><th>社員番号</th><th>氏名</th><th>支給日</th><th>通貨</th><th>現物</th><th>合計（1,000円未満切り捨て）</th><th>備考</th></tr></thead>
+      <tbody>
+        @for (a of reportAmounts(); track a.employeeId + a.yearMonth) {
+          <tr>
+            <td>{{ a.employee.employeeNumber }}</td>
+            <td><a [routerLink]="['/employees', a.employeeId]" [title]="a.employee.name">{{ a.employee.name }}</a></td>
+            <td>{{ a.paidDates | ymd }}</td>
+            <td class="num">{{ a.cash.toLocaleString('ja-JP') }}</td>
+            <td class="num">{{ a.inKind.toLocaleString('ja-JP') }}</td>
+            <td class="num">{{ a.total.toLocaleString('ja-JP') }}</td>
+            <td>@for (n of a.notes; track n) { <span class="badge">{{ n }}</span> }</td>
+          </tr>
+        } @empty {
+          <tr><td colspan="7">届け出る賞与はありません。</td></tr>
+        }
+      </tbody>
+    </table>
+    <p class="hint">賞与支払届には、同じ月に2回以上支払った賞与を合算して書きます。上限（健康保険の年度累計573万円・厚生年金の同月150万円）は当てる前の額です。</p>
 
     <h2>適用事業所別の小計</h2>
     @for (office of summary().offices; track office.officeId + office.insurerId) {

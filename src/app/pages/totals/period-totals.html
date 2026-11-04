@@ -1,0 +1,92 @@
+<section class="page">
+  <h1>期間ごとの会社負担の集計</h1>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <p class="help">
+      開始月〜終了月の会社負担を、月別・保険別に、月額と賞与に分けて出します。決算の未払金や、年度の人件費の集計に使います。
+      確定済みの月は確定した結果を、未確定の月はその場で計算した結果を使います。
+    </p>
+
+    <div class="filters">
+      <label>開始月
+        <input type="month" name="from" [value]="from()" (change)="setRange('from', $any($event.target).value)" />
+      </label>
+      <label>終了月
+        <input type="month" name="to" [value]="to()" (change)="setRange('to', $any($event.target).value)" />
+      </label>
+      <label>適用事業所
+        <select name="office" (change)="officeId.set($any($event.target).value)">
+          @if (scope() === 'all') { <option value="">すべて</option> }
+          @for (o of offices(); track o.id) { <option [value]="o.id">{{ o.name }}</option> }
+        </select>
+      </label>
+      <a class="csv" [href]="csvHref()" [attr.download]="'会社負担_' + from() + '_' + to() + '.csv'">CSVで保存</a>
+    </div>
+    @if (rangeError()) {
+      <p class="error">{{ rangeError() }}</p>
+    }
+    @if (result().total.includesUnclosed) {
+      <p class="warn">未確定の月を含みます（その場で計算した額のため、確定するまでに変わることがあります）。</p>
+    }
+
+    <div class="table-wrap">
+      <table class="list totals">
+        <thead>
+          <tr>
+            <th>月</th><th>区分</th>
+            @for (k of keys; track k) { <th>{{ labels[k] }}</th> }
+            <th>会社負担の合計</th><th>状態</th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (r of result().rows; track r.yearMonth) {
+            <tr class="monthly">
+              <td rowspan="3">{{ r.yearMonth | ym }}</td>
+              <td>月額</td>
+              @for (k of keys; track k) { <td class="num">{{ yen(r.monthly[k]) }}</td> }
+              <td class="num">{{ yen(r.monthly.total) }}</td>
+              <td rowspan="3"><span class="badge" [class.unclosed]="r.includesUnclosed">{{ r.includesUnclosed ? '未確定を含む' : '確定' }}</span></td>
+            </tr>
+            <tr class="bonus">
+              <td>賞与</td>
+              @for (k of keys; track k) { <td class="num">{{ yen(r.bonus[k]) }}</td> }
+              <td class="num">{{ yen(r.bonus.total) }}</td>
+            </tr>
+            <tr class="sum">
+              <td>計</td>
+              @for (k of keys; track k) { <td class="num">{{ yen(r.total[k]) }}</td> }
+              <td class="num strong">{{ yen(r.total.total) }}</td>
+            </tr>
+          }
+        </tbody>
+        <tfoot>
+          <tr>
+            <th rowspan="3">期間の合計</th>
+            <td>月額</td>
+            @for (k of keys; track k) { <td class="num">{{ yen(result().total.monthly[k]) }}</td> }
+            <td class="num">{{ yen(result().total.monthly.total) }}</td>
+            <td rowspan="3"></td>
+          </tr>
+          <tr>
+            <td>賞与</td>
+            @for (k of keys; track k) { <td class="num">{{ yen(result().total.bonus[k]) }}</td> }
+            <td class="num">{{ yen(result().total.bonus.total) }}</td>
+          </tr>
+          <tr class="grand">
+            <td>計</td>
+            @for (k of keys; track k) { <td class="num">{{ yen(result().total.total[k]) }}</td> }
+            <td class="num strong">{{ yen(result().total.total.total) }}</td>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+    <p class="hint">
+      会社負担は、納付書の欄（適用事業所・保険者ごと）で「納付見込額 − 本人負担合計」として求めた額を足し上げています。
+      介護保険は健康保険と同じ欄で請求されるため、1人ずつの介護保険の会社負担の合計を介護保険とし、欄の残りを健康保険としています（合計は変わりません）。
+    </p>
+  }
+</section>

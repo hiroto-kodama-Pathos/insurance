@@ -1,0 +1,100 @@
+<section class="page">
+  <h1>アカウントと権限</h1>
+  <p><a routerLink="/settings">設定に戻る</a></p>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <p class="help">
+      アカウントを発行し、権限（管理者・担当者）と担当範囲（全担当・特定の適用事業所）を決めます。担当者は、担当範囲の事業所の従業員・確定だけを扱えます。
+      第二課題と同じログインの仕組みを使うため、アカウントは削除せず、「使えないようにする」で第三課題の権限だけを外します。
+    </p>
+
+    @if (notice()) {
+      <app-notice [message]="notice()!" (closed)="notice.set(null)" />
+    }
+
+    <h2>アカウントの一覧</h2>
+    <table class="list accounts">
+      <thead><tr><th>メールアドレス</th><th>権限</th><th>担当範囲</th><th>最終ログイン</th><th></th></tr></thead>
+      <tbody>
+        @for (a of accounts(); track a.uid) {
+          <tr [class.removed]="a.siRole === null">
+            <td>{{ a.email }}@if (a.uid === myUid()) { <span class="badge">自分</span> }</td>
+            @if (edits()[a.uid]; as e) {
+              <td>
+                <select name="editRole" (change)="setEdit(a.uid, 'siRole', $any($event.target).value)">
+                  @for (r of roles; track r) { <option [value]="r" [selected]="e.siRole === r">{{ roleLabel[r] }}</option> }
+                </select>
+              </td>
+              <td>
+                @if (e.siRole === 'admin') {
+                  全担当
+                } @else {
+                  <select name="editScope" (change)="setEdit(a.uid, 'siScope', $any($event.target).value)">
+                    <option value="" [selected]="e.siScope === ''">選んでください</option>
+                    <option value="all" [selected]="e.siScope === 'all'">全担当</option>
+                    @for (o of offices(); track o.id) { <option [value]="o.id" [selected]="e.siScope === o.id">{{ o.name }}</option> }
+                  </select>
+                }
+              </td>
+            } @else {
+              <td>{{ a.siRole ? roleLabel[a.siRole] : '使えない（権限を外した）' }}</td>
+              <td>{{ scopeText(a) }}</td>
+            }
+            <td>{{ a.lastSignIn ?? '' }}</td>
+            <td class="actions">
+              @if (edits()[a.uid]) {
+                <button type="button" [disabled]="saving()" (click)="saveEdit(a)">保存</button>
+              } @else {
+                <button type="button" class="secondary" [disabled]="saving()" (click)="edit(a)">{{ a.siRole ? '権限を変える' : '使えるようにする' }}</button>
+                @if (a.siRole && a.uid !== myUid()) {
+                  <button type="button" class="secondary" [disabled]="saving()" (click)="remove(a)">使えないようにする</button>
+                }
+              }
+            </td>
+          </tr>
+        } @empty {
+          <tr><td colspan="5">アカウントはありません。</td></tr>
+        }
+      </tbody>
+    </table>
+
+    <h2>アカウントを発行</h2>
+    <form class="form" (submit)="create($event)">
+      <label>メールアドレス
+        <input name="email" type="email" [value]="form().email" (input)="setForm('email', $any($event.target).value)" />
+        <span class="err">{{ errors().email }}</span>
+      </label>
+      <label>初期パスワード（8文字以上）
+        <input name="password" type="text" autocomplete="off" [value]="form().password" (input)="setForm('password', $any($event.target).value)" />
+        <span class="help">すでにあるアカウント（第二課題など）に権限を付けるときは空でかまいません。本人には別の方法で伝えます。</span>
+        <span class="err">{{ errors().password }}</span>
+      </label>
+      <label>権限
+        <select name="role" (change)="setForm('siRole', $any($event.target).value)">
+          @for (r of roles; track r) { <option [value]="r" [selected]="form().siRole === r">{{ roleLabel[r] }}</option> }
+        </select>
+        <span class="err">{{ errors().siRole }}</span>
+      </label>
+      @if (form().siRole === 'staff') {
+        <label>担当範囲
+          <select name="scope" (change)="setForm('siScope', $any($event.target).value)">
+            <option value="" [selected]="form().siScope === ''">選んでください</option>
+            <option value="all" [selected]="form().siScope === 'all'">全担当（すべての適用事業所）</option>
+            @for (o of offices(); track o.id) { <option [value]="o.id" [selected]="form().siScope === o.id">{{ o.name }}</option> }
+          </select>
+          <span class="err">{{ errors().siScope }}</span>
+        </label>
+      } @else {
+        <p class="help">管理者の担当範囲は、いつも全担当です。</p>
+      }
+      <div class="actions">
+        <button type="submit" [disabled]="saving()">発行する</button>
+      </div>
+    </form>
+    <p class="hint">権限を変えると、本人がログイン中ならいったんログアウトされ、次にログインしたときから新しい権限が効きます。自分の管理者の権限は外せません。</p>
+  }
+</section>

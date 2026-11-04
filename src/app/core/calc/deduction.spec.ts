@@ -1,4 +1,4 @@
-import { cashPaid, checkDeduction, payMonthFor, premiumMonthsFor } from './deduction';
+import { cashPaid, checkDeduction, payMonthFor, premiumMonthsFor, retirementPreview } from './deduction';
 import { SalaryRecord } from './salary';
 
 const active = [{ acquiredDate: '2024-04-01', lostDate: null }];
@@ -20,6 +20,12 @@ describe('控除する給与の月', () => {
     expect(payMonthFor('2026-09', 'nextMonth', retireOct)).toBe('2026-10');
     expect(payMonthFor('2026-10', 'nextMonth', retireOct)).toBe('2026-10');
     expect(premiumMonthsFor('2026-10', 'nextMonth', retireOct)).toEqual(['2026-09', '2026-10']);
+  });
+
+  it('翌月払の区分では、月末に退職しても2か月分にしない（退職月分は翌月の最終給与から控除する）', () => {
+    expect(payMonthFor('2026-10', 'nextMonth', retireOct, false)).toBe('2026-11');
+    expect(premiumMonthsFor('2026-10', 'nextMonth', retireOct, false)).toEqual(['2026-09']);
+    expect(premiumMonthsFor('2026-11', 'nextMonth', retireOct, false)).toEqual(['2026-10']);
   });
 });
 
@@ -54,5 +60,33 @@ describe('checkDeduction', () => {
     const c = checkDeduction('e1', active, '2026-11', 'nextMonth', [pay('2026-11-25', 50_000)], premium, 15_000);
     expect(c.premium).toBe(55_000);
     expect(c.status).toBe('shortage');
+  });
+});
+
+describe('退職を入力したときの見込み', () => {
+  const q = [{ acquiredDate: '2020-04-01', lostDate: null }];
+
+  it('月末の退職：退職月の保険料もかかり、最終給与が退職月に払われる区分は2か月分を控除する', () => {
+    const p = retirementPreview(q, '2026-10-31', 'nextMonth', true);
+    expect(p).toEqual({
+      lostDate: '2026-11-01', retireMonthCharged: true, lastPremiumMonth: '2026-10',
+      finalPayMonth: '2026-10', finalPremiumMonths: ['2026-09', '2026-10'],
+    });
+  });
+
+  it('月末の退職：最終給与が翌月に払われる区分は1か月分', () => {
+    const p = retirementPreview(q, '2026-10-31', 'nextMonth', false);
+    expect(p.finalPayMonth).toBe('2026-11');
+    expect(p.finalPremiumMonths).toEqual(['2026-10']);
+  });
+
+  it('月の途中の退職：退職月の保険料はかからない（前月分まで）', () => {
+    const p = retirementPreview(q, '2026-10-20', 'nextMonth', true);
+    expect(p).toMatchObject({ lostDate: '2026-10-21', retireMonthCharged: false, lastPremiumMonth: '2026-09', finalPayMonth: '2026-10', finalPremiumMonths: ['2026-09'] });
+  });
+
+  it('当月控除の区分', () => {
+    const p = retirementPreview(q, '2026-10-31', 'sameMonth', true);
+    expect(p).toMatchObject({ finalPayMonth: '2026-10', finalPremiumMonths: ['2026-10'] });
   });
 });

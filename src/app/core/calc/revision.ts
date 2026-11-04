@@ -1,12 +1,14 @@
 // 随時改定の候補（設計書 2.13・2.14・2.15・3.7）
 // 候補はあくまで見込み。担当者が「見込みどおり登録」をするまで、標準報酬月額も保険料も変わらない。
+import { absentInMonth, furloughs } from './absence';
+import { needsExclusion, periodChange, periodChangeNote } from './pay-period-change';
 import { isPensionAge } from './age';
 import { isInsuredInMonth, Leave, nextDay, Qualification } from './eligibility';
 import { findEffective, StandardHistory } from './employee-month';
 import { GradeRow, suggestStandards } from './grade-suggest';
 import { Assignment } from './office';
-import { DEFAULT_CUTOFF, InsuredTypeHistory, minBaseDays, PayrollCutoff, typeForPayMonth } from './insured-type';
-import { addMonths, detectFixedWageChanges, payMonths, PayMonth, SalaryRecord } from './salary';
+import { CutoffArg, DEFAULT_CUTOFF, InsuredTypeHistory, minBaseDays, resolveCutoff, typeForPayMonth } from './insured-type';
+import { addMonths, detectFixedWageChanges, ManualWageChange, payMonths, PayMonth, SalaryRecord } from './salary';
 
 /** 最高等級・最低等級付近の特例の閾値（gradeThresholds。等級表の版・保険ごと） */
 export type GradeThreshold = {
@@ -44,6 +46,8 @@ export type SideJudgement = {
 export type RevisionCandidate = {
   /** revision：随時改定 / leaveEnd：休業終了時改定（本人の申出があれば改定できる） */
   type: 'revision' | 'leaveEnd';
+  /** 休業終了時改定だけ：終わった休業の種類（産休は産前産後休業終了時、育休は育児休業等終了時の月額変更届） */
+  leaveType?: Leave['type'];
   employeeId: string;
   /** 変動月（変わった固定的賃金を支払った月）。休業終了時改定は、休業終了日の翌日が属する月 */
   changeMonth: string;
@@ -79,6 +83,10 @@ export type RevisionEmployee = {
   standardHistory: StandardHistory[];
   insuredTypes?: InsuredTypeHistory[];
   leaves?: Leave[];
+  /** 休職の期間（定時決定の要確認に使う） */
+  absences?: import('./absence').Absence[];
+  /** 担当者が「固定的賃金の変動として登録」した変動 */
+  fixedWageChanges?: ManualWageChange[];
 };
 
 function tableAt(grades: GradeRow[], ym: string): GradeRow[] {
@@ -129,17 +137,17 @@ export function findRevisionCandidates(
   salaries: SalaryRecord[],
   grades: GradeRow[],
   thresholds: GradeThreshold[],
-  cutoff: PayrollCutoff = DEFAULT_CUTOFF,
+  cutoff: CutoffArg = DEFAULT_CUTOFF,
 ): RevisionCandidate[] {
   const months = payMonths(salaries.filter((s) => s.employeeId === employee.id));
   const byMonth = new Map(months.map((m) => [m.yearMonth, m]));
   const transfers = [...employee.assignments].sort((a, b) => a.validFrom.localeCompare(b.validFrom)).slice(1);
 
-  return detectFixedWageChanges(months).flatMap((change) => {
+  return detectFixedWageChanges(months, employee.fixedWageChanges ?? []).flatMap((change) => {
     const yms = [0, 1, 2].map((i) => addMonths(change.yearMonth, i));
     const three = yms.map((ym) => byMonth.get(ym));
     // 支払基礎日数の基準は、各月の締め日時点の被保険者区分で選ぶ（短時間労働者は11日、ほかは17日）
-    const types = yms.map((ym) => typeForPayMonth(employee.insuredTypes, ym, cutoff));
+    const types = yms.map((ym) => typeForPayMonth(employee.insuredTypes, ym, resolveCutoff(cutoff, employee.id, ym)));
     if (three.some((m, i) => !m || m.days < minBaseDays(types[i]))) return [];
     if (yms.some((ym) => !isInsuredInMonth(employee.qualifications, ym))) return [];
     if (transfers.some((a) => yms.includes(a.validFrom.slice(0, 7)))) return [];
@@ -176,10 +184,35 @@ export function findRevisionCandidates(
     let needsReview = false;
     if (types.includes('specialReduction')) {
       needsReview = true;
-      notes.push('特定減額特例対象者（自動では判定しないため、内容を確かめる）');
+      notes.push('特定減額特例対象者（短時間労働者と同じく支払基礎日数11日以上の月で判定。内容を確かめる）');
     }
-    const before = typeForPayMonth(employee.insuredTypes, addMonths(change.yearMonth, -1), cutoff);
+    const prevYm = addMonths(change.yearMonth, -1);
+    const before = typeForPayMonth(employee.insuredTypes, prevYm, resolveCutoff(cutoff, employee.id, prevYm));
     if (types.some((t) => t !== before)) notes.push('区分変更あり（備考欄に記入）');
+    if (change.basis === 'hourlyRate')
+      notes.push(`時給単価の変動（${change.before!.toLocaleString('ja-JP')}円→${change.after!.toLocaleString('ja-JP')}円）`);
+    if (change.basis === 'manual') notes.push(`固定的賃金の変動として登録${change.note ? `：${change.note}` : ''}`);
+    // 支払月・締め日の変更月（事例集 随時改定 問7・定時決定 問2・問3の扱い）
+    const cutoffAt = (ym: string) => resolveCutoff(cutoff, employee.id, ym);
+    for (const ym of yms) {
+      const c = periodChange(ym, cutoffAt);
+      if (!c) continue;
+      const pay = byMonth.get(ym);
+      notes.push(periodChangeNote(c, pay?.excluded ?? 0));
+      if (needsExclusion(c) && !(pay && pay.excluded > 0)) needsReview = true;
+      // 締め日の変更で固定的賃金が動いて見えるだけの月は、変動月にできない（変更後の月を起算月として改定しない）
+      if (ym === change.yearMonth) {
+        needsReview = true;
+        notes.push('変動月が支払月・締め日の変更月（締め日の変更で額が動いただけなら随時改定の対象外）');
+      }
+    }
+    // 一時帰休（休業手当）：固定的賃金が下がった・戻ったときは随時改定の対象になるため、担当者が確かめる
+    const furloughMonths = yms.filter((ym) => absentInMonth(furloughs(employee.absences), ym));
+    if (furloughMonths.length > 0) {
+      needsReview = true;
+      notes.push(`一時帰休の月あり（${furloughMonths.map((m) => `${Number(m.slice(5))}月`).join('・')}。休業手当で固定的賃金が下がった・戻った場合は随時改定の対象。内容を確かめる）`);
+    }
+    if (three.some((m) => m!.inKind > 0)) notes.push('現物給与あり（届書に通貨・現物を分けて書く）');
     if (!pensionJudged) {
       needsReview = true;
       notes.push('健康保険のみ（70歳以上のため厚生年金は判定しない。70歳以上被用者の月額変更届も必要）');
@@ -226,7 +259,7 @@ export function findLeaveEndCandidates(
   employee: RevisionEmployee,
   salaries: SalaryRecord[],
   grades: GradeRow[],
-  cutoff: PayrollCutoff = DEFAULT_CUTOFF,
+  cutoff: CutoffArg = DEFAULT_CUTOFF,
 ): RevisionCandidate[] {
   const leaves = employee.leaves ?? [];
   const byMonth = new Map(payMonths(salaries.filter((s) => s.employeeId === employee.id)).map((m) => [m.yearMonth, m]));
@@ -244,7 +277,7 @@ export function findLeaveEndCandidates(
     if (yms.some((ym) => !isInsuredInMonth(employee.qualifications, ym))) return [];
     if (transfers.some((a) => yms.includes(a.validFrom.slice(0, 7)))) return [];
 
-    const types = yms.map((ym) => typeForPayMonth(employee.insuredTypes, ym, cutoff));
+    const types = yms.map((ym) => typeForPayMonth(employee.insuredTypes, ym, resolveCutoff(cutoff, employee.id, ym)));
     let used = three.filter((m, i) => m!.days >= minBaseDays(types[i])) as PayMonth[];
     const notes: string[] = ['申出により改定可能'];
     if (used.length === 0) {
@@ -288,7 +321,7 @@ export function findLeaveEndCandidates(
     if (excludedMonths.length > 0) notes.push(`支払基礎日数が足りない月を除いて平均（${excludedMonths.join('・')}）`);
     if (types.includes('specialReduction')) {
       needsReview = true;
-      notes.push('特定減額特例対象者（自動では判定しないため、内容を確かめる）');
+      notes.push('特定減額特例対象者（短時間労働者と同じく支払基礎日数11日以上の月で判定。内容を確かめる）');
     }
     const fromMonth = Number(expectedFrom.slice(5));
     const fromYear = Number(expectedFrom.slice(0, 4));
@@ -297,6 +330,7 @@ export function findLeaveEndCandidates(
     return [
       {
         type: 'leaveEnd' as const,
+        leaveType: leave.type,
         employeeId: employee.id,
         changeMonth: start,
         direction: health.diff < 0 || (!health.qualifies && pension!.diff < 0) ? ('down' as const) : ('up' as const),
@@ -342,7 +376,7 @@ export function trackRevisionCandidates(
   grades: GradeRow[],
   thresholds: GradeThreshold[],
   statuses: CandidateStatusRecord[] = [],
-  cutoff: PayrollCutoff = DEFAULT_CUTOFF,
+  cutoff: CutoffArg = DEFAULT_CUTOFF,
 ): TrackedCandidate[] {
   const saved = new Map(statuses.map((s) => [s.id, s.status]));
   return employees
@@ -365,7 +399,7 @@ export function openRevisionCandidates(
   grades: GradeRow[],
   thresholds: GradeThreshold[],
   statuses: CandidateStatusRecord[] = [],
-  cutoff: PayrollCutoff = DEFAULT_CUTOFF,
+  cutoff: CutoffArg = DEFAULT_CUTOFF,
 ): TrackedCandidate[] {
   return trackRevisionCandidates(employees, salaries, grades, thresholds, statuses, cutoff).filter(
     (c) => c.status === 'open' || c.status === 'filed',

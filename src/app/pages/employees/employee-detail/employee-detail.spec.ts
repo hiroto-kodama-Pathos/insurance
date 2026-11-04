@@ -1,3 +1,7 @@
+import { FilingRepository } from '../../../core/repository/filing-repository';
+import { signal } from '@angular/core';
+import { Auth } from '../../../core/auth/auth';
+import { MaintenanceRepository } from '../../../core/repository/maintenance-repository';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { Masters } from '../../../core/calc/employee-month';
@@ -6,7 +10,9 @@ import { EmployeeDetail as Detail, EmployeeRepository } from '../../../core/repo
 import { MasterRepository } from '../../../core/repository/master-repository';
 import { SettingsRepository } from '../../../core/repository/settings-repository';
 import { DEFAULT_SETTINGS } from '../../../core/calc/settings';
+import { Confirm } from '../../../core/ui/confirm';
 import { EmployeeDetail } from './employee-detail';
+import { NavigationHistory } from '../../../core/ui/navigation-history';
 
 const masters: Masters = {
   offices: [
@@ -24,14 +30,25 @@ function yamada(): Detail {
     employeeNumber: '0001',
     name: '山田 太郎',
     birthDate: '1980-05-10',
-    qualifications: [{ id: 'q1', acquiredDate: '2024-04-01', lostDate: null, lostReason: null }],
-    leaves: [],
+    qualifications: [
+      { id: 'q1', acquiredDate: '2024-04-01', lostDate: null, lostReason: null },
+      // 以前の入社で、同じ月に退職した（同月得喪）
+      { id: 'q0', acquiredDate: '2023-06-05', lostDate: '2023-06-21', lostReason: 'retirement' },
+    ],
+    leaves: [{ id: 'l1', type: 'maternity', startDate: '2022-01-01', endDate: '2022-03-31', workedDays: null }],
     exemptions: [],
-    assignments: [{ id: 'a1', validFrom: '2024-04-01', officeId: 'honsha' }],
+    assignments: [{ id: 'a1', validFrom: '2020-04-01', officeId: 'honsha' }],
     standardHistory: [
       { id: 's1', validFrom: '2024-04', reason: 'acquisition', healthStandard: 300_000, pensionStandard: 300_000, remuneration: null },
+      { id: 's2', validFrom: '2027-03', reason: 'revision', healthStandard: 300_000, pensionStandard: 300_000, remuneration: 300_000, provisional: true },
     ],
     insuredTypes: [{ id: 't1', validFrom: '2024-04-01', type: 'general' }],
+    payrollAssignments: [],
+    absences: [{ id: 'ab1', reason: 'sickness', startDate: '2023-01-10', endDate: '2023-02-28' }],
+    eligibility: {
+      employmentType: 'regular', weeklyHours: 40, monthlyDays: 20, contractEnd: '', renewalExpected: false, isStudent: false,
+      candidate: 'general', reasons: ['週40時間・月20日で、通常の労働者（週40時間・月20日）の4分の3以上'],
+    },
     dependents: [{ id: 'd1', name: '山田 花子', birthDate: '1982-03-03', certifiedDate: '2024-04-01', removedDate: null }],
   };
 }
@@ -39,9 +56,12 @@ function yamada(): Detail {
 describe('EmployeeDetail', () => {
   let fixture: ComponentFixture<EmployeeDetail>;
   let calls: unknown[][];
+  /** yamada() の一部を差し替えて読み込ませる（reload() で画面を作り直す） */
+  let detailOverride: Record<string, unknown> = {};
 
   beforeEach(async () => {
     calls = [];
+    detailOverride = {};
     const record = (name: string) => async (...args: unknown[]) => {
       calls.push([name, ...args]);
     };
@@ -49,27 +69,48 @@ describe('EmployeeDetail', () => {
       imports: [EmployeeDetail],
       providers: [
         provideRouter([]),
+        { provide: Auth, useValue: { user: signal({ uid: 'u1', email: '', siRole: 'admin', siScope: 'all' }), isAdmin: signal(true) } },
+        { provide: MaintenanceRepository, useValue: { deleteMistakenEmployee: record('deleteMistakenEmployee') } },
+        {
+          provide: FilingRepository,
+          useValue: { loadFiledIds: async () => new Set<string>(), setFiled: record('setFiled'), unsetFiled: record('unsetFiled') },
+        },
         { provide: ActivatedRoute, useValue: { snapshot: { paramMap: convertToParamMap({ id: 'e1' }) } } },
         {
           provide: EmployeeRepository,
           useValue: {
-            loadDetail: async () => yamada(),
+            loadDetail: async () => ({ ...yamada(), ...detailOverride }),
+            loadAll: async () => [
+              { id: 'e1', employeeNumber: '0001' },
+              { id: 'e2', employeeNumber: '0002' },
+            ],
+            updateEmployeeNumber: record('updateEmployeeNumber'),
             closeQualification: record('closeQualification'),
             addQualification: record('addQualification'),
             addTransfer: record('addTransfer'),
             addStandard: record('addStandard'),
+            confirmStandard: record('confirmStandard'),
             addLeave: record('addLeave'),
             updateLeave: record('updateLeave'),
             addInsuredType: record('addInsuredType'),
+            addPayrollAssignment: record('addPayrollAssignment'),
             addExemption: record('addExemption'),
             addDependent: record('addDependent'),
             removeDependent: record('removeDependent'),
+            updateName: record('updateName'),
+            setDependentCareExemptions: record('setDependentCareExemptions'),
             updateExemptionEnd: record('updateExemptionEnd'),
+            setRefundStatus: record('setRefundStatus'),
+            addAbsence: record('addAbsence'),
+            updateAbsence: record('updateAbsence'),
           },
         },
         {
           provide: SettingsRepository,
-          useValue: { loadSettings: async () => DEFAULT_SETTINGS },
+          useValue: { loadSettings: async () => DEFAULT_SETTINGS, loadPayrollGroups: async () => [
+            { id: 'monthly', name: '月給者', cutoffDay: 'end', paidIn: 'nextMonth', deductionTiming: 'nextMonth', payDay: 25, isDefault: true },
+            { id: 'part', name: 'パート', cutoffDay: 15, paidIn: 'sameMonth', deductionTiming: 'sameMonth', payDay: 25 },
+          ] },
         },
         {
           provide: MasterRepository,
@@ -90,11 +131,89 @@ describe('EmployeeDetail', () => {
     i.value = value;
     i.dispatchEvent(new Event('input'));
   };
+  async function reload() {
+    fixture = TestBed.createComponent(EmployeeDetail);
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
   async function submit() {
     el().querySelector('form')!.dispatchEvent(new Event('submit'));
     await fixture.whenStable();
     fixture.detectChanges();
   }
+
+  type Unsaved = { unsavedCount(): number };
+  const unsaved = () => (fixture.componentInstance as unknown as Unsaved).unsavedCount();
+
+  it('開いたフォームで入力を変えたまま画面を移ろうとしたら確かめる（開いただけ・やめたあとは確かめない）', async () => {
+    const c = fixture.componentInstance as unknown as { open(m: string): void; cancel(): void; nameForm: { set(v: string): void } };
+    expect(unsaved()).toBe(0);
+    c.open('name');
+    await fixture.whenStable();
+    expect(unsaved()).toBe(0); // 今の氏名が入っているだけ
+    c.nameForm.set('山田 花子');
+    expect(unsaved()).toBe(1);
+    c.cancel();
+    expect(unsaved()).toBe(0);
+  });
+
+  it('同月得喪の資格の期間に、還付の状態（初めは還付待ち）を出し、変えられる', async () => {
+    const table = el().querySelector('table.same-month')!;
+    expect(table.textContent).toContain('2023年6月');
+    const select = table.querySelector('select') as HTMLSelectElement;
+    expect(select.value).toBe('pending');
+    select.value = 'returned';
+    select.dispatchEvent(new Event('change'));
+    await fixture.whenStable();
+    expect(calls).toContainEqual(['setRefundStatus', 'e1', 'q0', 'returned']);
+  });
+
+  it('休職を追加する（ほかの休職と重なる期間はエラー）', async () => {
+    expect(el().querySelector('table.absences')!.textContent).toContain('私傷病');
+    button('休職を追加').click();
+    fixture.detectChanges();
+    const start = el().querySelector('input[name=absenceStart]') as HTMLInputElement;
+    start.value = '2023-02-01';
+    start.dispatchEvent(new Event('input'));
+    await submit();
+    expect(el().textContent).toContain('ほかの休職の期間と重なっています');
+    start.value = '2026-10-01';
+    start.dispatchEvent(new Event('input'));
+    await submit();
+    expect(calls).toContainEqual(['addAbsence', 'e1', { reason: 'sickness', startDate: '2026-10-01', endDate: '' }]);
+  });
+
+  it('操作ボタンは欄ごとにまとめ、入力フォームはその欄の中に開く', () => {
+    expect(el().querySelector('#card-family .actions')!.textContent).toContain('被扶養者を追加');
+    expect(el().querySelector('#card-standard .actions')!.textContent).toContain('標準報酬月額を追加');
+    button('被扶養者を追加').click();
+    fixture.detectChanges();
+    expect(el().querySelector('#card-family form')).not.toBeNull();
+    expect(el().querySelector('#card-qual form')).toBeNull();
+    button('休業を追加').click();
+    fixture.detectChanges();
+    expect(el().querySelector('#card-leave form')).not.toBeNull();
+    expect(el().querySelectorAll('form').length).toBe(1);
+  });
+
+  it('管理者は、確認してから誤登録として削除できる', async () => {
+    const confirm = TestBed.inject(Confirm);
+    button('誤登録として削除').click();
+    fixture.detectChanges();
+    expect(calls).toEqual([]);
+    expect(confirm.current()!.message).toContain('0001 山田 太郎さんを、給与・賞与などと一緒に削除します');
+    confirm.answer(true);
+    await fixture.whenStable();
+    expect(calls).toContainEqual(['deleteMistakenEmployee', 'e1']);
+  });
+
+  it('休業の取得者申出書を「届出済みにする」と、届出の記録を作る', async () => {
+    const row = el().querySelector('tr.leave-row')!;
+    expect(row.textContent).toContain('申出待ち');
+    button('届出済みにする').click();
+    await fixture.whenStable();
+    expect(calls).toContainEqual(['setFiled', { id: 'e1_leave_2022-01-01', employeeId: 'e1', kind: 'leave', trigger: '2022-01-01', officeId: 'honsha' }, 'u1']);
+  });
 
   it('基本情報と履歴を表示する', () => {
     expect(el().querySelector('h1')?.textContent).toContain('山田 太郎');
@@ -112,7 +231,22 @@ describe('EmployeeDetail', () => {
     // 扶養中の被扶養者（d1）も、資格喪失日に扶養から外れる
     expect(calls).toEqual([['closeQualification', 'e1', 'q1', '2026-11-01', 'retirement', ['d1']]]);
     expect(el().textContent).toContain('被扶養者1人も同じ日に扶養から外れます。');
-    expect(el().textContent).toContain('資格喪失日 2026-11-01');
+    expect(el().textContent).toContain('資格喪失日 2026年11月1日');
+  });
+
+  it('退職日を入れると、退職月の保険料と最終給与で控除する月数を表示する', () => {
+    button('退職を登録').click();
+    fixture.detectChanges();
+    input('form input[type=date]', '2026-10-31');
+    fixture.detectChanges();
+    const t = el().querySelector('.retire-preview')!.textContent!;
+    expect(t).toContain('資格喪失日：2026年11月1日');
+    expect(t).toContain('退職月（2026年10月）の保険料もかかります');
+    // 既定の区分（翌月控除・翌月払い）なので、最終給与は11月支給で10月分の1か月分
+    expect(t).toContain('最終給与（2026年11月支給）で、2026年10月分を控除します');
+    input('form input[type=date]', '2026-10-20');
+    fixture.detectChanges();
+    expect(el().querySelector('.retire-preview')!.textContent).toContain('退職月の保険料はかかりません（2026年9月分まで）');
   });
 
   it('退職日が空ならエラーを出して保存しない', async () => {
@@ -149,6 +283,52 @@ describe('EmployeeDetail', () => {
     expect(calls[0][3]).toBe(700_000);
   });
 
+  it('資格取得時決定では、報酬月額の内訳を入れると合計を報酬月額にして内訳も保存する', async () => {
+    button('標準報酬月額を追加').click();
+    fixture.detectChanges();
+    input('input[type=month]', '2026-09');
+    const reason = [...el().querySelectorAll('select')].find((x) => x.querySelector('option[value=acquisition]')) as HTMLSelectElement;
+    reason.value = 'acquisition';
+    reason.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    input('input[name=breakdown-basic]', '250,000');
+    input('input[name=breakdown-allowances]', '20000');
+    input('input[name=breakdown-commuting]', '15000');
+    input('input[name=breakdown-overtime]', '20000');
+    fixture.detectChanges();
+    expect(el().querySelector('fieldset.breakdown .total')!.textContent).toContain('305,000円');
+    button('提案を入力').click();
+    fixture.detectChanges();
+    await submit();
+    expect(calls[0][0]).toBe('addStandard');
+    expect(calls[0][2]).toMatchObject({ reason: 'acquisition', healthStandard: 300_000, pensionStandard: 300_000 });
+    expect(calls[0][3]).toBe(305_000);
+    expect(calls[0][4]).toEqual({ basic: 250_000, allowances: 20_000, commuting: 15_000, overtime: 20_000 });
+  });
+
+  it('通知書待ちの履歴に印を付け、「通知書の値で確定」で通知書の値に直す', async () => {
+    expect(el().textContent).toContain('通知書待ち');
+    button('通知書の値で確定').click();
+    fixture.detectChanges();
+    expect(el().querySelector('form')!.textContent).toContain('2027年3月分から');
+    input('input[name=confirmHealth]', '380,000');
+    input('input[name=confirmPension]', '380000');
+    await submit();
+    expect(calls).toEqual([['confirmStandard', 'e1', 's2', 380_000, 380_000]]);
+  });
+
+  it('標準報酬月額の追加で「通知書待ち」にすると、通知書待ちとして登録する', async () => {
+    button('標準報酬月額を追加').click();
+    fixture.detectChanges();
+    input('input[type=month]', '2027-01');
+    const c = el().querySelector('input[name=provisional]') as HTMLInputElement;
+    c.checked = true;
+    c.dispatchEvent(new Event('change'));
+    await submit();
+    expect(calls[0][0]).toBe('addStandard');
+    expect(calls[0][2]).toMatchObject({ validFrom: '2027-01', provisional: true });
+  });
+
   it('休業を追加する', async () => {
     button('休業を追加').click();
     fixture.detectChanges();
@@ -174,6 +354,29 @@ describe('EmployeeDetail', () => {
     expect(calls).toEqual([['addInsuredType', 'e1', { validFrom: '2026-11-01', type: 'shortTime' }]]);
   });
 
+  it('入社時の加入対象の判定（入力と示した候補・理由）を出す', () => {
+    const t = fixture.nativeElement.querySelector('.eligibility').textContent;
+    expect(t).toContain('正社員・週40時間・月20日');
+    expect(t).toContain('示した候補：一般の被保険者');
+    expect(t).toContain('4分の3以上');
+  });
+
+  it('給与の支払区分を変える（今と同じ区分は登録しない）', async () => {
+    expect(fixture.nativeElement.querySelector('.page-header').textContent).toContain('月給者');
+    expect(fixture.nativeElement.querySelector('.payroll-assignments').textContent).toContain('「月給者」として扱います');
+    button('支払区分を変える').click();
+    fixture.detectChanges();
+    input('input[name=payrollDate]', '2026-11-01');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(fixture.nativeElement.textContent).toContain('この日の支払区分と同じです');
+    const select = fixture.nativeElement.querySelector('select[name=payrollGroup]') as HTMLSelectElement;
+    select.value = 'part';
+    select.dispatchEvent(new Event('change'));
+    await submit();
+    expect(calls).toEqual([['addPayrollAssignment', 'e1', { validFrom: '2026-11-01', payrollGroupId: 'part' }]]);
+  });
+
   it('適用除外を追加する（届け出ることと期限を出す）', async () => {
     button('適用除外を追加').click();
     fixture.detectChanges();
@@ -181,6 +384,62 @@ describe('EmployeeDetail', () => {
     await submit();
     expect(calls).toEqual([['addExemption', 'e1', { type: 'care', startDate: '2026-11-02', endDate: '' }]]);
     expect(fixture.nativeElement.textContent).toContain('介護保険適用除外等該当・非該当届：遅滞なく');
+  });
+
+  it('前の画面が分からないときは「← 従業員一覧へ戻る」だけ。月次保険料一覧から開いたら、そこへ戻るリンクを出す', async () => {
+    const links = () => [...el().querySelectorAll('.back-links a')].map((a) => [a.textContent!.trim(), a.getAttribute('href')]);
+    expect(links()).toEqual([['← 従業員一覧へ戻る', '/employees']]);
+    const history = TestBed.inject(NavigationHistory);
+    history.record('/monthly?month=2026-10');
+    history.record('/employees/e1');
+    await reload();
+    expect(links()).toEqual([
+      ['← 月次保険料一覧へ戻る', '/monthly?month=2026-10'],
+      ['従業員一覧へ', '/employees'],
+    ]);
+    // 従業員一覧から開いたときは、同じリンクを2つ出さない
+    history.record('/employees');
+    history.record('/employees/e1');
+    await reload();
+    expect(links()).toEqual([['← 従業員一覧へ戻る', '/employees']]);
+  });
+
+  it('表は横にスクロールできる枠に入れる（狭い画面で、ページ全体が横にはみ出さないように）', () => {
+    const tables = [...el().querySelectorAll('table.list')];
+    expect(tables.length).toBeGreaterThan(0);
+    expect(tables.every((t) => t.parentElement!.classList.contains('table-wrap'))).toBe(true);
+  });
+
+  it('社員番号を変更する（ほかの人と同じ番号・今と同じ番号は保存しない。全角は半角にそろえる）', async () => {
+    button('社員番号を変更').click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect((el().querySelector('input[name=newEmployeeNumber]') as HTMLInputElement).value).toBe('0001');
+    input('input[name=newEmployeeNumber]', '0002');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('この社員番号はほかの従業員が使っています');
+    input('input[name=newEmployeeNumber]', 'Ａ－００１');
+    await submit();
+    expect(calls).toEqual([['updateEmployeeNumber', 'e1', 'A-001']]);
+    expect(el().textContent).toContain('社員番号を「0001」から「A-001」に変えました。');
+  });
+
+  it('氏名を変更する（今と同じ・空欄は保存しない。届出の要否を知らせる）', async () => {
+    button('氏名を変更').click();
+    fixture.detectChanges();
+    expect((el().querySelector('input[name=newName]') as HTMLInputElement).value).toBe('山田 太郎');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('今の氏名と同じです');
+    input('input[name=newName]', '　');
+    await submit();
+    expect(el().textContent).toContain('氏名を入力してください');
+    input('input[name=newName]', ' 佐藤 太郎 ');
+    await submit();
+    expect(calls).toEqual([['updateName', 'e1', '佐藤 太郎']]);
+    expect(el().textContent).toContain('氏名を「山田 太郎」から「佐藤 太郎」に変えました。');
+    expect(el().textContent).toContain('被保険者氏名変更（訂正）届');
   });
 
   it('被扶養者を追加し、扶養から外す（被扶養者異動届の期限を出す）', async () => {
@@ -191,13 +450,50 @@ describe('EmployeeDetail', () => {
     input('input[name=dependentCertified]', '2026-10-01');
     await submit();
     expect(calls).toEqual([['addDependent', 'e1', { name: '山田 一郎', birthDate: '2026-10-01', certifiedDate: '2026-10-01' }]]);
-    expect(fixture.nativeElement.textContent).toContain('被扶養者異動届：2026-10-06まで（5日以内）');
+    expect(fixture.nativeElement.textContent).toContain('被扶養者異動届：2026年10月6日まで（5日以内）');
     calls.length = 0;
     button('扶養から外す').click();
     fixture.detectChanges();
     input('input[name=dependentRemoved]', '2026-11-01');
     await submit();
     expect(calls).toEqual([['removeDependent', 'e1', 'd1', '2026-11-01']]);
+  });
+
+  it('被扶養者の介護保険の適用除外を登録し、あとから非該当年月日を入れる', async () => {
+    button('介護保険の適用除外を追加').click();
+    fixture.detectChanges();
+    input('input[name=depExemptionStart]', '2026-10-02');
+    await submit();
+    expect(calls).toEqual([['setDependentCareExemptions', 'e1', 'd1', [{ startDate: '2026-10-02', endDate: null }]]]);
+    expect(el().textContent).toContain('山田 花子さんの介護保険の適用除外を登録しました。介護保険適用除外等該当・非該当届：遅滞なく');
+  });
+
+  it('被扶養者が75歳になっていたら、外れた日を登録していなくても「75歳到達」で扶養から外れたと出す（外す操作は出さない）', async () => {
+    detailOverride = {
+      dependents: [{ id: 'd2', name: '山田 キヨ', birthDate: '1940-05-01', certifiedDate: '2010-04-01', removedDate: null }],
+    };
+    await reload();
+    const row = el().querySelector('table.dependents tbody tr')!;
+    expect(row.textContent).toContain('2015年5月1日');
+    expect(row.textContent).toContain('75歳到達');
+    expect(row.classList.contains('muted')).toBe(true);
+    expect(row.textContent).not.toContain('扶養から外す');
+  });
+
+  it('被扶養者の介護保険の適用除外：該当中の期間に非該当年月日を入れる（空欄では保存しない）', async () => {
+    detailOverride = {
+      dependents: [{ id: 'd1', name: '山田 花子', birthDate: '1982-03-03', certifiedDate: '2024-04-01', removedDate: null, careExemptions: [{ startDate: '2026-04-02', endDate: null }] }],
+    };
+    await reload();
+    expect(el().querySelector('td.care-exemptions')!.textContent).toContain('2026年4月2日〜（該当中）');
+    button('非該当年月日を入れる').click();
+    fixture.detectChanges();
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('非該当年月日を入力してください');
+    input('input[name=depExemptionEnd]', '2027-03-15');
+    await submit();
+    expect(calls).toEqual([['setDependentCareExemptions', 'e1', 'd1', [{ startDate: '2026-04-02', endDate: '2027-03-15' }]]]);
   });
 
   it('二以上事業所勤務の人は、自社の報酬・合計の報酬・選んだ保険者を一緒に登録する', async () => {

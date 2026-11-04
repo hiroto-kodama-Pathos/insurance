@@ -1,22 +1,36 @@
-.page { padding: 16px 24px; }
-.page-header { display: flex; align-items: baseline; gap: 16px; }
-.list { border-collapse: collapse; font-size: 13px; margin-bottom: 8px; }
-.list th, .list td { border: 1px solid #ccc; padding: 4px 8px; white-space: nowrap; }
-.list th { background: #f0f3f8; }
-.num { text-align: right; font-variant-numeric: tabular-nums; }
-.strong { font-weight: bold; }
-.muted { color: #999; }
-.badge { background: #e7f1fb; border-radius: 4px; padding: 0 6px; }
-.form { display: flex; flex-direction: column; gap: 10px; max-width: 420px; padding: 16px; margin: 16px 0; border: 1px solid #ccc; border-radius: 8px; }
-.form h2 { margin: 0; font-size: 16px; }
-.form label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
-.form input, .form select { padding: 6px; font-size: 14px; }
-.help { color: #666; font-size: 12px; margin: 0; }
-.err, .error { color: #c00; font-size: 12px; }
-.err:empty { display: none; }
-.notice { background: #e5f4e4; padding: 6px 10px; }
-.actions { display: flex; flex-wrap: wrap; gap: 8px; }
-.secondary { background: #fff; border: 1px solid #7aa7d9; border-radius: 4px; padding: 2px 10px; color: #1c4f8a; cursor: pointer; }
-.row { display: flex; flex-direction: row; gap: 8px; }
-.row input { flex: 1; }
-.form label.check { flex-direction: row; align-items: center; gap: 6px; }
+
+fieldset.breakdown {
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  .total { margin: 4px 0 0; font-weight: bold; }
+}
+.breakdown-text {
+  display: block;
+  font-size: 0.8em;
+  color: #666;
+  white-space: nowrap;
+}
+
+.eligibility {
+  background: #f7f7f7;
+  border-radius: 4px;
+  padding: 8px 12px;
+  p { margin: 2px 0; }
+  ul { margin: 4px 0; padding-left: 1.2em; }
+}
+.retire-preview { background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: 6px 10px; margin: 6px 0; font-size: 13px; }
+.retire-preview p { margin: 2px 0; }
+
+// 欄へのジャンプのリンク（.sections）は、設定の画面と共通なので styles.scss に置く
+.card { border: 1px solid #e5e9f0; border-radius: 8px; padding: 4px 16px 12px; margin: 12px 0; scroll-margin-top: 48px; }
+.card > header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; border-bottom: 1px solid #eef1f5; margin-bottom: 4px; }
+.card > header h2 { margin: 12px 0 8px; }
+.card > header .actions { margin: 4px 0; }
+.page h3 { font-size: 14px; margin: 16px 0 6px; color: #374151; }
+.card .form { border-color: #9db7dd; box-shadow: 0 0 0 3px #e7f1fb; }
+.page-header h1 { margin: 0; }
+.back-links { display: flex; flex-wrap: wrap; gap: 4px 16px; }

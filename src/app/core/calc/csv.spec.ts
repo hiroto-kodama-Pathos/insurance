@@ -1,4 +1,4 @@
-import { decodeCsv, parseCsv, parseDateLoose, parseNumberLoose } from './csv';
+import { decodeCsv, parseCsv, parseDateLoose, parseHoursLoose, parseNumberLoose } from './csv';
 
 describe('decodeCsv', () => {
   it('UTF-8（BOMつき）とShift_JISを自動で判定する', () => {
@@ -29,6 +29,9 @@ describe('parseDateLoose', () => {
     ['R8.10.25', '2026-10-25'],
     ['令和8年10月25日', '2026-10-25'],
     ['令和元年5月1日', '2019-05-01'],
+    ['S60.4.1', '1985-04-01'],
+    ['昭和64年1月7日', '1989-01-07'],
+    ['平成元年1月8日', '1989-01-08'],
     ['２０２６/１０/２５', '2026-10-25'],
   ])('%s → %s', (v, d) => expect(parseDateLoose(v)).toBe(d));
   it('ありえない日付・読めない書き方は null', () => {
@@ -44,5 +47,17 @@ describe('parseNumberLoose', () => {
     expect(parseNumberLoose(' ')).toBeNull();
     expect(parseNumberLoose(undefined)).toBeNull();
     expect(parseNumberLoose('abc')).toBeNaN();
+  });
+});
+
+describe('parseHoursLoose', () => {
+  it('小数・時:分・全角を読み取り、小数第1位に丸める', () => {
+    expect(parseHoursLoose('86.5')).toBe(86.5);
+    expect(parseHoursLoose('86:30')).toBe(86.5);
+    expect(parseHoursLoose('８６時間２０分')).toBe(86.3);
+    expect(parseHoursLoose(' ')).toBeNull();
+    expect(parseHoursLoose(undefined)).toBeNull();
+    expect(parseHoursLoose('86:75')).toBeNaN();
+    expect(parseHoursLoose('abc')).toBeNaN();
   });
 });

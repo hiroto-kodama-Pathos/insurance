@@ -1,3 +1,5 @@
+import { Confirm, ConfirmRequest } from '../../core/ui/confirm';
+import { legacyGroup } from '../../core/calc/payroll-group';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { SettlementRecord } from '../../core/calc/adjustment';
@@ -29,6 +31,10 @@ const yamada = (): EmployeeRecord => ({
   standardHistory: [{ validFrom: '2024-04', healthStandard: 280_000, pensionStandard: 280_000 }],
 });
 
+
+/** 確認ダイアログ：出した確認を記録し、「実行する」を押したことにする */
+const asked: ConfirmRequest[] = [];
+const confirmStub = { provide: Confirm, useValue: { ask: async (r: ConfirmRequest) => { asked.push(r); return true; } } };
 describe('AdjustmentList', () => {
   let fixture: ComponentFixture<AdjustmentList>;
   let settlements: SettlementRecord[];
@@ -43,10 +49,11 @@ describe('AdjustmentList', () => {
     await TestBed.configureTestingModule({
       imports: [AdjustmentList],
       providers: [
+        confirmStub,
         provideRouter([]),
         { provide: EmployeeRepository, useValue: { loadAll: async () => [after] } },
         { provide: MasterRepository, useValue: { loadMasters: async () => masters } },
-        { provide: SettingsRepository, useValue: { loadSettings: async () => DEFAULT_SETTINGS } },
+        { provide: SettingsRepository, useValue: { loadSettings: async () => DEFAULT_SETTINGS, loadPayrollGroups: async () => [legacyGroup(DEFAULT_SETTINGS)] } },
         { provide: ClosingRepository, useValue: { loadRecent: async () => [closing] } },
         {
           provide: AdjustmentRepository,
@@ -69,7 +76,7 @@ describe('AdjustmentList', () => {
 
   it('確定済みの月の差額を、理由・確定時と今の標準報酬月額・保険ごとの本人負担の差額つきで出す', () => {
     const text = el().querySelector('table.adjustments tbody')!.textContent!;
-    expect(text).toContain('2026-07');
+    expect(text).toContain('2026年7月');
     expect(text).toContain('標準報酬月額のさかのぼる改定');
     expect(text).toContain('28万円 → 34万円');
     expect(text).toContain('+2,955');
@@ -84,6 +91,6 @@ describe('AdjustmentList', () => {
     fixture.detectChanges();
     expect(settlements[0].entries[0].settledMonth).toBe('2026-09');
     expect(el().textContent).toContain('未精算（0）');
-    expect(el().textContent).toContain('2026-09の給与で精算済みにしました。');
+    expect(el().textContent).toContain('2026年9月の給与で精算済みにしました。');
   });
 });

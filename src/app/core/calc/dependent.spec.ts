@@ -1,5 +1,5 @@
 import { calcEmployeeMonth, EmployeeData, Masters } from './employee-month';
-import { checkDependent, checkRemoval, dependentReportDeadline, isDependentInMonth, isSpecialInsuredMonth } from './dependent';
+import { checkDependent, checkRemoval, dependentOut, dependentReportDeadline, isDependentInMonth, isSpecialInsuredMonth } from './dependent';
 
 const kumiai = { id: 'k1', type: 'kumiai' as const, name: '〇〇健康保険組合', specialInsuredEnabled: true };
 // 妻：1980年5月10日生まれ（2020年5月に40歳、2045年5月に65歳）
@@ -12,6 +12,18 @@ describe('被扶養者', () => {
     expect(isDependentInMonth(d, '2026-04')).toBe(true);
     expect(isDependentInMonth(d, '2026-08')).toBe(true);
     expect(isDependentInMonth(d, '2026-09')).toBe(false);
+  });
+
+  it('75歳の誕生日に扶養から外れる（外れた日を登録していなくても、誕生日の月から外れる）', () => {
+    const mother = { name: '山田 キヨ', birthDate: '1951-11-15', certifiedDate: '2020-04-01', removedDate: null };
+    expect(dependentOut(mother)).toEqual({ date: '2026-11-15', reason: 'age75' });
+    expect(isDependentInMonth(mother, '2026-10')).toBe(true);
+    expect(isDependentInMonth(mother, '2026-11')).toBe(false);
+    // 75歳より前に外れた日を登録していれば、その日
+    expect(dependentOut({ ...mother, removedDate: '2026-06-30' })).toEqual({ date: '2026-06-30', reason: 'removed' });
+    // 75歳より後の日を登録していても、75歳の誕生日に外れる
+    expect(dependentOut({ ...mother, removedDate: '2027-01-01' })).toEqual({ date: '2026-11-15', reason: 'age75' });
+    expect(isDependentInMonth({ ...mother, removedDate: '2027-01-01' }, '2026-12')).toBe(false);
   });
 
   it('特定被保険者：制度のある組合健保で、40〜64歳の被扶養者がいる月だけ', () => {
@@ -62,5 +74,12 @@ describe('特定被保険者の介護保険料（月額の計算）', () => {
     expect(r.premium!.care!.employeeYen).toBe(2_400n); // 300,000 × 1.6% × 50%
     const none = calcEmployeeMonth(me([]), masters, '2026-10');
     expect(none.premium!.care).toBeNull();
+  });
+});
+
+describe('被扶養者の入力チェック：75歳以上', () => {
+  it('扶養に入る日に75歳以上なら登録できない（75歳の誕生日の前日までは登録できる）', () => {
+    expect(checkDependent({ name: '父', birthDate: '1951-11-02', certifiedDate: '2026-11-02' }).birthDate).toContain('75歳以上');
+    expect(checkDependent({ name: '父', birthDate: '1951-11-02', certifiedDate: '2026-11-01' })).toEqual({});
   });
 });

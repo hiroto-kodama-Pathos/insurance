@@ -1,24 +1,56 @@
 <header class="app-header">
-  <span class="app-title">社会保険管理システム</span>
+  <div class="bar">
+    <a class="app-title" routerLink="/">社会保険管理システム</a>
+    @if (auth.canUse()) {
+      <button type="button" class="menu-toggle" [attr.aria-expanded]="menuOpen()" (click)="menuOpen.set(!menuOpen())">メニュー</button>
+      <span class="spacer"></span>
+      <span class="user">{{ auth.user()?.email }}（{{ auth.isAdmin() ? '管理者' : '担当者' }}）</span>
+      <button type="button" class="logout" (click)="logout()">ログアウト</button>
+    }
+  </div>
   @if (auth.canUse()) {
-    <nav>
-      <a routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: true }">要確認</a>
-      <a routerLink="/monthly" routerLinkActive="active">月次保険料一覧</a>
-      <a routerLink="/salaries" routerLinkActive="active">給与</a>
-      <a routerLink="/bonuses" routerLinkActive="active">賞与</a>
-      <a routerLink="/revisions" routerLinkActive="active">随時改定</a>
-      <a routerLink="/regular" routerLinkActive="active">定時決定</a>
-      <a routerLink="/adjustments" routerLinkActive="active">差額</a>
-      <a routerLink="/employees" routerLinkActive="active">従業員</a>
-      @if (auth.isAdmin()) {
-        <a routerLink="/settings" routerLinkActive="active">設定</a>
+    <nav [class.open]="menuOpen()" (click)="closeMenus()">
+      @for (g of menu(); track g.label) {
+        @if (g.collapsible) {
+          <!-- 見出しだけを出し、押すと画面の一覧を開く（ツリー） -->
+          <div class="group dropdown">
+            <button type="button" class="group-toggle" [class.active]="groupActive(g)" [attr.aria-expanded]="openGroup() === g.label"
+              [attr.aria-controls]="'menu-' + $index" (click)="toggleGroup(g.label, $event)">
+              {{ g.label }} <span class="caret" aria-hidden="true">▾</span>
+            </button>
+            <div class="dropdown-menu" [id]="'menu-' + $index" [hidden]="openGroup() !== g.label">
+              @for (l of g.links; track l.path) {
+                <a [routerLink]="l.path" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: l.exact ?? false }">
+                  {{ l.label }}<span class="help-text">{{ l.help }}</span>
+                </a>
+              }
+            </div>
+          </div>
+        } @else {
+          <div class="group">
+            <span class="group-label">{{ g.label }}</span>
+            @for (l of g.links; track l.path) {
+              <a [routerLink]="l.path" routerLinkActive="active" [routerLinkActiveOptions]="{ exact: l.exact ?? false }" [title]="l.help">{{ l.label }}</a>
+            }
+          </div>
+        }
       }
     </nav>
-    <span class="spacer"></span>
-    <span class="user">{{ auth.user()?.email }}（{{ auth.isAdmin() ? '管理者' : '担当者' }}）</span>
-    <button type="button" class="logout" (click)="logout()">ログアウト</button>
   }
 </header>
 <main>
   <router-outlet />
 </main>
+
+@if (confirm.current(); as c) {
+  <div class="confirm-backdrop" (click)="confirm.answer(false)">
+    <div class="confirm" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title" aria-describedby="confirm-message" (click)="$event.stopPropagation()" (keydown)="onConfirmKeydown($event)">
+      <h2 id="confirm-title">{{ c.title }}</h2>
+      <p id="confirm-message">{{ c.message }}</p>
+      <div class="actions">
+        <button #confirmCancel type="button" class="secondary confirm-cancel" (click)="confirm.answer(false)">やめる</button>
+        <button #confirmOk type="button" class="confirm-ok" [class.danger]="c.danger" [class.solid]="c.danger" (click)="confirm.answer(true)">{{ c.ok }}</button>
+      </div>
+    </div>
+  </div>
+}

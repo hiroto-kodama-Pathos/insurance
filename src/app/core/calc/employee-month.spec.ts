@@ -1,4 +1,4 @@
-import { calcEmployeeMonth, EmployeeData, findEffective, Masters } from './employee-month';
+import { calcEmployeeMonth, EmployeeData, findEffective, Masters, standardChangeLabel } from './employee-month';
 
 const masters: Masters = {
   offices: [
@@ -145,5 +145,18 @@ describe('従業員1人・1か月分の保険料', () => {
       '2026-10',
     );
     expect(r.premium?.pension?.employeeYen).toBe(18_300n);
+  });
+});
+
+describe('standardChangeLabel', () => {
+  const h = (validFrom: string, health: number, pension: number) => ({ validFrom, healthStandard: health, pensionStandard: pension });
+  it('変わった側を出す（改定のない月・最初の月は null）', () => {
+    const list = [h('2024-04', 620_000, 620_000), h('2026-07', 750_000, 620_000), h('2026-09', 750_000, 650_000), h('2026-11', 300_000, 300_000), h('2027-01', 300_000, 300_000)];
+    expect(standardChangeLabel(list, '2024-04')).toBeNull();
+    expect(standardChangeLabel(list, '2026-07')).toBe('標準報酬月額の改定（健康保険のみ：62万円→75万円）');
+    expect(standardChangeLabel(list, '2026-09')).toBe('標準報酬月額の改定（厚生年金のみ：62万円→65万円）');
+    expect(standardChangeLabel(list, '2026-11')).toBe('標準報酬月額の改定（健保 75万円→30万円／厚年 65万円→30万円）');
+    expect(standardChangeLabel(list, '2026-10')).toBeNull();
+    expect(standardChangeLabel(list, '2027-01')).toBeNull();
   });
 });

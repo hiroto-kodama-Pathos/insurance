@@ -1,8 +1,9 @@
 // 給与のCSV取り込み（設計書 3.8）
 // 給与ソフトごとに列の並びや名前が違うため、列の対応づけを会社の設定（csvMappings.salary）に保存して毎月使う。
-import { parseDateLoose, parseNumberLoose } from './csv';
+import { parseDateLoose, parseHoursLoose, parseNumberLoose } from './csv';
 import { findOffice, Assignment, Office } from './office';
 import { SalaryRecord, validateSalary } from './salary';
+import { toHalfWidth } from './half-width';
 
 /** アプリの項目ごとに、対応するCSVの列名（固定的・非固定的賃金は複数の列を合計） */
 export type SalaryMapping = {
@@ -13,10 +14,14 @@ export type SalaryMapping = {
   nonFixedWages: string[];
   retroactiveDiff: string;
   inKindWages: string;
+  /** 実際の労働時間（任意。未加入の人の加入の可能性に使う） */
+  workingHours?: string;
+  /** 時給単価（任意。時給の人の随時改定に使う） */
+  hourlyRate?: string;
 };
 
 /** アプリ指定の形式（テンプレート）の列名。この形式のファイルは対応づけなしで取り込める */
-export const TEMPLATE_HEADERS = ['社員番号', '支払日', '支払基礎日数', '固定的賃金', '非固定的賃金', 'うち遡及差額', 'うち現物給与'];
+export const TEMPLATE_HEADERS = ['社員番号', '支払日', '支払基礎日数', '固定的賃金', '非固定的賃金', 'うち遡及差額', 'うち現物給与', '労働時間', '時給単価'];
 
 export const TEMPLATE_MAPPING: SalaryMapping = {
   employeeNumber: '社員番号',
@@ -26,16 +31,19 @@ export const TEMPLATE_MAPPING: SalaryMapping = {
   nonFixedWages: ['非固定的賃金'],
   retroactiveDiff: 'うち遡及差額',
   inKindWages: 'うち現物給与',
+  workingHours: '労働時間',
+  hourlyRate: '時給単価',
 };
 
 export function templateCsv(): string {
-  return `${TEMPLATE_HEADERS.join(',')}\r\n0001,2026-10-25,31,340000,20000,,\r\n`;
+  return `${TEMPLATE_HEADERS.join(',')}\r\n0001,2026-10-25,31,340000,20000,,,,\r\n`;
 }
 
 /** 対応づけが、このCSVの見出しで使えるか（使えない列名を返す） */
 export function missingColumns(mapping: SalaryMapping, headers: string[]): string[] {
   const required = [mapping.employeeNumber, mapping.paidDate, mapping.paymentBaseDays, ...mapping.fixedWages];
   const optional = [...mapping.nonFixedWages, mapping.retroactiveDiff, mapping.inKindWages].filter((c) => c !== '');
+  // 労働時間・時給単価の列はなくてもよい（ないときは取り込まない）
   const missing = [...required, ...optional].filter((c) => !headers.includes(c));
   if (mapping.employeeNumber === '' || mapping.paidDate === '' || mapping.paymentBaseDays === '' || mapping.fixedWages.length === 0)
     missing.unshift('（必須の項目が未設定）');
@@ -70,7 +78,7 @@ export type PreviewContext = {
 
 /** 社員番号で従業員を探す。先頭の0が消えていても、登録済みの社員番号の桁数にそろえて照合する */
 export function findByNumber(employees: ImportEmployee[], raw: string): ImportEmployee | null {
-  const v = raw.trim();
+  const v = toHalfWidth(raw).trim();
   const exact = employees.find((e) => e.employeeNumber === v);
   if (exact) return exact;
   if (!/^\d+$/.test(v)) return null;
@@ -113,9 +121,13 @@ export function buildPreview(rows: string[][], mapping: SalaryMapping, ctx: Prev
     const days = parseNumberLoose(cell(r, mapping.paymentBaseDays));
     const retro = parseNumberLoose(cell(r, mapping.retroactiveDiff));
     const inKind = parseNumberLoose(cell(r, mapping.inKindWages));
+    const hours = parseHoursLoose(cell(r, mapping.workingHours ?? ''));
+    const rate = parseNumberLoose(cell(r, mapping.hourlyRate ?? ''));
     if (Number.isNaN(days)) errors.push('支払基礎日数を数値として読み取れません');
     if (Number.isNaN(retro)) errors.push('うち遡及差額を数値として読み取れません');
     if (Number.isNaN(inKind)) errors.push('うち現物給与を数値として読み取れません');
+    if (Number.isNaN(hours)) errors.push('労働時間を数値として読み取れません');
+    if (Number.isNaN(rate)) errors.push('時給単価を数値として読み取れません');
 
     const input = {
       paidDate: paidDate ?? '',
@@ -124,6 +136,8 @@ export function buildPreview(rows: string[][], mapping: SalaryMapping, ctx: Prev
       paymentBaseDays: Number.isNaN(days) ? null : days,
       retroactiveDiff: Number.isNaN(retro) ? null : retro,
       inKindWages: Number.isNaN(inKind) ? null : inKind,
+      workingHours: Number.isNaN(hours) ? null : hours,
+      hourlyRate: Number.isNaN(rate) ? null : rate,
     };
     if (paidDate) {
       const v = validateSalary(input);
@@ -152,6 +166,8 @@ export function buildPreview(rows: string[][], mapping: SalaryMapping, ctx: Prev
       paymentBaseDays: input.paymentBaseDays!,
       retroactiveDiff: input.retroactiveDiff || null,
       inKindWages: input.inKindWages || null,
+      workingHours: input.workingHours ?? null,
+      hourlyRate: input.hourlyRate || null,
     };
     if (ctx.scope !== 'all' && officeId !== ctx.scope)
       return { ...base, status: 'outOfScope' as const, errors: ['担当範囲外の事業所の従業員のため取り込みません'], salary };

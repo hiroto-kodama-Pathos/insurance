@@ -1,7 +1,18 @@
 // 賞与の登録と賞与保険料一覧（設計書 2.4・3.3）
 // 支払う前に支給日と賞与額を登録し、上限・免除・喪失月を判定した保険料と、賞与支払届の期限を確かめる。
-import { Component, computed, inject, OnInit, signal } from '@angular/core';
-import { BonusErrors, BonusInput, validateBonus } from '../../core/calc/bonus-input';
+import { distinctOptions, matchesPerson } from '../../core/calc/person-search';
+import { RouterLink } from '@angular/router';
+import { Confirm } from '../../core/ui/confirm';
+import { NoticeMessage } from '../../core/ui/notice-message';
+import { leaveExemptLabel } from '../../core/calc/eligibility';
+import { bonusExemptingLeave } from '../../core/calc/bonus-premium';
+import { FilingRepository } from '../../core/repository/filing-repository';
+import { isValidDate } from '../../core/calc/new-employee';
+import { Component, computed, HostListener, inject, OnInit, signal } from '@angular/core';
+import { HasUnsavedChanges } from '../../core/ui/unsaved-guard';
+import { BonusErrors, BonusInput, bonusReportAmounts, validateBonus } from '../../core/calc/bonus-input';
+import { isPensionAge } from '../../core/calc/age';
+import { BonusType, fourthBonusWarning, isRemunerationBonus } from '../../core/calc/bonus-type';
 import {
   BonusRecord,
   BonusResult,
@@ -20,6 +31,9 @@ import { ClosingRepository } from '../../core/repository/closing-repository';
 import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
 import { MasterRepository } from '../../core/repository/master-repository';
 import { SettingsRepository } from '../../core/repository/settings-repository';
+import { parseNumberInput } from '../../core/calc/half-width';
+import { DateLabelPipe, YearMonthPipe } from '../../core/ui/year-month.pipe';
+import { dateLabel } from '../../core/calc/year-month';
 
 export type BonusRow = {
   employee: { id: string; employeeNumber: string; name: string };
@@ -43,17 +57,21 @@ function currentMonth(): string {
 }
 
 @Component({
-  imports: [],
+  imports: [RouterLink, NoticeMessage, YearMonthPipe, DateLabelPipe],
   selector: 'app-bonus-list',
   styleUrl: './bonus-list.scss',
   templateUrl: './bonus-list.html',
 })
-export class BonusList implements OnInit {
+export class BonusList implements OnInit, HasUnsavedChanges {
   private readonly bonusRepo = inject(BonusRepository);
+  private readonly confirm = inject(Confirm);
   private readonly employeeRepo = inject(EmployeeRepository);
   private readonly masterRepo = inject(MasterRepository);
   private readonly settingsRepo = inject(SettingsRepository);
   private readonly closingRepo = inject(ClosingRepository);
+  private readonly filingRepo = inject(FilingRepository);
+  /** 届出済みにした届出（産休・育休の取得者申出書の「申出待ち」の表示に使う） */
+  private readonly filedIds = signal<Set<string>>(new Set());
 
   protected readonly lineLabels = LINE_LABEL;
   protected readonly lines: PaymentLine[] = ['healthCare', 'childSupport', 'pension'];
@@ -74,15 +92,77 @@ export class BonusList implements OnInit {
   private readonly closings = signal<OfficeClosing[]>([]);
 
   // 登録フォーム
-  protected readonly form = signal<BonusInput>({ employeeId: '', paidDate: '', amount: null });
+  protected readonly form = signal<BonusInput>({ employeeId: '', paidDate: '', amount: null, inKindAmount: null, bonusTypeId: '' });
+  /**
+   * 画面を移る前の確認に使う（unsavedChangesGuard）。従業員・支給額・現物のどれかを入れていれば1件
+   * 支給日・賞与の種類は、続けて登録しやすいよう登録のあとも残すので、数えない
+   */
+  unsavedCount(): number {
+    const f = this.form();
+    return f.employeeId !== '' || f.amount !== null || f.inKindAmount !== null ? 1 : 0;
+  }
+  /** ブラウザのタブを閉じる・再読み込みするときも確かめる */
+  @HostListener('window:beforeunload', ['$event'])
+  protected onBeforeUnload(e: BeforeUnloadEvent): void {
+    if (this.unsavedCount() > 0) e.preventDefault();
+  }
+  protected readonly bonusTypes = signal<BonusType[]>([]);
+  /** 選んだ種類で、この賞与が報酬扱いになるか */
+  protected readonly formIsRemuneration = computed(() => {
+    const f = this.form();
+    return !!f.paidDate && isRemunerationBonus(this.bonusTypes(), f.bonusTypeId, f.paidDate);
+  });
+  /** 支給日の年度の賞与（表示している対象月と年度が違うときは、別に読む） */
+  private readonly paidFyBonuses = signal<{ fy: string; list: BonusRecord[] } | null>(null);
+  /** 報酬扱いでない賞与が同じ年度で4回目になる（年4回以上支給の設定がない） */
+  protected readonly fourthWarning = computed(() => {
+    const f = this.form();
+    if (!f.employeeId || !isValidDate(f.paidDate) || this.formIsRemuneration()) return null;
+    const fy = fiscalYearOf(f.paidDate);
+    const other = this.paidFyBonuses();
+    const list = fy === this.loadedFyName() ? this.fyBonuses() : other?.fy === fy ? other.list : null;
+    return list ? fourthBonusWarning(list, f.employeeId, f.paidDate) : null;
+  });
+  private readonly loadedFyName = signal('');
   protected readonly errors = signal<BonusErrors>({});
 
   /** 登録の候補にする従業員（社員番号順） */
   protected readonly employeeOptions = computed(() =>
     [...this.employees()].sort((a, b) => a.employeeNumber.localeCompare(b.employeeNumber)),
   );
+  /** 登録欄の従業員の検索（氏名・社員番号。空白は無視） */
+  protected readonly employeeQuery = signal('');
+  /** 選択肢を検索で絞ったもの。選んでいる人は、検索に合わなくても残す（選び直しにならないように） */
+  protected readonly filteredEmployeeOptions = computed(() => {
+    const q = this.employeeQuery();
+    const selected = this.form().employeeId;
+    return this.employeeOptions().filter((e) => e.id === selected || matchesPerson(e.employeeNumber, e.name, q));
+  });
+  /** 検索して1人に絞れたら、その人を選ぶ */
+  protected setEmployeeQuery(value: string): void {
+    this.employeeQuery.set(value);
+    const hits = this.employeeOptions().filter((e) => matchesPerson(e.employeeNumber, e.name, value));
+    if (value.trim() !== '' && hits.length === 1) this.setForm('employeeId', hits[0].id);
+  }
 
   /** 表示している月に払う（払った）賞与。確定済みの事業所は保存した結果を使う */
+  // ---- 絞り込み（設計書 3.3） ----
+  protected readonly query = signal('');
+  protected readonly officeFilter = signal('');
+  protected readonly paidDateFilter = signal('');
+  /** 絞り込みの選択肢（この月の賞与に出てくる事業所・支給日） */
+  protected readonly officeOptions = computed(() => distinctOptions(this.rows().map((r) => r.officeName)));
+  protected readonly paidDateOptions = computed(() => distinctOptions(this.rows().map((r) => r.result.bonus.paidDate)).sort());
+  /** 表に出す行 */
+  protected readonly shownRows = computed(() =>
+    this.rows().filter(
+      (r) =>
+        matchesPerson(r.employee.employeeNumber, r.employee.name, this.query()) &&
+        (this.officeFilter() === '' || r.officeName === this.officeFilter()) &&
+        (this.paidDateFilter() === '' || r.result.bonus.paidDate === this.paidDateFilter()),
+    ),
+  );
+
   protected readonly rows = computed<BonusRow[]>(() => {
     const m = this.masters();
     if (!m) return [];
@@ -129,7 +209,7 @@ export class BonusList implements OnInit {
   protected readonly reports = computed<BonusReport[]>(() => {
     const map = new Map<string, BonusReport>();
     for (const r of this.rows()) {
-      if (r.result.target === 'outside' || !r.result.officeId) continue;
+      if (r.result.target === 'outside' || r.result.status === 'remuneration' || !r.result.officeId) continue;
       const key = `${r.result.officeId}|${r.result.bonus.paidDate}`;
       const cur = map.get(key);
       if (cur) cur.count++;
@@ -143,6 +223,22 @@ export class BonusList implements OnInit {
         });
     }
     return [...map.values()].sort((a, b) => a.deadline.localeCompare(b.deadline));
+  });
+
+  /** 届け出る賞与額（人ごと。同じ月の2回以上の支給は合算し、1,000円未満を切り捨て。設計書 2.4） */
+  protected readonly reportAmounts = computed(() => {
+    const rows = this.rows().filter((r) => r.result.target !== 'outside' && r.result.status !== 'remuneration');
+    const byId = new Map(this.employees().map((e) => [e.id, e]));
+    return bonusReportAmounts(rows.map((r) => r.result.bonus))
+      .map((a) => {
+        const e = byId.get(a.employeeId);
+        const notes: string[] = [];
+        if (a.paidDates.length > 1) notes.push(`同じ月に${a.paidDates.length}回の支給を合算`);
+        if (e?.birthDate && !isPensionAge(e.birthDate, a.yearMonth)) notes.push('70歳以上被用者');
+        if (rows.some((r) => r.employee.id === a.employeeId && r.result.multiOffice)) notes.push('二以上事業所勤務');
+        return { ...a, employee: rows.find((r) => r.employee.id === a.employeeId)!.employee, notes };
+      })
+      .sort((x, y) => x.employee.employeeNumber.localeCompare(y.employee.employeeNumber));
   });
 
   /** その場で計算した、賞与1件の結果（確定済みの行に、決定後の過不足を付けるため） */
@@ -170,8 +266,7 @@ export class BonusList implements OnInit {
   /** 二以上事業所勤務：全事業所の賞与額の合計を登録する */
   protected async saveTotal(row: BonusRow): Promise<void> {
     const id = row.result.bonus.id;
-    const raw = (this.totalInputs()[id] ?? '').replace(/[,\s円]/g, '');
-    const total = raw === '' ? null : Number(raw);
+    const total = parseNumberInput(this.totalInputs()[id]);
     if (total !== null && (!Number.isInteger(total) || total <= row.result.bonus.amount)) {
       this.notice.set('全事業所の合計は、自社の賞与額より大きい円の額で入力してください（空欄にすると消します）。');
       return;
@@ -206,14 +301,17 @@ export class BonusList implements OnInit {
 
   async ngOnInit(): Promise<void> {
     try {
-      const [employees, masters, settings] = await Promise.all([
+      const [employees, masters, settings, filedIds] = await Promise.all([
         this.employeeRepo.loadAll(),
         this.masterRepo.loadMasters(),
         this.settingsRepo.loadSettings(),
+        this.filingRepo.loadFiledIds(),
       ]);
+      this.filedIds.set(filedIds);
       this.employees.set(employees);
       this.masters.set(masters);
       this.rounding.set(settings.childSupportRounding);
+      this.bonusTypes.set(await this.settingsRepo.loadBonusTypes());
       await this.loadBonuses(true);
     } catch (e) {
       console.error(e);
@@ -231,6 +329,7 @@ export class BonusList implements OnInit {
     if (!force && fy === this.loadedFy) return;
     const list = await this.bonusRepo.loadFiscalYear(fy);
     this.loadedFy = fy;
+    this.loadedFyName.set(fy);
     this.fyBonuses.set(list);
   }
 
@@ -244,10 +343,23 @@ export class BonusList implements OnInit {
   /** 表示している月に、確定済みの事業所があるか */
   protected readonly hasClosed = computed(() => this.closings().length > 0);
 
+  /** 支給日の年度が、表示している対象月の年度と違えば、その年度の賞与を読む（4回目の警告のため） */
+  private async loadPaidFy(paidDate: string): Promise<void> {
+    if (!isValidDate(paidDate)) return;
+    const fy = fiscalYearOf(paidDate);
+    if (fy === this.loadedFyName() || this.paidFyBonuses()?.fy === fy) return;
+    const list = await this.bonusRepo.loadFiscalYear(fy);
+    this.paidFyBonuses.set({ fy, list });
+  }
+
   protected setForm<K extends keyof BonusInput>(key: K, value: string): void {
+    if (key === 'paidDate') void this.loadPaidFy(value);
     this.form.update((f) => ({
       ...f,
-      [key]: key === 'amount' ? (value.replace(/[,\s円]/g, '') === '' ? null : Number(value.replace(/[,\s円]/g, ''))) : value,
+      [key]:
+        key === 'amount' || key === 'inKindAmount'
+          ? parseNumberInput(value)
+          : value,
     }));
   }
 
@@ -273,27 +385,46 @@ export class BonusList implements OnInit {
         this.errors.set({ paidDate: 'この月は確定済みです。月次保険料一覧で確定を解除してから登録してください' });
         return;
       }
-      await this.bonusRepo.add({ employeeId: f.employeeId, paidDate: f.paidDate, amount: f.amount! }, officeId);
+      await this.bonusRepo.add(
+        {
+          employeeId: f.employeeId, paidDate: f.paidDate, amount: f.amount!, inKindAmount: f.inKindAmount || null,
+          bonusTypeId: f.bonusTypeId || null, isRemuneration: this.formIsRemuneration(),
+        },
+        officeId,
+      );
       const ym = f.paidDate.slice(0, 7);
       this.yearMonth.set(ym);
       await this.loadBonuses(true);
       const name = this.employees().find((e) => e.id === f.employeeId)?.name ?? '';
-      this.notice.set(`${name}さんの賞与（${f.paidDate}支給）を登録しました。`);
-      this.form.set({ employeeId: '', paidDate: f.paidDate, amount: null });
+      const report = this.reportAmounts().find((a) => a.employeeId === f.employeeId && a.yearMonth === ym);
+      this.notice.set(
+        `${name}さんの賞与（${dateLabel(f.paidDate)}支給）を登録しました。賞与支払届は${dateLabel(bonusReportDeadline(f.paidDate))}までに届け出ます` +
+          (report ? `（届け出る賞与額 ${report.total.toLocaleString('ja-JP')}円${report.paidDates.length > 1 ? '・同じ月の支給を合算' : ''}）。` : '。'),
+      );
+      this.form.set({ employeeId: '', paidDate: f.paidDate, amount: null, inKindAmount: null, bonusTypeId: f.bonusTypeId });
+      this.employeeQuery.set('');
     } catch (e) {
       console.error(e);
-      this.errors.set({ amount: '保存できませんでした。権限と通信を確かめてください。' });
+      // 通信・権限で保存できなかった（支給額の欄の誤りではない）ので、知らせとして出す
+      this.notice.set('保存できませんでした。権限と通信を確かめてください。');
     } finally {
       this.saving.set(false);
     }
   }
 
   protected async remove(row: BonusRow): Promise<void> {
+    const ok = await this.confirm.ask({
+      title: '賞与を削除しますか',
+      message: `${row.employee.name}さんの賞与（${dateLabel(row.result.bonus.paidDate)}支給・${row.result.bonus.amount.toLocaleString('ja-JP')}円）を削除します。元に戻せません。`,
+      ok: '削除する',
+      danger: true,
+    });
+    if (!ok) return;
     this.saving.set(true);
     try {
       await this.bonusRepo.remove(row.result.bonus.id);
       await this.loadBonuses(true);
-      this.notice.set(`${row.employee.name}さんの賞与（${row.result.bonus.paidDate}支給）を削除しました。`);
+      this.notice.set(`${row.employee.name}さんの賞与（${dateLabel(row.result.bonus.paidDate)}支給）を削除しました。`);
     } catch (e) {
       console.error(e);
       this.notice.set('削除できませんでした。権限と通信を確かめてください。');
@@ -317,11 +448,16 @@ export class BonusList implements OnInit {
   protected notes(r: BonusResult): string[] {
     const n: string[] = [];
     if (r.status === 'outside') n.push('資格のない日の支給（保険料・届出なし）');
+    if (r.status === 'remuneration') n.push('報酬扱い（年4回以上支給の賞与。賞与の保険料・賞与支払届なし。定時決定で報酬に上乗せ）');
     if (r.status === 'noOffice') n.push('所属事業所が未登録');
     if (r.status === 'missingRate') n.push('料率が未登録');
-    if (r.target === 'lostMonth') n.push('資格喪失月（保険料なし・累計に含める）');
-    if (r.exemption === 'maternity') n.push('産休免除');
-    if (r.exemption === 'childcare') n.push('育休免除');
+    if (r.transferOut) n.push(`異動月の賞与（${r.transferOut}に異動。元の事業所では資格喪失月の賞与のため、保険料なし・累計に含める）`);
+    else if (r.target === 'lostMonth') n.push('資格喪失月（保険料なし・累計に含める）');
+    if (r.exemption !== 'none') {
+      const e = this.employees().find((x) => x.id === r.bonus.employeeId);
+      const l = e ? bonusExemptingLeave(e.leaves, r.bonus.paidDate) : null;
+      n.push(l ? leaveExemptLabel(r.bonus.employeeId, l, this.filedIds()) : r.exemption === 'maternity' ? '産休免除' : '育休免除');
+    }
     if (r.capped.health) n.push(`健保の年度累計の上限（${this.yen(r.base.health)}円まで）`);
     if (r.capped.pension) n.push(`厚年の同月の上限（${this.yen(r.base.pension)}円まで）`);
     if (r.multiOfficeReview) n.push('二以上事業所勤務のため要確認（他社の賞与と合わせると上限にかかるおそれ）');

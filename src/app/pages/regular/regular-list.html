@@ -2,7 +2,7 @@
   <header class="page-header">
     <h1>定時決定の見込み</h1>
     <label class="year">
-      <input type="number" min="2000" [value]="year()" (change)="onYearChange($any($event.target).value)" />年
+      <input inputmode="numeric" name="year" size="5" [value]="year()" (change)="onYearChange($any($event.target).value)" />年
     </label>
   </header>
 
@@ -11,13 +11,16 @@
   } @else if (error()) {
     <p class="error">{{ error() }}</p>
   } @else {
-    <p class="help">
-      {{ year() }}年4〜6月に支払った報酬の平均から、{{ year() }}年9月分からの標準報酬月額を見込みます。算定基礎届は7月10日までに出します。
-      一覧はあくまで見込みの表示で、「見込みどおり登録」や一括登録をするまで、標準報酬月額も保険料も変わりません。
-    </p>
+    <details class="howto">
+      <summary>この画面の使い方</summary>
+      <p class="help">
+        {{ year() }}年4〜6月に支払った報酬の平均から、{{ year() }}年9月分からの標準報酬月額を見込みます。算定基礎届は7月10日までに出します。
+        一覧はあくまで見込みの表示で、「見込みどおり登録」や一括登録をするまで、標準報酬月額も保険料も変わりません。
+      </p>
+    </details>
 
     @if (notice()) {
-      <p class="notice">{{ notice() }}</p>
+      <app-notice [message]="notice()!" (closed)="notice.set(null)" />
     }
 
     <p class="bulk">
@@ -25,10 +28,36 @@
         見込みどおり一括登録（{{ registrable().length }}人）
       </button>
       決定通知書が届いたら押します。通知書と違う人だけ、従業員の詳細から直してください。7〜9月に随時改定がある人・平均が出ない人は含めません。
+      <label class="check">
+        <input type="checkbox" name="provisional" [checked]="provisional()" (change)="provisional.set($any($event.target).checked)" />
+        通知書待ちとして登録する（9月分の給与計算に通知書が間に合わないとき）
+      </label>
+      電子申請の通知書は<a routerLink="/decisions/import">CSVで取り込めます</a>（見込みと違う人だけを表示します）。
     </p>
 
+    <div class="filters">
+      <label>検索
+        <input name="regularQuery" placeholder="氏名・社員番号" [value]="query()" (input)="query.set($any($event.target).value)" />
+      </label>
+      @if (officeOptions().length > 1) {
+        <label>適用事業所
+          <select name="regularOffice" (change)="officeFilter.set($any($event.target).value)">
+            <option value="">すべて</option>
+            @for (o of officeOptions(); track o) { <option [value]="o" [selected]="officeFilter() === o">{{ o }}</option> }
+          </select>
+        </label>
+      }
+      <label>絞り込み
+        <select name="regularStatus" (change)="statusFilter.set($any($event.target).value)">
+          <option value="">すべての人</option>
+          @for (k of statusKeys; track k) { <option [value]="k" [selected]="statusFilter() === k">{{ statusLabels[k] }}</option> }
+        </select>
+      </label>
+      <span class="count">{{ shownRows().length }} / {{ rows().length }}人を表示（一括登録は、絞り込みに関係なく全員が対象）</span>
+    </div>
+
     <div class="table-wrap">
-      <table class="list regular">
+      <table class="list regular sticky-cols">
         <thead>
           <tr>
             <th>社員番号</th>
@@ -44,14 +73,17 @@
           </tr>
         </thead>
         <tbody>
-          @for (r of rows(); track r.employeeId) {
+          @for (r of shownRows(); track r.employeeId) {
             <tr [class.excluded]="r.revisionInJulSep" [class.review]="r.needsReview || r.annualAverageCandidate">
               <td>{{ r.employee.employeeNumber }}</td>
-              <td><a [routerLink]="['/employees', r.employeeId]">{{ r.employee.name }}</a></td>
+              <td><a [routerLink]="['/employees', r.employeeId]" [title]="r.employee.name">{{ r.employee.name }}</a></td>
               @for (m of r.months; track m.yearMonth) {
                 <td class="month" [class.unused]="!m.used">
                   @if (m.pay) {
                     <div class="num">{{ yen(m.pay.total) }}円</div>
+                    @if (m.pay.inKind > 0) {
+                      <div class="in-kind">通貨 {{ yen(m.pay.total - m.pay.inKind) }}・現物 {{ yen(m.pay.inKind) }}</div>
+                    }
                     <div class="days">{{ m.pay.days }}日</div>
                   }
                   @if (m.excludedReason) {
@@ -82,7 +114,7 @@
               </td>
             </tr>
           } @empty {
-            <tr><td colspan="10">対象の人はいません。</td></tr>
+            <tr><td colspan="10">{{ rows().length === 0 ? '対象の人はいません。' : '条件に合う人はいません。' }}</td></tr>
           }
         </tbody>
       </table>

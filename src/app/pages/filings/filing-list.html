@@ -1,0 +1,94 @@
+<section class="page">
+  <h1>届出の期限</h1>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else if (error()) {
+    <p class="error">{{ error() }}</p>
+  } @else {
+    <p class="help">
+      登録した内容から、届け出るものと期限を出します。届け出たら「届出済みにする」を押してください。
+      月額変更届は、<a routerLink="/revisions">改定の候補</a>で「届出済みにする」を押すと届出済みになります。
+      アプリを使い始める前の届出がたまらないよう、きっかけの日が180日より前のものは出しません。
+    </p>
+
+    @if (notice()) {
+      <app-notice [message]="notice()!" (closed)="notice.set(null)" />
+    }
+
+    <div class="toolbar">
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" class="tab" [class.active]="tab() === 'open'" [attr.aria-selected]="tab() === 'open'" (click)="setTab('open')">
+          未対応（{{ counts().open }}：期限切れ {{ counts().overdue }}・3日以内 {{ counts().soon }}）
+        </button>
+        <button type="button" role="tab" class="tab" [class.active]="tab() === 'filed'" [attr.aria-selected]="tab() === 'filed'" (click)="setTab('filed')">届出済み（{{ counts().filed }}）</button>
+      </div>
+      <label>適用事業所
+        <select name="office" (change)="officeFilter.set($any($event.target).value)">
+          <option value="" [selected]="officeFilter() === ''">すべて（{{ officeAllCount() }}件）</option>
+          @for (o of officeOptions(); track o.value) {
+            <option [value]="o.value" [selected]="officeFilter() === o.value">{{ o.label }}（{{ o.count }}件）</option>
+          }
+        </select>
+      </label>
+      <label>期限の月
+        <select name="month" (change)="monthFilter.set($any($event.target).value)">
+          <option value="" [selected]="monthFilter() === ''">すべての月（{{ allCount() }}件）</option>
+          @for (m of monthOptions(); track m.value) {
+            <option [value]="m.value" [selected]="monthFilter() === m.value">{{ m.label }}（{{ m.count }}件）</option>
+          }
+        </select>
+      </label>
+      <label>届出の種類
+        <select name="kind" (change)="kindFilter.set($any($event.target).value)">
+          <option value="" [selected]="kindFilter() === ''">すべての種類（{{ allKindCount() }}件）</option>
+          @for (k of kindOptions(); track k.value) {
+            <option [value]="k.value" [selected]="kindFilter() === k.value">{{ k.label }}（{{ k.count }}件）</option>
+          }
+        </select>
+      </label>
+      <span class="count">{{ rows().length }}件を表示</span>
+    </div>
+
+    <div class="table-wrap">
+    <table class="list filings sticky-cols sticky-cols-3">
+      <thead><tr><th>期限</th><th>届出</th><th>社員番号・氏名</th><th>適用事業所</th><th>きっかけ</th><th>状態</th><th></th></tr></thead>
+      @for (g of monthGroups(); track g.month) {
+      <tbody>
+        <tr class="month-head"><td colspan="7">{{ g.label }}（{{ g.rows.length }}件）</td></tr>
+        @for (r of g.rows; track r.id) {
+          <tr [class]="r.state">
+            <td [title]="r.deadlineLabel">{{ r.deadlineLabel }}</td>
+            <td [title]="r.name">{{ r.name }}</td>
+            <td [title]="r.employeeLabel">
+              @if (r.employeeId) {
+                <a [routerLink]="['/employees', r.employeeId]">{{ r.employeeLabel }}</a>
+              } @else {
+                {{ r.employeeLabel }}
+              }
+            </td>
+            <td>{{ r.officeName }}</td>
+            <td>{{ r.triggerLabel }}</td>
+            <td><span class="badge" [class]="'badge ' + r.state">{{ stateLabel[r.state] }}</span></td>
+            <td class="actions">
+              @if (r.kind === 'revision') {
+                <a routerLink="/revisions">改定の候補で切り替える</a>
+              } @else if (r.state === 'filed') {
+                <button type="button" class="secondary" [disabled]="saving()" (click)="unsetFiled(r)">未対応に戻す</button>
+              } @else {
+                <button type="button" [disabled]="saving()" (click)="setFiled(r)">届出済みにする</button>
+              }
+            </td>
+          </tr>
+        }
+      </tbody>
+      } @empty {
+      <tbody>
+        <tr><td colspan="7">{{ tab() === 'open' ? '未対応の届出はありません。' : '届出済みの記録はありません。' }}</td></tr>
+      </tbody>
+      }
+    </table>
+    </div>
+    <p class="hint">期限を過ぎたものは赤、3日以内のものは黄色で表示します。きっかけ（資格取得日・支給日など）を直すと、新しい届出として出し直します。</p>
+  }
+</section>

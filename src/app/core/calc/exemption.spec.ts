@@ -18,7 +18,7 @@ describe('適用除外の入力チェック', () => {
 
   it('届け出ることと期限', () => {
     expect(exemptionNotice('care', '2026-04-02').deadline).toBe('遅滞なく');
-    expect(exemptionNotice('healthNhiUnion', '2026-04-01').deadline).toContain('2026-04-15まで');
+    expect(exemptionNotice('healthNhiUnion', '2026-04-01').deadline).toContain('2026年4月15日まで');
   });
 
   it('その月に0円にしている保険を表示する（非該当年月日の月から元に戻す）', () => {

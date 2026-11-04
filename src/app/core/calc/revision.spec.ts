@@ -48,6 +48,62 @@ describe('findRevisionCandidates（随時改定の候補）', () => {
     expect(c[0].needsReview).toBe(false);
   });
 
+  it('時給の人は、時給単価が変わった月を変動月にする（労働時間だけ変わった月は変動にしない）', () => {
+    // 7月 1,100円×160h、8月 1,100円×200h（額だけ増えた）、9〜11月 1,500円×160h
+    const rows: [string, number, number][] = [['2026-07', 1100, 160], ['2026-08', 1100, 200], ['2026-09', 1500, 160], ['2026-10', 1500, 160], ['2026-11', 1500, 160]];
+    const list: SalaryRecord[] = rows.map(([ym, rate, h], i) => ({
+      id: `h${i}`, employeeId: 'e1', paidDate: `${ym}-25`, fixedWages: rate * h, nonFixedWages: 0, paymentBaseDays: 20,
+      retroactiveDiff: null, inKindWages: null, hourlyRate: rate,
+    }));
+    const c = findRevisionCandidates(employee(180_000), list, grades, thresholds);
+    expect(c.map((x) => x.changeMonth)).toEqual(['2026-09']);
+    expect(c[0].average).toBe(240_000);
+    expect(c[0].notes).toContain('時給単価の変動（1,100円→1,500円）');
+  });
+
+  it('担当者が「固定的賃金の変動として登録」した月は、額が変わらなくても変動月として判定する', () => {
+    // 手当の新設などで、7月から額は同じでも、8月に変動として登録。8〜10月の残業込みの平均で判定する
+    const c = findRevisionCandidates(
+      employee(260_000, { fixedWageChanges: [{ yearMonth: '2026-08', direction: 'up', note: '所定労働時間の延長' }] }),
+      salaries([[260_000, 0], [260_000, 60_000], [260_000, 60_000], [260_000, 60_000]]),
+      grades, thresholds,
+    );
+    expect(c.map((x) => x.changeMonth)).toEqual(['2026-08']);
+    expect(c[0].notes).toContain('固定的賃金の変動として登録：所定労働時間の延長');
+  });
+
+  it('現物給与がある月は、届書に通貨・現物を分けて書く旨を出す', () => {
+    const list = salaries([[300_000, 0], [340_000, 20_000], [340_000, 20_000], [340_000, 20_000]]).map((x, i) => (i === 2 ? { ...x, inKindWages: 30_000 } : x));
+    const c = findRevisionCandidates(employee(300_000), list, grades, thresholds);
+    expect(c[0].months[1].inKind).toBe(30_000);
+    expect(c[0].notes).toContain('現物給与あり（届書に通貨・現物を分けて書く）');
+  });
+
+  it('3か月の途中で支払区分の締め日・支払月が変わったら、要確認にする', () => {
+    const cutoff = (_id: string, ym: string) => (ym >= '2026-09' ? { day: 15 as const, paidIn: 'sameMonth' as const } : { day: 'end' as const, paidIn: 'nextMonth' as const });
+    const c = findRevisionCandidates(employee(300_000), salaries([[300_000, 0], [340_000, 20_000], [340_000, 20_000], [340_000, 20_000]]), grades, thresholds, cutoff);
+    expect(c[0].needsReview).toBe(true);
+    // 末日締め・翌月払い → 15日締め・当月払い：9月は8/1〜9/15の2か月分。変更前の給与の額を入れるまで要確認
+    expect(c[0].notes.some((n) => n.includes('9月は支払月の変更（翌月払い→当月払い）で2か月分を払った月'))).toBe(true);
+  });
+
+  it('2か月分の月に算定から除く額を入れると、それを除いて平均し、要確認を外す', () => {
+    const cutoff = (_id: string, ym: string) => (ym >= '2026-09' ? { day: 'end' as const, paidIn: 'sameMonth' as const } : { day: 'end' as const, paidIn: 'nextMonth' as const });
+    const rows = salaries([[300_000, 0], [340_000, 20_000], [700_000, 40_000], [340_000, 20_000]]);
+    rows[2].excludedAmount = 380_000;
+    const c = findRevisionCandidates(employee(300_000), rows, grades, thresholds, cutoff);
+    expect(c[0].average).toBe(360_000);
+    expect(c[0].needsReview).toBe(false);
+    expect(c[0].notes.some((n) => n.includes('変更前の給与380,000円を除いて平均'))).toBe(true);
+  });
+
+  it('一時帰休の月がある候補は要確認にする', () => {
+    const e = { ...employee(300_000), absences: [{ reason: 'furlough' as const, startDate: '2026-09-01', endDate: null }] };
+    const c = findRevisionCandidates(e, salaries([[300_000, 0], [340_000, 20_000], [340_000, 20_000], [340_000, 20_000]]), grades, thresholds);
+    expect(c[0].needsReview).toBe(true);
+    expect(c[0].notes.some((n) => n.startsWith('一時帰休の月あり（9月・10月。'))).toBe(true);
+  });
+
   it('1等級の差なら候補にならない', () => {
     const c = findRevisionCandidates(
       employee(260_000),
@@ -234,6 +290,13 @@ describe('findLeaveEndCandidates（休業終了時改定の候補）', () => {
     const childcare = { type: 'childcare' as const, startDate: '2025-05-07', endDate: '2026-03-31', workedDays: null };
     const c = findLeaveEndCandidates(employee(260_000, { leaves: [maternity, childcare] }), back, grades);
     expect(c.map((x) => x.changeMonth)).toEqual(['2026-04']);
+    expect(c[0].leaveType).toBe('childcare');
+  });
+
+  it('終わった休業の種類を持つ（産休だけで復帰した人は maternity。届書の名前に使う）', () => {
+    const maternity = { type: 'maternity' as const, startDate: '2025-12-20', endDate: '2026-03-31', workedDays: null };
+    const c = findLeaveEndCandidates(employee(260_000, { leaves: [maternity] }), back, grades);
+    expect(c.map((x) => [x.type, x.leaveType])).toEqual([['leaveEnd', 'maternity']]);
   });
 
   it('候補の一覧にも、随時改定と同じように出る（ID は種類つき）', () => {
@@ -264,4 +327,116 @@ describe('候補の対応状況', () => {
     expect(openRevisionCandidates([employee(300_000)], rows, grades, thresholds, [{ id: 'e1_2026-08_revision', status: 'dismissed' }])).toEqual([]);
   });
 });
+});
+
+// ---- 漏れていた分岐：候補にならない場合と、注記（カバレッジで見つけた範囲） ----
+describe('随時改定：候補にならない場合', () => {
+  // 7月 30万円、8〜10月 36万円（34万円＋残業2万円）：健康保険 22等級→25等級で、ふつうなら候補になる形
+  const up = salaries([[300_000, 0], [340_000, 20_000], [340_000, 20_000], [340_000, 20_000]]);
+
+  it('3か月のうち資格のない月がある（10月1日に資格喪失）', () => {
+    expect(findRevisionCandidates(employee(300_000), up, grades, thresholds)).toHaveLength(1);
+    const lost = employee(300_000, { qualifications: [{ acquiredDate: '2024-04-01', lostDate: '2026-10-01' }] });
+    expect(findRevisionCandidates(lost, up, grades, thresholds)).toEqual([]);
+  });
+
+  it('3か月目の時点の標準報酬月額が登録されていない', () => {
+    const none = employee(300_000, { standardHistory: [{ validFrom: '2026-11', healthStandard: 300_000, pensionStandard: 300_000 }] });
+    expect(findRevisionCandidates(none, up, grades, thresholds)).toEqual([]);
+  });
+
+  it('適用見込み月（11月）に使える等級表がない', () => {
+    expect(findRevisionCandidates(employee(300_000), up, buildKyokaiGrades('2027-01'), thresholds)).toEqual([]);
+  });
+
+  it('今の標準報酬月額が等級表にない額（健康保険・厚生年金のどちらでも）', () => {
+    expect(findRevisionCandidates(employee(305_000), up, grades, thresholds)).toEqual([]);
+    // 5.8万円は健康保険の1等級だが、厚生年金の等級にはない
+    expect(findRevisionCandidates(employee(300_000, {}, 58_000), up, grades, thresholds)).toEqual([]);
+  });
+});
+
+describe('随時改定：注記', () => {
+  it('厚生年金だけが当たるときは要確認（健康保険は等級が変わらない）', () => {
+    // 健康保険36万円（25等級）・厚生年金30万円（19等級）の人が、平均36万円になる
+    const c = findRevisionCandidates(
+      employee(360_000, {}, 300_000),
+      salaries([[300_000, 0], [340_000, 20_000], [340_000, 20_000], [340_000, 20_000]]),
+      grades, thresholds,
+    );
+    expect(c).toHaveLength(1);
+    expect(c[0].health.qualifies).toBe(false);
+    expect(c[0].pension!.qualifies).toBe(true);
+    expect(c[0].notes).toContain('厚生年金のみ当たる');
+    expect(c[0].needsReview).toBe(true);
+    expect(c[0].expectedHealth).toBe(360_000); // 健康保険は今のまま
+    expect(c[0].expectedPension).toBe(360_000);
+  });
+
+  it('「固定的賃金の変動として登録」で内容を空にしたときは、内容なしの注記', () => {
+    const c = findRevisionCandidates(
+      employee(260_000, { fixedWageChanges: [{ yearMonth: '2026-08', direction: 'up', note: '' }] }),
+      salaries([[260_000, 0], [260_000, 60_000], [260_000, 60_000], [260_000, 60_000]]),
+      grades, thresholds,
+    );
+    expect(c[0].notes).toContain('固定的賃金の変動として登録');
+  });
+
+  it('変動月そのものが締め日の変更月なら、随時改定の対象外かもしれないので要確認', () => {
+    // 8月支払から、末日締め → 15日締め（どちらも翌月払い）。8月は期間が短い月
+    const cutoff = (_id: string, ym: string) => (ym >= '2026-08' ? { day: 15 as const, paidIn: 'nextMonth' as const } : { day: 'end' as const, paidIn: 'nextMonth' as const });
+    const c = findRevisionCandidates(employee(300_000), salaries([[300_000, 0], [340_000, 20_000], [340_000, 20_000], [340_000, 20_000]]), grades, thresholds, cutoff);
+    expect(c[0].changeMonth).toBe('2026-08');
+    expect(c[0].needsReview).toBe(true);
+    expect(c[0].notes).toContain('変動月が支払月・締め日の変更月（締め日の変更で額が動いただけなら随時改定の対象外）');
+  });
+});
+
+describe('休業終了時改定：候補にならない場合と注記', () => {
+  const leave = { type: 'childcare' as const, startDate: '2025-04-01', endDate: '2026-03-31', workedDays: null };
+  const back = salaries([[240_000, 0], [240_000, 0], [240_000, 0, 16]], '2026-04');
+
+  it('休業の終了日が決まっていない', () => {
+    expect(findLeaveEndCandidates(employee(260_000, { leaves: [{ ...leave, endDate: null }] }), back, grades)).toEqual([]);
+  });
+
+  it('復帰後の3か月に、資格のない月がある・異動がある', () => {
+    const lost = employee(260_000, { leaves: [leave], qualifications: [{ acquiredDate: '2024-04-01', lostDate: '2026-06-01' }] });
+    expect(findLeaveEndCandidates(lost, back, grades)).toEqual([]);
+    const moved = employee(260_000, {
+      leaves: [leave],
+      assignments: [{ validFrom: '2024-04-01', officeId: 'honsha' }, { validFrom: '2026-05-01', officeId: 'osaka' }],
+    });
+    expect(findLeaveEndCandidates(moved, back, grades)).toEqual([]);
+  });
+
+  it('標準報酬月額が未登録・等級表がない・今の額が等級表にない', () => {
+    const none = employee(260_000, { leaves: [leave], standardHistory: [{ validFrom: '2026-07', healthStandard: 260_000, pensionStandard: 260_000 }] });
+    expect(findLeaveEndCandidates(none, back, grades)).toEqual([]);
+    expect(findLeaveEndCandidates(employee(260_000, { leaves: [leave] }), back, buildKyokaiGrades('2026-08'))).toEqual([]);
+    expect(findLeaveEndCandidates(employee(265_000, { leaves: [leave] }), back, grades)).toEqual([]);
+    expect(findLeaveEndCandidates(employee(260_000, { leaves: [leave] }, 58_000), back, grades)).toEqual([]);
+  });
+
+  it('短時間就労者は、17日以上の月がなければ15日以上の月で平均する。15日未満しかなければ候補にならない', () => {
+    const part = { leaves: [leave], insuredTypes: [{ validFrom: '2024-04-01', type: 'partTime' as const }] };
+    const c = findLeaveEndCandidates(employee(260_000, part), salaries([[240_000, 0, 16], [240_000, 0, 15], [240_000, 0, 16]], '2026-04'), grades);
+    expect(c).toHaveLength(1);
+    expect(c[0].notes).toContain('短時間就労者（15日以上17日未満の月で平均）');
+    expect(c[0].excludedMonths).toEqual([]);
+    expect(findLeaveEndCandidates(employee(260_000, part), salaries([[240_000, 0, 14], [240_000, 0, 14], [240_000, 0, 14]], '2026-04'), grades)).toEqual([]);
+    // 一般の被保険者は、17日未満の月だけなら候補にならない（15日以上でも）
+    expect(findLeaveEndCandidates(employee(260_000, { leaves: [leave] }), salaries([[240_000, 0, 16], [240_000, 0, 15], [240_000, 0, 16]], '2026-04'), grades)).toEqual([]);
+  });
+
+  it('70歳以上の人は厚生年金を判定せず「健康保険のみ」。厚生年金だけが当たるときも要確認', () => {
+    const old = findLeaveEndCandidates(employee(260_000, { leaves: [leave], birthDate: '1955-04-10' }), back, grades);
+    expect(old[0].pension).toBeNull();
+    expect(old[0].notes).toContain('健康保険のみ（70歳以上のため厚生年金は判定しない）');
+    expect(old[0].needsReview).toBe(true);
+    // 健康保険24万円（等級は変わらない）・厚生年金26万円（1等級下がる）
+    const p = findLeaveEndCandidates(employee(240_000, { leaves: [leave] }, 260_000), back, grades);
+    expect(p[0].notes).toContain('厚生年金のみ当たる');
+    expect(p[0].needsReview).toBe(true);
+  });
 });

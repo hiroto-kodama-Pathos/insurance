@@ -1,6 +1,8 @@
 // 給与のCSV取り込み（設計書 3.8）
 // 初回に列を対応づけて保存すれば、2回目からはファイルを選ぶだけで取り込める。
 // 取り込む前にプレビューで、登録される内容とエラー行を確かめる。
+import { NoticeMessage } from '../../core/ui/notice-message';
+import { DateLabelPipe } from '../../core/ui/year-month.pipe';
 import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { Auth } from '../../core/auth/auth';
@@ -31,14 +33,14 @@ export const STATUS_LABEL: Record<PreviewStatus, string> = {
 };
 
 const EMPTY_MAPPING: SalaryMapping = {
-  employeeNumber: '', paidDate: '', paymentBaseDays: '', fixedWages: [], nonFixedWages: [], retroactiveDiff: '', inKindWages: '',
+  employeeNumber: '', paidDate: '', paymentBaseDays: '', fixedWages: [], nonFixedWages: [], retroactiveDiff: '', inKindWages: '', workingHours: '', hourlyRate: '',
 };
 
-type SingleKey = 'employeeNumber' | 'paidDate' | 'paymentBaseDays' | 'retroactiveDiff' | 'inKindWages';
+type SingleKey = 'employeeNumber' | 'paidDate' | 'paymentBaseDays' | 'retroactiveDiff' | 'inKindWages' | 'workingHours' | 'hourlyRate';
 type MultiKey = 'fixedWages' | 'nonFixedWages';
 
 @Component({
-  imports: [RouterLink],
+  imports: [RouterLink, NoticeMessage, DateLabelPipe],
   selector: 'app-salary-import',
   styleUrl: './salary-import.scss',
   templateUrl: './salary-import.html',
@@ -58,6 +60,8 @@ export class SalaryImport implements OnInit {
     { key: 'paymentBaseDays', label: '支払基礎日数', required: true },
     { key: 'retroactiveDiff', label: 'うち遡及差額', required: false },
     { key: 'inKindWages', label: 'うち現物給与', required: false },
+    { key: 'workingHours', label: '労働時間（未加入の人の加入の可能性に使う）', required: false },
+    { key: 'hourlyRate', label: '時給単価（時給の人の随時改定に使う）', required: false },
   ];
   protected readonly multiFields: { key: MultiKey; label: string; hint: string }[] = [
     { key: 'fixedWages', label: '固定的賃金（必須）', hint: '基本給・役職手当・家族手当・通勤手当など' },
@@ -101,6 +105,10 @@ export class SalaryImport implements OnInit {
       scope: this.auth.user()?.siScope ?? 'all',
     });
   });
+
+  /** エラー・注意の行（登録しない行と、登録済みを上書きする行）だけを表示するか */
+  protected readonly onlyIssues = signal(false);
+  protected readonly shownPreview = computed(() => (this.onlyIssues() ? this.preview().filter((r) => r.status !== 'new') : this.preview()));
 
   protected readonly counts = computed(() => {
     const c: Record<PreviewStatus, number> = { new: 0, overwrite: 0, error: 0, closed: 0, outOfScope: 0 };

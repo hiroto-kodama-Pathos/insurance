@@ -1,4 +1,6 @@
 import {
+  checkNameChange,
+  checkNumberChange,
   checkLeave,
   checkLoss,
   checkReacquire,
@@ -75,5 +77,33 @@ describe('休業', () => {
     expect(
       checkLeave({ type: 'maternity', startDate: '2026-10-01', endDate: '', workedDays: 2 })['workedDays'],
     ).toBeDefined();
+  });
+});
+
+describe('氏名の変更', () => {
+  it('空欄・50文字を超える・今と同じ氏名は入れない。前後の空白は無視する', () => {
+    expect(checkNameChange('山田 花子', '')).toEqual({ name: '氏名を入力してください' });
+    expect(checkNameChange('山田 花子', '　 ')).toEqual({ name: '氏名を入力してください' });
+    expect(checkNameChange('山田 花子', 'あ'.repeat(51))).toEqual({ name: '氏名は50文字以内で入力してください' });
+    expect(checkNameChange('山田 花子', ' 山田 花子 ')).toEqual({ name: '今の氏名と同じです' });
+    expect(checkNameChange('山田 花子', '佐藤 花子')).toEqual({});
+    expect(checkNameChange('山田 花子', 'あ'.repeat(50))).toEqual({});
+  });
+});
+
+describe('社員番号の変更', () => {
+  const others = ['0002', 'T0010'];
+  it('全角は半角にそろえ、前後の空白を除いて保存する', () => {
+    expect(checkNumberChange('0001', ' Ａ－００１ ', others)).toEqual({ errors: {}, number: 'A-001' });
+    expect(checkNumberChange('0001', 'Aー001', others).number).toBe('A-001'); // 日本語入力の「ー」も「-」に
+  });
+
+  it('空欄・形の違う番号・今と同じ・ほかの人と同じは入れない', () => {
+    expect(checkNumberChange('0001', '', others).errors).toEqual({ employeeNumber: '社員番号を入力してください' });
+    expect(checkNumberChange('0001', '山田', others).errors).toEqual({ employeeNumber: '社員番号は半角英数字20文字以内で入力してください' });
+    expect(checkNumberChange('0001', '1'.repeat(21), others).errors['employeeNumber']).toContain('20文字以内');
+    expect(checkNumberChange('0001', '1'.repeat(20), others).errors).toEqual({});
+    expect(checkNumberChange('0001', '０００１', others).errors).toEqual({ employeeNumber: '今の社員番号と同じです' });
+    expect(checkNumberChange('0001', 'T0010', others).errors).toEqual({ employeeNumber: 'この社員番号はほかの従業員が使っています' });
   });
 });

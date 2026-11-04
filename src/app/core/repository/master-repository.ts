@@ -6,6 +6,7 @@ import { GradeRow } from '../calc/grade-suggest';
 import { Office } from '../calc/office';
 import type { Insurer, InsurerRate, PensionRate } from '../calc/rate';
 import { GradeThreshold } from '../calc/revision';
+import { EligibilityRule } from '../calc/eligibility-check';
 import { siCol } from '../firestore-paths';
 
 @Service()
@@ -24,6 +25,18 @@ export class MasterRepository {
   /** 協会けんぽの保険料額表の等級（標準報酬月額の提案に使う） */
   async loadGrades(): Promise<GradeRow[]> {
     return this.readAll('grades', toGrade);
+  }
+
+  /** 加入対象の判定の基準（システム共通。設計書 2.24） */
+  async loadEligibilityRules(): Promise<EligibilityRule[]> {
+    return this.readAll('eligibilityRules', (_id, d) => ({
+      validFrom: d['validFrom'],
+      fullTimeRatio: d['fullTimeRatio'],
+      weeklyHours: d['weeklyHours'],
+      companySize: d['companySize'] ?? null,
+      contractMonths: d['contractMonths'],
+      studentExcluded: d['studentExcluded'] === true,
+    }));
   }
 
   /** 最高等級・最低等級付近の特例の閾値（随時改定の判定に使う） */

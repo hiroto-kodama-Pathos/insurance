@@ -1,21 +1,47 @@
-.page { padding: 16px 24px; }
-.page-header { display: flex; align-items: center; gap: 24px; }
 .month { display: flex; align-items: center; gap: 8px; }
-.table-wrap { overflow-x: auto; }
-.list { border-collapse: collapse; margin-bottom: 8px; font-size: 13px; }
-.list th, .list td { border: 1px solid #ccc; padding: 4px 6px; white-space: nowrap; vertical-align: top; }
-.list th { background: #f0f3f8; }
 .list input { padding: 4px; font-size: 13px; }
-.num-input { width: 96px; text-align: right; }
+.num-input { width: 6.2em; text-align: right; }
 .num-input.days { width: 48px; }
-.num { text-align: right; font-variant-numeric: tabular-nums; }
 .changed { background: #fffbe6; }
-.badge { display: inline-block; background: #e7f1fb; border-radius: 4px; padding: 0 6px; margin: 1px 4px 1px 0; }
 .badge.up { background: #ffe9c7; }
-.actions { display: flex; gap: 4px; }
-.help, .hint { color: #666; font-size: 12px; margin: 4px 0 8px; }
 .summary { margin: 4px 0 8px; }
 .err, .error { color: #c00; font-size: 12px; display: block; white-space: normal; max-width: 220px; }
-.err:empty { display: none; }
-.notice { background: #e5f4e4; padding: 6px 10px; }
-.secondary { background: #fff; }
+
+tr.manual-form td {
+  background: #f8fafc;
+  .row { display: flex; gap: 8px; align-items: end; flex-wrap: wrap; margin-top: 4px; }
+  .help { display: block; }
+  input[name='manualNote'] { width: 24em; }
+}
+.period-change { font-size: 12px; margin: 2px 0; max-width: 360px; white-space: normal; }
+.period-change.warn { color: #92400e; background: #fffbeb; padding: 2px 4px; }
+.period-change label { display: inline-flex; gap: 4px; align-items: center; margin-top: 2px; }
+.filters .count { color: #555; }
+
+// 保存していない入力：行を黄色にし、表の上に件数とまとめて保存のボタンを出す
+.unsaved-bar {
+  position: sticky;
+  top: 0;
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 16px;
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid #f0c27b;
+  border-radius: 6px;
+  background: var(--c-warn-weak);
+  color: var(--c-warn);
+}
+// 「変動あり」の行（薄い黄色）と区別するため、薄いオレンジにし、左端に太い線を引く
+.list tbody tr.unsaved { background: #fff1e6; }
+.list tbody tr.unsaved > td:first-child { box-shadow: inset 4px 0 0 #ea8a2c; }
+.badge.unsaved { background: var(--c-warn-weak); color: var(--c-warn); font-weight: bold; }
+
+// 支払基礎日数の初期値（暦日数）であることの添え書き
+.auto { display: block; font-size: 11px; color: var(--c-muted); white-space: nowrap; }
+
+// 状態の列：情報だけのバッジ（確定・入力済み・未加入など）は灰色にして、対応が要るもの（色つき）を目立たせる
+.badge.info { background: #eef1f5; color: var(--c-muted); }
+.status .err:not(:empty) { display: block; }

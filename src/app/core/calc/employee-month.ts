@@ -15,7 +15,11 @@ import type { Insurer, InsurerRate, PensionRate } from './rate';
 
 /** 標準報酬月額の履歴（計算に使う項目だけ） */
 export type StandardHistory = {
+  /** Firestore のドキュメントID（通知書の値で直すときに使う） */
+  id?: string;
   validFrom: string;
+  /** 通知書待ち：見込みの額を先に登録した（設計書 2.13.2） */
+  provisional?: boolean;
   healthStandard: number;
   pensionStandard: number;
   /** 決めたときの報酬月額（参考。最高・最低等級付近の特例の判定に使う） */
@@ -35,10 +39,14 @@ export type EmployeeData = {
   exemptions: Exemption[];
   assignments: Assignment[];
   standardHistory: StandardHistory[];
+  /** 支払区分の履歴（なければ既定の区分） */
+  payrollAssignments?: import('./payroll-group').PayrollAssignment[];
   /** 被扶養者（特定被保険者の判定に使う） */
   dependents?: import('./dependent').Dependent[];
   /** 被保険者区分の履歴（なければ一般被保険者） */
   insuredTypes?: import('./insured-type').InsuredTypeHistory[];
+  /** 休職の期間（保険料の免除はない。表示・控除不足の添え書き・定時決定の要確認に使う） */
+  absences?: import('./absence').Absence[];
   /** 特定被保険者として介護保険料をかける月か（組合健保の判定結果。月ごとに呼び出す側で求める） */
   specialInsured?: boolean;
 };
@@ -182,4 +190,24 @@ export function calcEmployeeMonth(
     premium,
     rates,
   };
+}
+
+/**
+ * その月から適用される標準報酬月額の改定（設計書 2.7）。改定がない月・最初の履歴の月は null
+ * 片方だけ変わる場合は「健康保険のみ：62万円→75万円」のように変わった側を出す
+ */
+export function standardChangeLabel(history: StandardHistory[], yearMonth: string): string | null {
+  const cur = history.find((h) => h.validFrom === yearMonth);
+  const prev = [...history].filter((h) => h.validFrom < yearMonth).sort((a, b) => b.validFrom.localeCompare(a.validFrom))[0];
+  if (!cur || !prev) return null;
+  const man = (v: number) => `${(v / 10_000).toLocaleString('ja-JP')}万円`;
+  const h = cur.healthStandard !== prev.healthStandard;
+  const p = cur.pensionStandard !== prev.pensionStandard;
+  if (h && p)
+    return cur.healthStandard === cur.pensionStandard && prev.healthStandard === prev.pensionStandard
+      ? `標準報酬月額の改定（${man(prev.healthStandard)}→${man(cur.healthStandard)}）`
+      : `標準報酬月額の改定（健保 ${man(prev.healthStandard)}→${man(cur.healthStandard)}／厚年 ${man(prev.pensionStandard)}→${man(cur.pensionStandard)}）`;
+  if (h) return `標準報酬月額の改定（健康保険のみ：${man(prev.healthStandard)}→${man(cur.healthStandard)}）`;
+  if (p) return `標準報酬月額の改定（厚生年金のみ：${man(prev.pensionStandard)}→${man(cur.pensionStandard)}）`;
+  return null;
 }

@@ -24,5 +24,8 @@ describe('被保険者区分', () => {
     expect(typeForPayMonth(history, '2026-05', { day: 'end', paidIn: 'nextMonth' })).toBe('general');
     expect(minBaseDays('shortTime')).toBe(11);
     expect(minBaseDays('partTime')).toBe(17);
+    // 特定減額特例対象者は短時間労働者のうちの区分なので11日
+    expect(minBaseDays('specialReduction')).toBe(11);
+    expect(minBaseDays('general')).toBe(17);
   });
 });

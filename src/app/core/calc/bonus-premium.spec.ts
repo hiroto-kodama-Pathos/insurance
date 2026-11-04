@@ -7,6 +7,7 @@ import {
   calcEmployeeBonuses,
   fiscalYearOf,
   standardBonusOf,
+  transferOutDate,
 } from './bonus-premium';
 import { EmployeeData, Masters } from './employee-month';
 
@@ -128,6 +129,16 @@ describe('産休・育休の免除', () => {
     expect(bonusExemption(leave('2026-11-01', '2026-12-31'), '2026-12-10')).toBe('childcare');
     expect(bonusExemption(leave('2026-12-01', '2026-12-31'), '2026-12-10')).toBe('none'); // ちょうど1か月
     expect(bonusExemption(leave('2026-12-01', null), '2026-12-10')).toBe('childcare'); // 終了日が未定
+    // 月末に始まる休業（協会けんぽの例）：1月31日〜2月28日はちょうど1か月で免除しない、3月1日までなら免除
+    expect(bonusExemption(leave('2027-01-31', '2027-02-28'), '2027-02-10')).toBe('none');
+    expect(bonusExemption(leave('2027-01-31', '2027-03-01'), '2027-02-10')).toBe('childcare');
+    // 1月30日・29日に始まっても、2月に同じ日がない年は2月28日までがちょうど1か月
+    expect(bonusExemption(leave('2027-01-30', '2027-02-28'), '2027-02-10')).toBe('none');
+    // うるう年：1月29日始まりは2月28日までがちょうど1か月、2月29日までなら免除
+    expect(bonusExemption(leave('2028-01-29', '2028-02-28'), '2028-02-10')).toBe('none');
+    expect(bonusExemption(leave('2028-01-29', '2028-02-29'), '2028-02-10')).toBe('childcare');
+    // 6月1日〜7月1日は1か月超（6月の賞与は免除）
+    expect(bonusExemption(leave('2026-06-01', '2026-07-01'), '2026-06-25')).toBe('childcare');
   });
   it('産休：月額の免除月に当たれば免除', () => {
     const m = [{ type: 'maternity' as const, startDate: '2026-10-01', endDate: '2027-01-10' }];
@@ -140,5 +151,41 @@ describe('産休・育休の免除', () => {
     expect(r.exemption).toBe('childcare');
     expect(r.premium?.health?.employeeYen).toBe(0n);
     expect(r.base.health).toBe(500_000);
+  });
+});
+
+describe('異動した月の賞与', () => {
+  const masters2: Masters = { ...masters, offices: [...masters.offices, { id: 'osaka', name: '大阪支店', prefecture: '東京都', insurerId: 'kyokai' }] };
+  // 10月15日に本社から大阪支店へ異動
+  const moved = emp({ assignments: [{ validFrom: '2024-04-01', officeId: 'honsha' }, { validFrom: '2026-10-15', officeId: 'osaka' }] });
+
+  it('異動日より前に元の事業所で払った賞与は、資格喪失月の賞与（保険料なし・累計に含める）', () => {
+    const [before, after] = calcEmployeeBonuses(moved, [b('b1', '2026-10-10', 1_000_000), b('b2', '2026-10-20', 5_000_000)], masters2);
+    expect(before).toMatchObject({ target: 'lostMonth', transferOut: '2026-10-15', officeId: 'honsha', premium: null });
+    expect(before.base.health).toBe(1_000_000);
+    // 異動日以後は新しい事業所で保険料がかかる。同じ保険者（協会けんぽ）なので年度累計は続く（573万円 − 100万円 ＝ 473万円まで）
+    expect(after).toMatchObject({ target: 'charged', officeId: 'osaka', status: 'ok' });
+    expect(after.base.health).toBe(4_730_000);
+  });
+
+  it('異動の月でない賞与・同じ月に移ってきた事業所の賞与は、ふつうに保険料をかける', () => {
+    expect(transferOutDate(moved.assignments, '2026-09-25')).toBeNull();
+    expect(transferOutDate(moved.assignments, '2026-10-15')).toBeNull();
+    // 10/1に大阪へ来て10/20に名古屋へ移った：大阪では同月得喪なので保険料がかかる
+    const twice = [{ validFrom: '2024-04-01', officeId: 'honsha' }, { validFrom: '2026-10-01', officeId: 'osaka' }, { validFrom: '2026-10-20', officeId: 'nagoya' }];
+    expect(transferOutDate(twice, '2026-10-10')).toBeNull();
+  });
+});
+
+describe('1か月の期間の最後の日（民法143条）', () => {
+  it('翌月に同じ日があればその前日、なければ翌月の末日', async () => {
+    const { oneMonthEnd } = await import('./bonus-premium');
+    expect(oneMonthEnd('2026-12-01')).toBe('2026-12-31');
+    expect(oneMonthEnd('2026-06-15')).toBe('2026-07-14');
+    expect(oneMonthEnd('2027-01-31')).toBe('2027-02-28');
+    expect(oneMonthEnd('2028-01-31')).toBe('2028-02-29');
+    expect(oneMonthEnd('2028-01-29')).toBe('2028-02-28');
+    expect(oneMonthEnd('2026-03-31')).toBe('2026-04-30');
+    expect(oneMonthEnd('2026-12-31')).toBe('2027-01-30');
   });
 });

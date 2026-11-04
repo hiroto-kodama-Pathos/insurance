@@ -330,19 +330,31 @@ service cloud.firestore {
       function siPath(name, id) {
         return /databases/$(database)/documents/apps/socialInsurance/$(name)/$(id);
       }
-      // マスタ・会社の設定・月次確定・賞与は下で個別に決める。それ以外（従業員など）は担当者も読み書きできる
+      // 担当範囲：siScope が 'all'（全担当）か、担当する適用事業所のID
+      function siScope() { return request.auth.token.get('siScope', null); }
+      function inScope(officeId) { return siScope() == 'all' || siScope() == officeId; }
+      function scopeAll() { return siScope() == 'all'; }
+      function employeePath(id) { return siPath('employees', id); }
+      // その従業員のデータを扱える（全担当、またはこれまでに担当事業所に所属した人）
+      function employeeInScope(id) { return scopeAll() || siScope() in get(employeePath(id)).data.get('officeIds', []); }
+      // 書き込みのあとの状態で判定する（従業員の登録と同じ書き込みで、サブコレクションを作るため）
+      function employeeInScopeAfter(id) { return scopeAll() || siScope() in getAfter(employeePath(id)).data.get('officeIds', []); }
+
+      // マスタ・会社の設定と、担当範囲で読み書きを絞るデータ（従業員・給与・賞与・月次確定など）は、下で個別に決める。
+      // それ以外は担当者も読み書きできる
       function isMasterCollection(c) {
-        return c in ['insurers', 'insurerRates', 'pensionRates', 'grades', 'gradeThresholds', 'offices', 'companySettings', 'closings', 'bonuses', 'salaries'];
+        return c in ['insurers', 'insurerRates', 'pensionRates', 'grades', 'gradeThresholds', 'offices', 'companySettings', 'closings', 'bonuses', 'salaries', 'payrollGroups', 'eligibilityRules', 'bonusTypes', 'reconciliations', 'payrollDeductions', 'purgeLogs',
+          'employees', 'filings', 'revisionCandidates', 'adjustments'];
       }
       match /{collection}/{document=**} {
-        allow read: if isSiUser();
-        allow write: if isSiUser() && !isMasterCollection(collection);
+        allow read, write: if isSiUser() && !isMasterCollection(collection);
       }
 
       // システム共通マスタ：読むだけ。書き込みは運営者の Admin SDK スクリプトだけ（ルールを通らない）
       match /pensionRates/{id} { allow read: if isSiUser(); }
       match /grades/{id} { allow read: if isSiUser(); }
       match /gradeThresholds/{id} { allow read: if isSiUser(); }
+      match /eligibilityRules/{id} { allow read: if isSiUser(); }
 
       // 適用事業所：管理者だけが追加・変更する。従業員が参照するので削除はさせない
       match /offices/{id} {
@@ -372,6 +384,29 @@ service cloud.firestore {
           && request.resource.data.prefecture == null;
       }
 
+      // 給与の支払区分：管理者だけが追加・変更する。従業員が参照するので削除はさせない
+      function isPayDay(v) { return v == 'end' || (v is int && v >= 1 && v <= 30); }
+      match /payrollGroups/{id} {
+        allow read: if isSiUser();
+        allow create, update: if isSiAdmin()
+          && request.resource.data.keys().hasOnly(['name', 'cutoffDay', 'paidIn', 'deductionTiming', 'payDay', 'isDefault'])
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && isPayDay(request.resource.data.cutoffDay) && isPayDay(request.resource.data.payDay)
+          && request.resource.data.paidIn in ['sameMonth', 'nextMonth']
+          && request.resource.data.deductionTiming in ['sameMonth', 'nextMonth']
+          && request.resource.data.isDefault is bool;
+      }
+
+      // 賞与の種類：管理者だけが追加・変更する。賞与が参照するので削除はさせない
+      match /bonusTypes/{id} {
+        allow read: if isSiUser();
+        allow create, update: if isSiAdmin()
+          && request.resource.data.keys().hasOnly(['name', 'isRemuneration', 'validFrom'])
+          && request.resource.data.name is string && request.resource.data.name.size() > 0
+          && request.resource.data.isRemuneration is bool
+          && request.resource.data.validFrom.matches('[0-9]{4}-[0-9]{2}');
+      }
+
       // 会社の設定：管理者が変える。退職者データの保管期間（retentionYears）は運営者だけが変える
       match /companySettings/{id} {
         allow read: if isSiUser();
@@ -381,8 +416,41 @@ service cloud.firestore {
       }
       // 月次確定：担当範囲（siScope が 'all' か、その事業所のID）の人が確定・解除できる。
       // 確定した結果は書き換えさせない（直すときは解除してから、もう一度確定する）
-      function siScope() { return request.auth.token.get('siScope', null); }
-      function inScope(officeId) { return siScope() == 'all' || siScope() == officeId; }
+
+      // 従業員：特定の事業所の担当者は、これまでにその事業所に所属した人（officeIds に含む人）だけを読み書きできる。
+      // 新しく登録するときは、所属事業所を担当事業所にする。所属事業所の一覧（異動）を変えられるのは全担当だけ。
+      // 削除は Cloud Functions だけ（誤登録の削除・保管期間の終わった退職者の消去）
+      match /employees/{employeeId} {
+        allow read: if isSiUser() && (scopeAll() || siScope() in resource.data.get('officeIds', []));
+        allow create: if isSiUser() && request.resource.data.officeIds is list
+          && (scopeAll() || request.resource.data.officeIds == [siScope()]);
+        allow update: if isSiUser() && (scopeAll()
+          || (siScope() in resource.data.get('officeIds', []) && request.resource.data.get('officeIds', []) == resource.data.get('officeIds', [])));
+
+        // サブコレクション（資格・標準報酬月額・休業・休職・被扶養者など）
+        // 所属事業所の履歴（assignments）は、特定の事業所の担当者は担当事業所への所属を作ることだけができる（異動は全担当）
+        match /{sub}/{docId} {
+          allow read: if isSiUser() && employeeInScope(employeeId);
+          allow create: if isSiUser() && employeeInScopeAfter(employeeId)
+            && (sub != 'assignments' || scopeAll() || request.resource.data.officeId == siScope());
+          allow update, delete: if isSiUser() && employeeInScope(employeeId) && (sub != 'assignments' || scopeAll());
+        }
+      }
+
+      // 事業所ごとに持つ記録（届出済み・改定の候補の状態・差額の精算）：担当範囲の事業所の分だけ読み書きできる
+      // （事業所が決まらない記録は officeId が null で、全担当だけが扱う）
+      match /filings/{id} {
+        allow read, delete: if isSiUser() && inScope(resource.data.get('officeId', null));
+        allow create, update: if isSiUser() && inScope(request.resource.data.get('officeId', null));
+      }
+      match /revisionCandidates/{id} {
+        allow read, delete: if isSiUser() && inScope(resource.data.get('officeId', null));
+        allow create, update: if isSiUser() && inScope(request.resource.data.get('officeId', null));
+      }
+      match /adjustments/{id} {
+        allow read, delete: if isSiUser() && inScope(resource.data.get('officeId', null));
+        allow create, update: if isSiUser() && inScope(request.resource.data.get('officeId', null));
+      }
 
       // 親：事業所ごとの確定日時だけを持つ。自分の担当範囲の事業所の分だけ変えられる
       match /closings/{yearMonth} {
@@ -402,18 +470,21 @@ service cloud.firestore {
         return /databases/$(database)/documents/apps/socialInsurance/closings/$(yearMonth)/offices/$(officeId);
       }
       match /bonuses/{bonusId} {
-        allow read: if isSiUser();
-        allow create: if isSiUser()
+        allow read: if isSiUser() && inScope(resource.data.officeId);
+        allow create: if isSiUser() && inScope(request.resource.data.officeId)
           && request.resource.data.employeeId is string
           && request.resource.data.amount is int && request.resource.data.amount > 0
           && request.resource.data.yearMonth is string
           && request.resource.data.paidDate.matches(request.resource.data.yearMonth + '-[0-9]{2}')
           && request.resource.data.officeId is string
+          && (request.resource.data.get('inKindAmount', null) == null
+            || (request.resource.data.inKindAmount is int && request.resource.data.inKindAmount >= 0
+              && request.resource.data.inKindAmount <= request.resource.data.amount))
           && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId));
-        allow delete: if isSiUser()
+        allow delete: if isSiUser() && inScope(resource.data.officeId)
           && !exists(closedPath(resource.data.yearMonth, resource.data.officeId));
         // 二以上事業所勤務：全事業所の賞与額の合計だけは、確定済みの月でも登録できる（確定した控除額は変えず、過不足を出すため）
-        allow update: if isSiUser()
+        allow update: if isSiUser() && inScope(resource.data.officeId)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalAmount', 'updatedAt'])
           && (request.resource.data.totalAmount == null
             || (request.resource.data.totalAmount is int && request.resource.data.totalAmount > resource.data.amount));
@@ -428,26 +499,57 @@ service cloud.firestore {
           && d.officeId is string
           && d.fixedWages is int && d.fixedWages >= 0
           && d.nonFixedWages is int && d.nonFixedWages >= 0
-          && d.paymentBaseDays is int && d.paymentBaseDays >= 0 && d.paymentBaseDays <= 31;
+          && d.paymentBaseDays is int && d.paymentBaseDays >= 0 && d.paymentBaseDays <= 31
+          // 算定から除く額（支払月・締め日の変更月だけ）：0以上の整数で、支払った額以下
+          && (d.get('excludedAmount', null) == null
+            || (d.get('excludedAmount', 0) is int && d.get('excludedAmount', 0) >= 0 && d.get('excludedAmount', 0) <= d.fixedWages + d.nonFixedWages));
       }
       match /salaries/{salaryId} {
-        allow read: if isSiUser();
-        allow create: if isSiUser() && validSalary(request.resource.data)
+        allow read: if isSiUser() && inScope(resource.data.officeId);
+        allow create: if isSiUser() && validSalary(request.resource.data) && inScope(request.resource.data.officeId)
           && salaryId == request.resource.data.employeeId + '_' + request.resource.data.paidDate
           && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId));
         allow update: if isSiUser() && validSalary(request.resource.data)
+          && inScope(resource.data.officeId) && inScope(request.resource.data.officeId)
           && request.resource.data.employeeId == resource.data.employeeId
           && request.resource.data.paidDate == resource.data.paidDate
           && !exists(closedPath(resource.data.yearMonth, resource.data.officeId))
           && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId));
-        allow delete: if isSiUser()
+        allow delete: if isSiUser() && inScope(resource.data.officeId)
           && !exists(closedPath(resource.data.yearMonth, resource.data.officeId));
+      }
+
+      // 退職者データの消去の記録（件数と日時だけ）：Cloud Functions だけが書く。担当者は読むだけ
+      match /purgeLogs/{id} { allow read: if isSiUser(); }
+
+      // 照合：納付書の金額（適用事業所ごと）と給与ソフトの控除額（従業員ごと）。入力した金額だけを保存する
+      function validYen(v) { return v is int && v >= 0; }
+      match /reconciliations/{id} {
+        allow read: if isSiUser() && inScope(resource.data.officeId);
+        allow create, update: if isSiUser() && inScope(request.resource.data.officeId)
+          && id == request.resource.data.yearMonth + '_' + request.resource.data.officeId
+          && request.resource.data.keys().hasOnly(['yearMonth', 'officeId', 'lines', 'updatedAt'])
+          && request.resource.data.lines is map
+          && request.resource.data.lines.keys().hasOnly(['healthCare', 'childSupport', 'pension'])
+          && validYen(request.resource.data.lines.healthCare)
+          && validYen(request.resource.data.lines.childSupport)
+          && validYen(request.resource.data.lines.pension);
+        allow delete: if isSiUser() && inScope(resource.data.officeId);
+      }
+      match /payrollDeductions/{id} {
+        allow read: if isSiUser() && inScope(resource.data.get('officeId', null));
+        allow create, update: if isSiUser() && inScope(request.resource.data.officeId)
+          && id == request.resource.data.employeeId + '_' + request.resource.data.yearMonth
+          && request.resource.data.keys().hasOnly(['employeeId', 'officeId', 'yearMonth', 'health', 'childSupport', 'pension', 'updatedAt'])
+          && validYen(request.resource.data.health)
+          && validYen(request.resource.data.childSupport)
+          && validYen(request.resource.data.pension);
+        allow delete: if isSiUser() && inScope(resource.data.get('officeId', null));
       }
 
       // 事業所ごとの結果
       match /closings/{yearMonth}/offices/{officeId} {
-        // TODO: 特定の事業所の担当者は、担当事業所の分だけ読めるようにする（一覧の読み込みを事業所で絞ってから）
-        allow read: if isSiUser();
+        allow read: if isSiUser() && inScope(resource.data.officeId);
         allow create: if isSiUser() && inScope(officeId)
           && request.resource.data.officeId == officeId
           && request.resource.data.yearMonth == yearMonth

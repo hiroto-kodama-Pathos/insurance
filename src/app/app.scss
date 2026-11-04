@@ -1,8 +1,61 @@
-.app-header { display: flex; align-items: center; gap: 24px; padding: 8px 24px; background: #305496; color: #fff; }
-.app-title { font-weight: bold; }
-.app-header a { color: #fff; text-decoration: none; }
-.app-header a.active { text-decoration: underline; }
+.app-header { background: #2f5597; color: #fff; box-shadow: 0 1px 3px rgb(0 0 0 / 0.15); }
+.bar { display: flex; align-items: center; gap: 16px; padding: 8px 24px; }
+.app-title { font-weight: bold; font-size: 16px; color: #fff; text-decoration: none; }
 .spacer { flex: 1; }
-.user { font-size: 13px; }
-.logout { background: transparent; color: #fff; border: 1px solid #fff; border-radius: 4px; padding: 2px 10px; cursor: pointer; }
-nav { display: flex; gap: 16px; }
+.user { font-size: 13px; opacity: 0.9; }
+button.logout, button.menu-toggle { background: transparent; color: #fff; border: 1px solid rgb(255 255 255 / 0.7); padding: 2px 10px; font-size: 13px; }
+button.logout:hover, button.menu-toggle:hover { background: rgb(255 255 255 / 0.15); border-color: #fff; }
+button.menu-toggle { display: none; }
+
+nav { display: flex; flex-wrap: wrap; gap: 4px 28px; padding: 0 24px 8px; }
+.group { display: flex; align-items: center; gap: 4px; }
+.group-label { font-size: 11px; opacity: 0.75; margin-right: 4px; letter-spacing: 0.05em; }
+nav a { color: #fff; text-decoration: none; padding: 3px 10px; border-radius: 4px; font-size: 14px; }
+nav a:hover { background: rgb(255 255 255 / 0.15); color: #fff; }
+nav a.active { background: #fff; color: #2f5597; font-weight: bold; }
+
+/* 見出しを押すと開くメニュー（改定・届出・精算・登録情報） */
+.dropdown { position: relative; }
+button.group-toggle {
+  background: transparent; color: #fff; border: 1px solid transparent; border-radius: 4px;
+  padding: 3px 10px; font-size: 14px;
+}
+button.group-toggle:hover:not(:disabled) { background: rgb(255 255 255 / 0.15); border-color: transparent; }
+button.group-toggle[aria-expanded='true'] { background: rgb(255 255 255 / 0.2); }
+/* 今いる画面がこの見出しの中にあるとき */
+button.group-toggle.active { background: #fff; color: #2f5597; font-weight: bold; }
+.caret { font-size: 10px; margin-left: 2px; }
+.dropdown-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 1000;
+  min-width: 260px; padding: 6px; border-radius: 6px;
+  background: #fff; box-shadow: 0 8px 24px rgb(0 0 0 / 0.2);
+  display: flex; flex-direction: column; gap: 2px;
+}
+.dropdown-menu[hidden] { display: none; }
+.dropdown-menu a { color: var(--c-text); padding: 6px 10px; display: flex; flex-direction: column; }
+.dropdown-menu a:hover { background: var(--c-primary-weak); color: var(--c-primary-dark); }
+.dropdown-menu a.active { background: var(--c-primary-weak); color: var(--c-primary-dark); }
+.help-text { font-size: 11px; color: var(--c-muted); font-weight: normal; }
+
+.confirm-backdrop { position: fixed; inset: 0; background: rgb(15 23 42 / 0.45); display: flex; align-items: center; justify-content: center; z-index: 1100; }
+.confirm { background: #fff; border-radius: 8px; padding: 20px 24px; width: min(440px, calc(100vw - 32px)); box-shadow: 0 10px 30px rgb(0 0 0 / 0.25); }
+.confirm h2 { font-size: 16px; margin: 0 0 8px; }
+.confirm p { margin: 0; white-space: pre-line; }
+.confirm .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+@media (max-width: 900px) {
+  .bar { padding: 8px 16px; gap: 8px; }
+  .app-title { font-size: 14px; }
+  .user { display: none; }
+  button.menu-toggle { display: inline-block; }
+  nav { display: none; flex-direction: column; padding: 0 16px 12px; }
+  nav.open { display: flex; }
+  .group { flex-wrap: wrap; }
+  .group-label { width: 100%; }
+  /* 狭い画面では、開いた一覧を見出しの下に字下げして並べる（ツリー） */
+  .dropdown { width: 100%; }
+  .dropdown-menu { position: static; box-shadow: none; background: transparent; padding: 0 0 0 16px; min-width: 0; }
+  .dropdown-menu a { color: #fff; }
+  .dropdown-menu a:hover, .dropdown-menu a.active { background: rgb(255 255 255 / 0.15); color: #fff; }
+  .help-text { color: rgb(255 255 255 / 0.75); }
+}

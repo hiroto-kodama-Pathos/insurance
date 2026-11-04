@@ -1,20 +1,27 @@
 <section class="page">
   <h1>設定</h1>
+  <p><a routerLink="/settings/accounts">アカウントと権限</a>（アカウントの発行、権限・担当範囲の変更）</p>
+  <p><a routerLink="/imports">CSV取り込み</a>（導入時：従業員・被扶養者・標準報酬月額・賞与）</p>
 
   @if (loading()) {
     <p>読み込み中…</p>
   } @else if (error()) {
     <p class="error">{{ error() }}</p>
   } @else {
+    <nav class="sections" aria-label="この画面の欄">
+      @for (x of sections; track x.id) {
+        <button type="button" class="link" (click)="goTo(x.id)">{{ x.label }}</button>
+      }
+    </nav>
     @if (notice()) {
-      <p class="notice">{{ notice() }}</p>
+      <app-notice [message]="notice()!" (closed)="notice.set(null)" />
     }
     @if (errors()['form'] && mode() === null) {
       <p class="error">{{ errors()['form'] }}</p>
     }
 
     <!-- 会社の設定 -->
-    <h2>会社の設定</h2>
+    <h2 id="settings-company" class="jump-target">会社の設定</h2>
     <form class="form" (submit)="saveSettings($event)">
       <fieldset class="radio">
         <legend>子ども・子育て支援金の本人負担の端数処理</legend>
@@ -29,53 +36,170 @@
       </fieldset>
       <p class="help">給与計算ソフトの設定に合わせてください。合算すると、支援金の本人負担は（合算した額）−（支援金を含まない額）になります。</p>
 
-      <label>保険料を控除する給与
-        <select [value]="settings().deductionTiming" (change)="setTiming($any($event.target).value)">
-          <option value="nextMonth">翌月の給与（翌月控除）</option>
-          <option value="sameMonth">その月の給与（当月控除）</option>
-        </select>
-      </label>
-      <div class="row">
-        <label>給与の締め日
-          <select [value]="'' + settings().payrollCutoff.day" (change)="setCutoffDay($any($event.target).value)">
-            <option value="end">末日</option>
-            @for (d of [5, 10, 15, 20, 25]; track d) {
-              <option [value]="'' + d">{{ d }}日</option>
-            }
-          </select>
-        </label>
-        <label>支払月
-          <select [value]="settings().payrollCutoff.paidIn" (change)="setPaidIn($any($event.target).value)">
-            <option value="sameMonth">当月払</option>
-            <option value="nextMonth">翌月払</option>
-          </select>
-        </label>
-      </div>
-      <span class="err">{{ settingsErrors()['cutoffDay'] }}</span>
-      <p class="help">退職者の個人データの保管期間：{{ settings().retentionYears }}年（運営者が設定します）</p>
+      <fieldset class="full-time">
+        <legend>通常の労働者（正社員）の所定労働時間・日数</legend>
+        <div class="row">
+          <label>週の所定労働時間
+            <input inputmode="decimal" name="fullTimeWeeklyHours" [value]="settings().fullTimeWeeklyHours" (input)="setFullTime('fullTimeWeeklyHours', $any($event.target).value)" />
+          </label>
+          <label>月の所定労働日数
+            <input inputmode="numeric" name="fullTimeMonthlyDays" [value]="settings().fullTimeMonthlyDays" (input)="setFullTime('fullTimeMonthlyDays', $any($event.target).value)" />
+          </label>
+        </div>
+        <span class="err">{{ settingsErrors()['fullTimeWeeklyHours'] }}{{ settingsErrors()['fullTimeMonthlyDays'] }}</span>
+        <p class="help">従業員の新規登録の「加入対象の判定」で、この4分の3以上なら一般の被保険者の候補にします。</p>
+        <p class="help">このアプリは、企業規模の要件を満たす特定適用事業所（任意特定適用事業所を含む）での使用を前提にしています。週20時間以上などの要件に当たる人は、短時間労働者の候補にします。</p>
+      </fieldset>
+
+      <p class="help">
+        退職者の個人データの保管期間：{{ settings().retentionYears }}年（運営者が設定します）。
+        その人を含む最後の月次確定（または資格喪失日の遅いほう）から保管期間がたつと、毎日の処理で自動で消去されます。消去の前に予告はありません。
+        月次確定の金額は匿名にして残すため、過去の会社合計は変わりません。保管期間を延ばしたいときは、運営者に問い合わせてください。
+      </p>
       <div class="actions">
         <button type="submit" [disabled]="saving()">会社の設定を保存</button>
       </div>
     </form>
 
+    <!-- 給与の支払区分 -->
+    <h2 id="settings-groups" class="jump-target">給与の支払区分</h2>
+    <p class="help">月給者・パートなど、締め日や支払月が違う区分ごとに、締め日・支払月・保険料を控除する給与を設定します。控除する給与の月は、その人の区分で決まります。</p>
+    <div class="table-wrap">
+      <table class="list payroll-groups">
+        <thead><tr><th>区分</th><th>締め日</th><th>支払</th><th>保険料を控除する給与</th><th>新規登録の初期値</th><th></th></tr></thead>
+        <tbody>
+          @for (g of payrollGroups(); track g.id) {
+            <tr>
+              <td>{{ g.name }}</td>
+              <td>{{ dayLabel(g.cutoffDay) }}</td>
+              <td>{{ g.paidIn === 'sameMonth' ? '当月' : '翌月' }}{{ dayLabel(g.payDay) }}払</td>
+              <td>{{ g.deductionTiming === 'nextMonth' ? '翌月の給与（翌月控除）' : 'その月の給与（当月控除）' }}</td>
+              <td>{{ g.isDefault ? '○' : '' }}</td>
+              <td><button type="button" class="secondary" (click)="openPayrollGroup(g)">変更</button></td>
+            </tr>
+          } @empty {
+            <tr><td colspan="6">登録されていません（すべての人を、これまでの会社の設定の締め日・控除のタイミングで扱います）。</td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    @if (mode()?.kind === 'payrollGroup') {
+      <form class="form" (submit)="savePayrollGroup($event)">
+        <h3>{{ mode()?.id ? '支払区分を変更' : '支払区分を追加' }}</h3>
+        <label>区分の名前
+          <input name="groupName" [value]="groupForm().name" (input)="setGroup('name', $any($event.target).value)" />
+        </label>
+        <span class="err">{{ errors()['name'] }}</span>
+        <div class="row">
+          <label>締め日
+            <select name="cutoffDay" [value]="'' + groupForm().cutoffDay" (change)="setGroupDay('cutoffDay', $any($event.target).value)">
+              <option value="end">末日</option>
+              @for (d of days; track d) {
+                <option [value]="'' + d">{{ d }}日</option>
+              }
+            </select>
+          </label>
+          <label>支払月
+            <select name="paidIn" [value]="groupForm().paidIn" (change)="setGroup('paidIn', $any($event.target).value)">
+              <option value="sameMonth">当月払</option>
+              <option value="nextMonth">翌月払</option>
+            </select>
+          </label>
+          <label>支払日
+            <select name="payDay" [value]="'' + groupForm().payDay" (change)="setGroupDay('payDay', $any($event.target).value)">
+              <option value="end">末日</option>
+              @for (d of days; track d) {
+                <option [value]="'' + d">{{ d }}日</option>
+              }
+            </select>
+          </label>
+        </div>
+        <span class="err">{{ errors()['cutoffDay'] }}{{ errors()['payDay'] }}</span>
+        <label>保険料を控除する給与
+          <select name="deductionTiming" [value]="groupForm().deductionTiming" (change)="setGroup('deductionTiming', $any($event.target).value)">
+            <option value="nextMonth">翌月の給与（翌月控除）</option>
+            <option value="sameMonth">その月の給与（当月控除）</option>
+          </select>
+        </label>
+        <p class="help">翌月控除で当月払の区分では、月末に退職する人の最終給与で前月分と退職月分の2か月分を控除します。</p>
+        <label class="check">
+          <input type="checkbox" [checked]="groupForm().isDefault" (change)="setGroup('isDefault', $any($event.target).checked)" />
+          従業員の新規登録で初めから選んでおく
+        </label>
+        <div class="actions">
+          <button type="submit" [disabled]="saving()">保存</button>
+          <button type="button" class="secondary" (click)="cancel()">やめる</button>
+        </div>
+      </form>
+    } @else {
+      <button type="button" (click)="openPayrollGroup(null)">支払区分を追加</button>
+    }
+
+    <!-- 賞与の種類 -->
+    <h2 id="settings-bonus" class="jump-target">賞与の種類</h2>
+    <p class="help">賞与を登録するときに種類を選びます。給与規程などで年4回以上支給すると決まっている種類は「年4回以上支給」にすると、その種類の賞与は報酬扱いになり、賞与の保険料をかけません（定時決定で、前年7月〜当年6月の合計 ÷ 12 を報酬に上乗せします）。</p>
+    <div class="table-wrap">
+      <table class="list bonus-types">
+        <thead><tr><th>種類</th><th>年4回以上支給</th><th>適用開始月</th><th></th></tr></thead>
+        <tbody>
+          @for (t of bonusTypes(); track t.id) {
+            <tr>
+              <td>{{ t.name }}</td>
+              <td>{{ t.isRemuneration ? '○（報酬扱い）' : '' }}</td>
+              <td>{{ t.validFrom | ym }}</td>
+              <td><button type="button" class="secondary" (click)="openBonusType(t)">変更</button></td>
+            </tr>
+          } @empty {
+            <tr><td colspan="4">登録されていません（種類を選ばずに登録した賞与は、ふつうの賞与として扱います）。</td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
+    @if (mode()?.kind === 'bonusType') {
+      <form class="form" (submit)="saveBonusType($event)">
+        <h3>{{ mode()?.id ? '賞与の種類を変更' : '賞与の種類を追加' }}</h3>
+        <label>種類の名前
+          <input name="bonusTypeName" [value]="bonusTypeForm().name" (input)="setBonusType('name', $any($event.target).value)" placeholder="夏季賞与・四半期賞与など" />
+        </label>
+        <span class="err">{{ errors()['name'] }}</span>
+        <label class="check">
+          <input type="checkbox" name="isRemuneration" [checked]="bonusTypeForm().isRemuneration" (change)="setBonusType('isRemuneration', $any($event.target).checked)" />
+          年4回以上支給する（報酬扱い）
+        </label>
+        <label>適用開始月
+          <input type="month" name="bonusTypeFrom" [value]="bonusTypeForm().validFrom" (input)="setBonusType('validFrom', $any($event.target).value)" />
+        </label>
+        <span class="err">{{ errors()['validFrom'] }}</span>
+        <p class="help">年4回以上支給かどうかは、この月以後に支給する賞与から当てます（登録済みの賞与は、登録したときの扱いのままです）。</p>
+        <div class="actions">
+          <button type="submit" [disabled]="saving()">保存</button>
+          <button type="button" class="secondary" (click)="cancel()">やめる</button>
+        </div>
+      </form>
+    } @else {
+      <button type="button" (click)="openBonusType(null)">賞与の種類を追加</button>
+    }
+
     <!-- 適用事業所 -->
-    <h2>適用事業所</h2>
-    <table class="list">
-      <thead><tr><th>事業所名</th><th>都道府県</th><th>保険者</th><th>新規登録の初期値</th><th></th></tr></thead>
-      <tbody>
-        @for (o of offices(); track o.id) {
-          <tr>
-            <td>{{ o.name }}</td>
-            <td>{{ o.prefecture }}</td>
-            <td>{{ insurerName(o.insurerId) }}</td>
-            <td>{{ o.isDefault ? '○' : '' }}</td>
-            <td><button type="button" class="secondary" (click)="openOffice(o)">変更</button></td>
-          </tr>
-        } @empty {
-          <tr><td colspan="5">登録されていません。</td></tr>
-        }
-      </tbody>
-    </table>
+    <h2 id="settings-offices" class="jump-target">適用事業所</h2>
+    <div class="table-wrap">
+      <table class="list">
+        <thead><tr><th>事業所名</th><th>都道府県</th><th>保険者</th><th>新規登録の初期値</th><th></th></tr></thead>
+        <tbody>
+          @for (o of offices(); track o.id) {
+            <tr>
+              <td>{{ o.name }}</td>
+              <td>{{ o.prefecture }}</td>
+              <td>{{ insurerName(o.insurerId) }}</td>
+              <td>{{ o.isDefault ? '○' : '' }}</td>
+              <td><button type="button" class="secondary" (click)="openOffice(o)">変更</button></td>
+            </tr>
+          } @empty {
+            <tr><td colspan="5">登録されていません。</td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
     @if (mode()?.kind === 'office') {
       <form class="form" (submit)="saveOffice($event)">
         <h3>{{ mode()?.id ? '適用事業所を変更' : '適用事業所を追加' }}</h3>
@@ -117,7 +241,7 @@
     }
 
     <!-- 健康保険組合 -->
-    <h2>健康保険組合と料率</h2>
+    <h2 id="settings-kumiai" class="jump-target">健康保険組合と料率</h2>
     <p class="help">組合健保に加入している事業所がある場合に登録します。料率は組合の規約や通知を見て入力してください。</p>
     @for (g of kumiaiRates(); track g.insurer.id) {
       <h3>
@@ -127,22 +251,24 @@
         }
         <button type="button" class="secondary small" (click)="openKumiai(g.insurer)">名前などを変更</button>
       </h3>
-      <table class="list">
-        <thead><tr><th>保険</th><th>適用開始月</th><th>料率</th><th>負担割合</th><th></th></tr></thead>
-        <tbody>
-          @for (r of g.rates; track r.id) {
-            <tr>
-              <td>{{ rateTypeLabels[r.rateType] }}</td>
-              <td>{{ r.validFrom }}</td>
-              <td class="num">{{ toPercent(r.rate) }}%</td>
-              <td>{{ shareLabel(r.employeeShare) }}</td>
-              <td><button type="button" class="secondary" (click)="openRate(r.insurerId, r)">変更</button></td>
-            </tr>
-          } @empty {
-            <tr><td colspan="5">料率が登録されていません。</td></tr>
-          }
-        </tbody>
-      </table>
+      <div class="table-wrap">
+        <table class="list">
+          <thead><tr><th>保険</th><th>適用開始月</th><th>料率</th><th>負担割合</th><th></th></tr></thead>
+          <tbody>
+            @for (r of g.rates; track r.id) {
+              <tr>
+                <td>{{ rateTypeLabels[r.rateType] }}</td>
+                <td>{{ r.validFrom | ym }}</td>
+                <td class="num">{{ toPercent(r.rate) }}%</td>
+                <td>{{ shareLabel(r.employeeShare) }}</td>
+                <td><button type="button" class="secondary" (click)="openRate(r.insurerId, r)">変更</button></td>
+              </tr>
+            } @empty {
+              <tr><td colspan="5">料率が登録されていません。</td></tr>
+            }
+          </tbody>
+        </table>
+      </div>
       @if (!(mode()?.kind === 'rate' && rateForm().insurerId === g.insurer.id)) {
         <button type="button" (click)="openRate(g.insurer.id, null)">料率を追加</button>
       }
@@ -201,22 +327,25 @@
     }
 
     <!-- 協会けんぽ（表示だけ） -->
-    <h2>協会けんぽ・厚生年金の料率（参照）</h2>
-    <p class="help">協会けんぽの料率と等級表は、毎年の改定に合わせて運営者が登録します。ここでは確認だけできます。登録した事業所の都道府県の分だけを表示しています。</p>
-    <table class="list">
-      <thead><tr><th>保険</th><th>都道府県</th><th>適用開始月</th><th>料率</th></tr></thead>
-      <tbody>
-        @for (r of kyokaiRates(); track r.id) {
-          <tr>
-            <td>{{ rateTypeLabels[r.rateType] }}</td>
-            <td>{{ r.prefecture ?? '全国一律' }}</td>
-            <td>{{ r.validFrom }}</td>
-            <td class="num">{{ toPercent(r.rate) }}%</td>
-          </tr>
-        } @empty {
-          <tr><td colspan="4">登録されていません。運営者に連絡してください。</td></tr>
-        }
-      </tbody>
-    </table>
+    <h2 id="settings-rates" class="jump-target">協会けんぽ・厚生年金の料率（参照）</h2>
+    <p class="help">協会けんぽと厚生年金の料率、等級表は、毎年の改定に合わせて運営者が登録します。ここでは確認だけできます。協会けんぽの健康保険料率は、登録した事業所の都道府県の分だけを表示しています。厚生年金の料率は全国一律で、組合健保の会社も同じ料率です。</p>
+    <div class="table-wrap">
+      <table class="list reference-rates">
+        <thead><tr><th>保険</th><th>都道府県</th><th>適用開始月</th><th class="num">料率</th><th>負担割合</th></tr></thead>
+        <tbody>
+          @for (r of referenceRates(); track r.id) {
+            <tr>
+              <td>{{ r.label }}</td>
+              <td>{{ r.prefecture ?? '全国一律' }}</td>
+              <td>{{ r.validFrom | ym }}</td>
+              <td class="num">{{ toPercent(r.rate) }}%</td>
+              <td>{{ shareLabel(r.employeeShare) }}</td>
+            </tr>
+          } @empty {
+            <tr><td colspan="5">登録されていません。運営者に連絡してください。</td></tr>
+          }
+        </tbody>
+      </table>
+    </div>
   }
 </section>

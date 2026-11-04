@@ -1,6 +1,12 @@
 // 定時決定の見込み（設計書 2.13.1・3.7）
 // 7月に4〜6月の給与から見込みを一覧にし、算定基礎届を書くときにそのまま書き写せるようにする。
 // 一覧はあくまで見込み。「見込みどおり登録」や一括登録をするまで、標準報酬月額も保険料も変わらない。
+import { matchesRegularStatus, REGULAR_STATUS_LABEL, RegularStatusFilter } from '../../core/calc/regular';
+import { distinctOptions, matchesPerson } from '../../core/calc/person-search';
+import { findOffice, Office } from '../../core/calc/office';
+import { NoticeMessage } from '../../core/ui/notice-message';
+import { BonusRecord } from '../../core/calc/bonus-premium';
+import { BonusRepository } from '../../core/repository/bonus-repository';
 import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { GradeRow } from '../../core/calc/grade-suggest';
@@ -11,7 +17,9 @@ import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employ
 import { MasterRepository } from '../../core/repository/master-repository';
 import { SalaryRepository } from '../../core/repository/salary-repository';
 import { SettingsRepository } from '../../core/repository/settings-repository';
-import { DEFAULT_CUTOFF, PayrollCutoff } from '../../core/calc/insured-type';
+import { cutoffResolver, legacyGroup, PayrollGroup } from '../../core/calc/payroll-group';
+import { DEFAULT_SETTINGS } from '../../core/calc/settings';
+import { parseNumberInput } from '../../core/calc/half-width';
 
 /** 表示する年の初期値：7月以降はその年、1〜6月は前の年の定時決定 */
 export function defaultRegularYear(today: string): number {
@@ -26,7 +34,7 @@ function today(): string {
 type Row = RegularEstimate & { employee: EmployeeRecord };
 
 @Component({
-  imports: [RouterLink],
+  imports: [RouterLink, NoticeMessage],
   selector: 'app-regular-list',
   styleUrl: './regular-list.scss',
   templateUrl: './regular-list.html',
@@ -36,7 +44,9 @@ export class RegularList implements OnInit {
   private readonly masterRepo = inject(MasterRepository);
   private readonly salaryRepo = inject(SalaryRepository);
   private readonly settingsRepo = inject(SettingsRepository);
-  private readonly cutoff = signal<PayrollCutoff>(DEFAULT_CUTOFF);
+  private readonly groups = signal<PayrollGroup[]>([legacyGroup(DEFAULT_SETTINGS)]);
+  /** 人と支払月ごとの締め日（その人の支払区分） */
+  private readonly cutoff = computed(() => cutoffResolver(this.groups(), this.employees()));
 
   protected readonly year = signal(defaultRegularYear(today()));
   protected readonly loading = signal(true);
@@ -48,13 +58,42 @@ export class RegularList implements OnInit {
   private readonly salaries = signal<SalaryRecord[]>([]);
   private readonly grades = signal<GradeRow[]>([]);
   private readonly thresholds = signal<GradeThreshold[]>([]);
+  /** 前年7月〜当年6月に支払った賞与（年4回以上支給する賞与の上乗せに使う） */
+  private readonly bonuses = signal<BonusRecord[]>([]);
+  private readonly bonusRepo = inject(BonusRepository);
 
   protected readonly rows = computed<Row[]>(() => {
     const byId = new Map(this.employees().map((e) => [e.id, e]));
-    return estimateRegularAll(this.employees(), this.salaries(), this.grades(), this.thresholds(), this.year(), this.cutoff())
+    return estimateRegularAll(this.employees(), this.salaries(), this.grades(), this.thresholds(), this.year(), this.cutoff(), this.bonuses())
       .map((r) => ({ ...r, employee: byId.get(r.employeeId)! }))
       .sort((a, b) => a.employee.employeeNumber.localeCompare(b.employee.employeeNumber));
   });
+  // ---- 絞り込み（設計書 3.7） ----
+  private readonly offices = signal<Office[]>([]);
+  protected readonly query = signal('');
+  protected readonly officeFilter = signal('');
+  protected readonly statusFilter = signal<RegularStatusFilter>('');
+  protected readonly statusLabels = REGULAR_STATUS_LABEL;
+  protected readonly statusKeys = Object.keys(REGULAR_STATUS_LABEL) as Exclude<RegularStatusFilter, ''>[];
+  /** 7月1日に所属している事業所の名前（算定基礎届を出す事業所） */
+  protected officeName(r: Row): string {
+    try {
+      return findOffice(r.employee.assignments, this.offices(), `${this.year()}-07-01`).name;
+    } catch {
+      return '';
+    }
+  }
+  protected readonly officeOptions = computed(() => distinctOptions(this.rows().map((r) => this.officeName(r))));
+  /** 表に出す行（一括登録は、絞り込みに関係なく全員が対象） */
+  protected readonly shownRows = computed(() =>
+    this.rows().filter(
+      (r) =>
+        matchesPerson(r.employee.employeeNumber, r.employee.name, this.query()) &&
+        (this.officeFilter() === '' || this.officeName(r) === this.officeFilter()) &&
+        matchesRegularStatus(r, this.statusFilter()),
+    ),
+  );
+
   protected readonly registrable = computed(() => registrableRegular(this.rows()) as Row[]);
   protected readonly registeredCount = computed(() => this.rows().filter((r) => r.registered).length);
   /** 対象外（6月1日以降の資格取得など）で一覧に出ない人数 */
@@ -62,13 +101,15 @@ export class RegularList implements OnInit {
 
   async ngOnInit(): Promise<void> {
     try {
-      const [employees, grades, thresholds, settings] = await Promise.all([
+      const [employees, grades, thresholds, groups, masters] = await Promise.all([
         this.employeeRepo.loadAll(),
         this.masterRepo.loadGrades(),
         this.masterRepo.loadGradeThresholds(),
-        this.settingsRepo.loadSettings(),
+        this.settingsRepo.loadPayrollGroups(),
+        this.masterRepo.loadMasters(),
       ]);
-      this.cutoff.set(settings.payrollCutoff);
+      this.offices.set(masters.offices);
+      this.groups.set(groups);
       this.employees.set(employees);
       this.grades.set(grades);
       this.thresholds.set(thresholds);
@@ -85,17 +126,25 @@ export class RegularList implements OnInit {
   /** 前年7月〜当年9月の給与（年間平均の特例と、7〜9月の随時改定の判定に使う） */
   async loadYear(): Promise<void> {
     const y = this.year();
-    const salaries = await this.salaryRepo.loadRange(`${y - 1}-07`, `${y}-09`);
-    if (y === this.year()) this.salaries.set(salaries);
+    const [salaries, bonuses] = await Promise.all([
+      this.salaryRepo.loadRange(`${y - 1}-07`, `${y}-09`),
+      this.bonusRepo.loadRange(`${y - 1}-07-01`, `${y}-06-30`),
+    ]);
+    if (y !== this.year()) return;
+    this.salaries.set(salaries);
+    this.bonuses.set(bonuses);
   }
 
   protected onYearChange(value: string): void {
-    const y = Number(value);
-    if (!Number.isInteger(y) || y < 2000) return;
+    const y = parseNumberInput(value);
+    if (y === null || !Number.isInteger(y) || y < 2000) return;
     this.year.set(y);
     this.notice.set(null);
     void this.loadYear();
   }
+
+  /** 通知書待ちとして登録する（決定通知書が給与計算に間に合わないとき） */
+  protected readonly provisional = signal(false);
 
   private input(r: Row) {
     return {
@@ -103,6 +152,7 @@ export class RegularList implements OnInit {
       reason: 'regular' as const,
       healthStandard: r.expectedHealth,
       pensionStandard: r.expectedPension,
+      provisional: this.provisional(),
     };
   }
 

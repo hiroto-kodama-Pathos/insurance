@@ -1,0 +1,207 @@
+<section class="page">
+  <h1>納付書・給与の控除額との照合</h1>
+
+  @if (loading()) {
+    <p>読み込み中…</p>
+  } @else {
+    <details class="howto">
+      <summary>この画面の使い方</summary>
+      <p class="help">
+        保険料の月を選び、届いた納付書の金額と、給与ソフトで控除した額を入力すると、アプリの計算との差を出します。
+        差があれば、前月から変わった人などを原因の候補として並べます。納付書は前月分が届くため、初めは前月を選んでいます。
+      </p>
+    </details>
+
+    <div class="filters">
+      <label>保険料の月
+        <input type="month" name="yearMonth" [value]="yearMonth()" (change)="setMonth($any($event.target).value)" />
+      </label>
+    </div>
+    @if (error()) {
+      <p class="error">{{ error() }}</p>
+    }
+    @if (notice()) {
+      <app-notice [message]="notice()!" (closed)="notice.set(null)" />
+    }
+
+    <!-- ---------------- 納付書 ---------------- -->
+    <h2>納付書との照合</h2>
+    <p class="hint">納付見込額は、その月分の月額と、その月に支給した賞与の保険料の全額を合わせた額です（適用事業所ごと）。</p>
+
+    @if (noticeRows().length === 0) {
+      <p>この月に保険料がかかる適用事業所はありません。</p>
+    }
+    @for (n of noticeRows(); track n.officeId) {
+      <article class="office" [class.diff]="n.status === 'diff'" [attr.data-office]="n.officeId">
+        <header>
+          <h3>{{ n.officeName }}</h3>
+          <span class="badge" [class]="n.status">{{ matchLabels[n.status] }}</span>
+          @if (n.closed) { <span class="badge closed">確定済み</span> }
+        </header>
+
+        <table class="list">
+          <thead>
+            <tr><th>納付書の欄</th><th>月額</th><th>賞与</th><th>納付見込額</th><th>納付書</th><th>差（納付書 − 見込み）</th></tr>
+          </thead>
+          <tbody>
+            @for (l of lines; track l) {
+              <tr>
+                <td>{{ lineLabels[l] }}</td>
+                <td class="num">{{ yen(n.expected.monthly[l]) }}</td>
+                <td class="num">{{ yen(n.expected.bonus[l]) }}</td>
+                <td class="num">{{ yen(n.expected.total[l]) }}</td>
+                <td class="num">
+                  @if (editingOffice() === n.officeId) {
+                    <input type="text" inputmode="numeric" [name]="'notice_' + l" [value]="noticeDraft()[l] ?? ''" (input)="setDraft(l, $any($event.target).value)" />
+                  } @else {
+                    {{ yen(n.entered?.[l]) }}
+                  }
+                </td>
+                <td class="num" [class.minus]="(n.diff?.[l] ?? 0) !== 0">{{ signed(n.diff?.[l]) }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+
+        <div class="actions">
+          @if (editingOffice() === n.officeId) {
+            @if (draftError()) { <span class="error">{{ draftError() }}</span> }
+            <button type="button" class="primary" (click)="saveNotice()" [disabled]="saving()">保存</button>
+            <button type="button" class="secondary" (click)="cancelEdit()">やめる</button>
+          } @else {
+            <button type="button" (click)="editNotice(n.officeId)">{{ n.entered ? '納付書の金額を直す' : '納付書の金額を入力' }}</button>
+            @if (n.entered) {
+              <button type="button" class="link" (click)="removeNotice(n.officeId)" [disabled]="saving()">消す</button>
+            }
+          }
+        </div>
+
+        @if (n.status === 'diff') {
+          <div class="causes">
+            <p><strong>差 {{ signed(n.diffTotal) }}円の原因の候補</strong></p>
+            @if (n.causes.length > 0) {
+              <ul>
+                @for (c of n.causes; track c.employeeId) {
+                  <li>{{ c.label }}：{{ c.reasons.join('・') }}</li>
+                }
+              </ul>
+            } @else {
+              <p>この事業所には、前月から保険料が変わった人・賞与を支給した人はいません。</p>
+            }
+            <p class="hint">そのほかに考えられること：</p>
+            <ul class="general">
+              @for (g of generalCauses; track g) { <li>{{ g }}</li> }
+            </ul>
+          </div>
+        }
+      </article>
+    }
+
+    <!-- ---------------- 給与の控除額 ---------------- -->
+    <h2>給与の控除額との照合</h2>
+    <p class="hint">
+      その月の保険料（月額）の本人負担と、給与ソフトで控除した額を比べます。賞与の保険料は賞与の明細で控除するため、ここには含めません。
+      翌月控除の人は、翌月に支払う給与で控除した額を入力してください（「控除する給与」の列）。
+    </p>
+
+    <div class="import">
+      <label class="file">給与ソフトの控除額のCSVを取り込む
+        <input type="file" accept=".csv,text/csv" (change)="onFile($event)" />
+      </label>
+      <a [href]="templateHref()" download="給与の控除額のひな形.csv">ひな形をダウンロード</a>
+      <span class="hint">見出しの「社員番号」「健康保険」「介護保険」「支援金」「厚生年金」の言葉で列を探します（会社負担の列は使いません）。</span>
+    </div>
+    @if (previewError()) {
+      <p class="error">{{ previewError() }}</p>
+    }
+    @if (preview(); as rows) {
+      <div class="preview">
+        <p><strong>{{ fileName() }}</strong>：取り込める行 {{ previewOk().length }}件 ／ エラー {{ rows.length - previewOk().length }}件（{{ yearMonth() | ym }}分として保存します）</p>
+        <table class="list">
+          <thead>
+            <tr><th>行</th><th>従業員</th>@for (k of dKeys; track k) { <th>{{ dLabels[k] }}</th> }<th>エラー</th></tr>
+          </thead>
+          <tbody>
+            @for (r of rows; track r.line) {
+              <tr [class.error-row]="r.errors.length > 0">
+                <td>{{ r.line }}</td>
+                <td>{{ r.label }}</td>
+                @for (k of dKeys; track k) { <td class="num">{{ yen(r.amounts?.[k]) }}</td> }
+                <td class="error">{{ r.errors.join('・') }}</td>
+              </tr>
+            }
+          </tbody>
+        </table>
+        <div class="actions">
+          <button type="button" class="primary" (click)="importPreview()" [disabled]="saving() || previewOk().length === 0">取り込む</button>
+          <button type="button" class="secondary" (click)="cancelPreview()">やめる</button>
+        </div>
+      </div>
+    }
+
+    <p class="counts">
+      一致 {{ deductionCounts().match }}人 ／ 差あり {{ deductionCounts().diff }}人 ／ 未入力 {{ deductionCounts().notEntered }}人
+      <label class="check"><input type="checkbox" name="onlyDiff" [checked]="onlyDiff()" (change)="onlyDiff.set($any($event.target).checked)" /> 一致した人を隠す</label>
+      @if (onlyDiff()) {
+        <label class="check"><input type="checkbox" name="showNotEntered" [checked]="showNotEntered()" (change)="showNotEntered.set($any($event.target).checked)" /> 未入力も表示</label>
+      }
+    </p>
+
+    <div class="table-wrap">
+      <table class="list deductions">
+        <thead>
+          <tr>
+            <th>従業員</th><th>控除する給与</th><th>保険</th><th>本人負担</th><th>給与の控除額</th><th>差</th><th>状態</th><th></th>
+          </tr>
+        </thead>
+        <tbody>
+          @for (r of shownDeductions(); track r.employeeId) {
+            @for (k of dKeys; track k; let first = $first) {
+              <tr [class.first]="first" [attr.data-employee]="first ? r.employeeId : null">
+                @if (first) {
+                  <td rowspan="3"><a [routerLink]="['/employees', r.employeeId]">{{ r.label }}</a></td>
+                  <td rowspan="3">{{ r.payYm | ym }}</td>
+                }
+                <td>{{ dLabels[k] }}</td>
+                <td class="num">{{ yen(r.expected[k]) }}</td>
+                <td class="num">
+                  @if (editingEmployee() === r.employeeId) {
+                    <input type="text" inputmode="numeric" [name]="'deduction_' + k" [value]="noticeDraft()[k] ?? ''" (input)="setDraft(k, $any($event.target).value)" />
+                  } @else {
+                    {{ yen(r.entered?.[k]) }}
+                  }
+                </td>
+                <td class="num" [class.minus]="(r.diff?.[k] ?? 0) !== 0">{{ signed(r.diff?.[k]) }}</td>
+                @if (first) {
+                  <td rowspan="3"><span class="badge" [class]="r.status">{{ matchLabels[r.status] }}</span></td>
+                  <td rowspan="3" class="row-actions">
+                    @if (editingEmployee() === r.employeeId) {
+                      @if (draftError()) { <span class="error">{{ draftError() }}</span> }
+                      <button type="button" class="primary" (click)="saveDeduction()" [disabled]="saving()">保存</button>
+                      <button type="button" class="secondary" (click)="cancelEdit()">やめる</button>
+                    } @else {
+                      <button type="button" (click)="editDeduction(r.employeeId)">{{ r.entered ? '直す' : '入力' }}</button>
+                      @if (r.entered) {
+                        <button type="button" class="link" (click)="removeDeduction(r.employeeId)" [disabled]="saving()">消す</button>
+                      }
+                    }
+                  </td>
+                }
+              </tr>
+            }
+            @if (r.causes.length > 0) {
+              <tr class="cause-row">
+                <td colspan="8">
+                  <strong>差 {{ signed(r.diffTotal) }}円の原因の候補：</strong>
+                  <ul>
+                    @for (c of r.causes; track c) { <li>{{ c }}</li> }
+                  </ul>
+                </td>
+              </tr>
+            }
+          }
+        </tbody>
+      </table>
+    </div>
+  }
+</section>

@@ -1,16 +1,20 @@
 // 月次確定の保存・読み込み・解除（設計書 4章 closings）
 // closings/{yearMonth}/offices/{officeId} に事業所ごとの結果、親の closings/{yearMonth} に事業所ごとの確定日時を持つ。
-import { Service } from '@angular/core';
-import { deleteField, doc, getDocs, serverTimestamp, Timestamp, writeBatch } from 'firebase/firestore';
+import { inject, Service } from '@angular/core';
+import { Auth } from '../auth/auth';
+import { scopeWhere } from './scope';
+import { deleteField, doc, getDocs, query, serverTimestamp, Timestamp, writeBatch } from 'firebase/firestore';
 import { OfficeClosing } from '../calc/closing';
 import { db } from '../firebase';
 import { closingOfficesCol, siDoc } from '../firestore-paths';
 
 @Service()
 export class ClosingRepository {
+  private readonly auth = inject(Auth);
+
   /** その月に確定済みの事業所の結果 */
   async loadMonth(yearMonth: string): Promise<OfficeClosing[]> {
-    const snap = await getDocs(closingOfficesCol(yearMonth));
+    const snap = await getDocs(query(closingOfficesCol(yearMonth), ...scopeWhere(this.auth)));
     return snap.docs.map((d) => {
       const x = d.data();
       const at = x['closedAt'];

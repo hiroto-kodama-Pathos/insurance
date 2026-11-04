@@ -43,7 +43,7 @@ describe('buildPreview', () => {
     expect(p.map((r) => r.status)).toEqual(['new', 'new']);
     expect(p[0].salary).toEqual({
       employeeId: 'e1', paidDate: '2026-10-25', fixedWages: 335_000, nonFixedWages: 20_000,
-      paymentBaseDays: 31, retroactiveDiff: null, inKindWages: null,
+      paymentBaseDays: 31, retroactiveDiff: null, inKindWages: null, workingHours: null, hourlyRate: null,
     });
     expect(p[1].salary!.paidDate).toBe('2026-10-25');
     expect(p[1].officeId).toBe('osaka');
@@ -64,6 +64,15 @@ describe('buildPreview', () => {
     expect(buildPreview(csv, TEMPLATE_MAPPING, ctx({ existingIds: new Set(['e1_2026-10-25']) }))[0].status).toBe('overwrite');
     expect(buildPreview(csv, TEMPLATE_MAPPING, ctx({ closed: new Set(['2026-10|honsha']) })).map((r) => r.status)).toEqual(['closed', 'new']);
     expect(buildPreview(csv, TEMPLATE_MAPPING, ctx({ scope: 'osaka' })).map((r) => r.status)).toEqual(['outOfScope', 'new']);
+  });
+
+  it('労働時間の列があれば取り込む（時:分も読める。読めなければエラー）', () => {
+    const csv = parseCsv(templateCsv() + '0002,2026-10-25,20,120000,0,,,86:30,1200\r\n0003,2026-10-25,20,120000,0,,,abc,\r\n');
+    const p = buildPreview(csv, TEMPLATE_MAPPING, ctx());
+    expect(p[0].salary?.workingHours).toBeNull();
+    expect(p[1].salary?.workingHours).toBe(86.5);
+    expect(p[1].salary?.hourlyRate).toBe(1200);
+    expect(p[2].errors).toContain('労働時間を数値として読み取れません');
   });
 
   it('同じ社員番号・支払日の行が2つあればエラーにする', () => {
