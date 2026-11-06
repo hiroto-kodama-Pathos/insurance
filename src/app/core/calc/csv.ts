@@ -70,7 +70,8 @@ export function parseNumberLoose(value: string | undefined): number | null {
   if (value === undefined) return null;
   const v = toHalfWidth(value).replace(/[,\s円¥日]/g, '');
   if (v === '') return null;
-  return /^-?\d+$/.test(v) ? Number(v) : NaN;
+  // 桁の多すぎる数は、JavaScript の数で正しく表せない（下の桁が変わる）ので読み取れないものとする
+  return /^-?\d+$/.test(v) && Number.isSafeInteger(Number(v)) ? Number(v) : NaN;
 }
 
 /** 時間の数値を読み取る（'86.5'・'86:30'・'86時間30分'）。小数第1位までに丸める。空は null、読めなければ NaN */

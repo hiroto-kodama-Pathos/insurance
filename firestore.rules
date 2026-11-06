@@ -558,17 +558,46 @@ service cloud.firestore {
 
       // 給与：確定済みの月（closings/{支払月}/offices/{事業所} がある）の給与は、登録・上書き・削除ができない。
       // 同じ人・同じ支払日は1件（ドキュメントID＝従業員ID_支払日）にして、上書きで直す
+      // 実在する日付か（'YYYY-MM-DD' の形で、その月にある日。2026-02-31 などを止める）
+      function isRealDate(s) {
+        return s is string && s.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$')
+          && isDayInMonth(int(s[0:4]), int(s[5:7]), int(s[8:10]));
+      }
+      function isDayInMonth(y, m, d) {
+        return d <= 28
+          || (m != 2 && (d <= 30 || !(m in [4, 6, 9, 11])))
+          || (m == 2 && d == 29 && y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
+      }
+      // 給与の金額（0以上の整数・1回の支払いで1億円未満。画面・CSVの MAX_SALARY_YEN と同じ）
+      function isSalaryYen(v) { return v is int && v >= 0 && v <= 99999999; }
+      function optYen(d, key) { return d.get(key, null) == null || isSalaryYen(d.get(key, 0)); }
+      // 給与：画面・CSVの validateSalary と同じ決まり（設計書 3.6・4章 salaries）。画面を通らない書き込みも止める
       function validSalary(d) {
-        return d.employeeId is string
-          && d.paidDate is string && d.yearMonth is string
+        return d.keys().hasOnly(['employeeId', 'paidDate', 'yearMonth', 'officeId', 'fixedWages', 'nonFixedWages', 'paymentBaseDays',
+            'retroactiveDiff', 'inKindWages', 'workingHours', 'hourlyRate', 'excludedAmount', 'updatedAt'])
+          && d.employeeId is string
+          && isRealDate(d.paidDate) && d.yearMonth is string
           && d.paidDate.matches(d.yearMonth + '-[0-9]{2}')
           && d.officeId is string
-          && d.fixedWages is int && d.fixedWages >= 0
-          && d.nonFixedWages is int && d.nonFixedWages >= 0
+          && isSalaryYen(d.fixedWages)
+          && isSalaryYen(d.nonFixedWages)
           && d.paymentBaseDays is int && d.paymentBaseDays >= 0 && d.paymentBaseDays <= 31
-          // 算定から除く額（支払月・締め日の変更月だけ）：0以上の整数で、支払った額以下
+          // うち遡及差額：固定的賃金の内数
+          // （null の項目は get の既定値にならず null が返るので、「null か、上限以下か」で書く）
+          && optYen(d, 'retroactiveDiff') && (d.get('retroactiveDiff', null) == null || d.retroactiveDiff <= d.fixedWages)
+          // うち現物給与：支払った額（固定的賃金＋非固定的賃金）の内数
+          && optYen(d, 'inKindWages') && (d.get('inKindWages', null) == null || d.inKindWages <= d.fixedWages + d.nonFixedWages)
+          // 労働時間：0〜744時間（小数第1位まで）
+          && (d.get('workingHours', null) == null
+            || ((d.workingHours is int || d.workingHours is float) && d.workingHours >= 0 && d.workingHours <= 744
+              && math.round(d.workingHours * 10) == d.workingHours * 10))
+          // 時給単価：1〜100,000円
+          && (d.get('hourlyRate', null) == null || (d.hourlyRate is int && d.hourlyRate >= 1 && d.hourlyRate <= 100000))
+          // 算定から除く額（支払月・締め日の変更月だけ）：支払った額（遡及差額を除く）以下
+          && optYen(d, 'excludedAmount')
           && (d.get('excludedAmount', null) == null
-            || (d.get('excludedAmount', 0) is int && d.get('excludedAmount', 0) >= 0 && d.get('excludedAmount', 0) <= d.fixedWages + d.nonFixedWages));
+            || (d.get('retroactiveDiff', null) == null && d.excludedAmount <= d.fixedWages + d.nonFixedWages)
+            || (d.get('retroactiveDiff', null) != null && d.excludedAmount <= d.fixedWages - d.retroactiveDiff + d.nonFixedWages));
       }
       match /salaries/{salaryId} {
         // まだない給与も読める（追加・支払日の変更で、同じ支払日の給与がないことをトランザクションで確かめるため。ないものは何も分からない）

@@ -152,12 +152,9 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
         const retroactive =
           detectRetroactivePossibilities(months).find((r) => r.yearMonth === ym || r.yearMonth === addMonths(ym, -1)) ?? null;
         const cutoffAt = (x: string) => cutoffOf(payrollGroupAt(this.groups(), e.payrollAssignments, `${x}-01`));
-        let officeId: string | null = null;
-        try {
-          officeId = findOffice(e.assignments, m.offices, `${ym}-01`).id;
-        } catch {
-          officeId = null;
-        }
+        // 給与の所属事業所は、支払日に所属している事業所（CSVの取り込みと同じ。設計書 3.6）。
+        // 行の事業所（絞り込み・確定済みの表示）は、登録した1回目の支払日、まだなければ支払区分の支払日で決める
+        const officeId = this.officeOn(e, thisMonth[0]?.paidDate ?? payDateOf(payrollGroupAt(this.groups(), e.payrollAssignments, `${ym}-01`), ym));
         return {
           employee: e,
           existing: thisMonth[0] ?? null,
@@ -178,6 +175,29 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
   });
 
   protected readonly needsExclusion = needsExclusion;
+
+  /** その日に所属している適用事業所（なければ null）。給与の所属事業所は支払日で決める */
+  private officeOn(e: EmployeeRecord, date: string): string | null {
+    const m = this.masters();
+    if (!m) return null;
+    try {
+      return findOffice(e.assignments, m.offices, date).id;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 保存する給与の所属事業所と、保存できない理由（支払日に所属がない・その事業所のその月が確定済み）。
+   * 月の途中で異動した人は、支払日によって事業所が変わる（行の事業所と違うこともある）
+   */
+  private officeForSave(row: SalaryRow, paidDate: string): { officeId: string | null; error: string | null } {
+    const officeId = this.officeOn(row.employee, paidDate);
+    if (!officeId) return { officeId, error: `支払日（${dateLabel(paidDate)}）に所属している適用事業所がありません` };
+    if (this.closings().some((c) => c.officeId === officeId))
+      return { officeId, error: 'この月は確定済みです。月次保険料一覧で確定を解除してから入力してください' };
+    return { officeId, error: null };
+  }
 
   /** 支払基礎日数の初期値：月給制とみなせる加入者だけ、その月の計算期間の暦日数 */
   private autoBaseDays(e: EmployeeRecord, mine: SalaryRecord[], ym: string, cutoffAt: (x: string) => PayrollCutoff): number | null {
@@ -404,8 +424,11 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     // 支払月・締め日の変更月で、算定から除く額が要る月は必須（入れないと、随時改定・定時決定の平均を誤るため）。除く額がなければ0円
     if (!errors.excludedAmount && needsExclusion(row.periodChange) && (input.excludedAmount === null || input.excludedAmount === undefined))
       errors.excludedAmount = 'この月は算定から除く額が必要です（説明を見て入れてください。除く額がなければ 0）';
-    if (!row.officeId) errors.form = 'この月に所属している適用事業所がありません';
     if (row.closed) errors.form = 'この月は確定済みです。月次保険料一覧で確定を解除してから入力してください';
+    else if (!errors.paidDate) {
+      const o = this.officeForSave(row, input.paidDate);
+      if (o.error) errors.form = o.error;
+    }
     this.errors.update((e) => ({ ...e, [id]: errors }));
     return Object.keys(errors).length > 0 ? null : input;
   }
@@ -430,7 +453,7 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
           // 算定から除く額は、除く必要がある変更月だけ保存する（0円も「入れた」として残す。未入力と区別するため）
           excludedAmount: needsExclusion(row.periodChange) ? (input.excludedAmount ?? null) : null,
         },
-        row.officeId!,
+        this.officeForSave(row, input.paidDate).officeId!,
       );
       return true;
     } catch (e) {
@@ -626,8 +649,11 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
       errors.paidDate = `支払日は${yearMonthLabel(ym)}の日付にしてください（随時改定は支払月で数えます）`;
     if (!errors.paidDate && row.payments.some((s) => s.id !== edit.salaryId && s.paidDate === input.paidDate))
       errors.paidDate = `${dateLabel(input.paidDate)}の支払いはすでに登録されています（その行の「直す」で直してください）`;
-    if (!row.officeId) errors.form = 'この月に所属している適用事業所がありません';
     if (row.closed) errors.form = 'この月は確定済みです。月次保険料一覧で確定を解除してから入力してください';
+    else if (!errors.paidDate) {
+      const o = this.officeForSave(row, input.paidDate);
+      if (o.error) errors.form = o.error;
+    }
     this.paymentErrors.set(errors);
     if (Object.keys(errors).length > 0) return;
     const before = row.payments.find((s) => s.id === edit.salaryId) ?? null;
@@ -648,7 +674,7 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
           // 算定から除く額は一覧の行で入れるので、直すときは今の値を残す
           excludedAmount: before?.excludedAmount ?? null,
         },
-        row.officeId!,
+        this.officeForSave(row, input.paidDate).officeId!,
       );
       this.paymentEdit.set(null);
       await this.loadMonth(true);

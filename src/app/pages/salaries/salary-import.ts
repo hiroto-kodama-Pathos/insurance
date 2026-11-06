@@ -10,6 +10,7 @@ import { decodeCsv, parseCsv } from '../../core/calc/csv';
 import { Office } from '../../core/calc/office';
 import {
   buildPreview,
+  mappingConflicts,
   missingColumns,
   PreviewRow,
   PreviewStatus,
@@ -25,6 +26,7 @@ import { SalaryRepository } from '../../core/repository/salary-repository';
 import { SettingsRepository } from '../../core/repository/settings-repository';
 import { needsExclusion, periodChange } from '../../core/calc/pay-period-change';
 import { cutoffOf, PayrollGroup, payrollGroupAt } from '../../core/calc/payroll-group';
+import { dateLabel } from '../../core/calc/year-month';
 
 export const STATUS_LABEL: Record<PreviewStatus, string> = {
   new: '新規',
@@ -90,6 +92,10 @@ export class SalaryImport implements OnInit {
   /** 今使う対応づけ（テンプレートの形式なら対応づけなし） */
   protected readonly mapping = signal<SalaryMapping>(EMPTY_MAPPING);
   protected readonly missing = computed(() => (this.headers().length ? missingColumns(this.mapping(), this.headers()) : []));
+  /** 対応づけの矛盾（同じ列を固定的賃金と非固定的賃金の両方に選んだなど）。あれば取り込み・保存をしない */
+  protected readonly conflicts = computed(() => mappingConflicts(this.mapping()));
+  /** 取り込めない対応づけか（CSVにない列がある・矛盾がある） */
+  protected readonly mappingBlocked = computed(() => this.missing().length > 0 || this.conflicts().length > 0);
 
   // プレビュー
   private readonly closed = signal<Set<string>>(new Set());
@@ -99,20 +105,22 @@ export class SalaryImport implements OnInit {
   protected readonly isAdmin = computed(() => this.auth.isAdmin());
 
   protected readonly preview = computed<PreviewRow[]>(() => {
-    if (this.csvRows().length < 2 || this.missing().length > 0) return [];
+    // 支払区分を読めないと、算定から除く額の要る月（支払月・締め日の変更月）を確かめられないので、プレビューを作らない
+    const need = this.needsExclusionFn();
+    if (this.csvRows().length < 2 || this.mappingBlocked() || !need) return [];
     return buildPreview(this.csvRows(), this.mapping(), {
       employees: this.employees(),
       offices: this.offices(),
       closed: this.closed(),
       existingIds: this.existingIds(),
       scope: this.auth.user()?.siScope ?? 'all',
-      needsExclusion: this.needsExclusionFn(),
+      needsExclusion: need,
     });
   });
 
   /** 支払区分（支払月・締め日の変更月を見分ける） */
   private readonly groups = signal<PayrollGroup[] | null>(null);
-  /** その人のその支払月が、算定から除く額の要る月か（支払区分を読めなければ確かめない） */
+  /** その人のその支払月が、算定から除く額の要る月か（支払区分を読めなければ undefined。取り込めない） */
   private readonly needsExclusionFn = computed(() => {
     const groups = this.groups();
     if (!groups) return undefined;
@@ -141,13 +149,15 @@ export class SalaryImport implements OnInit {
 
   async ngOnInit(): Promise<void> {
     try {
-      const [employees, masters, mapping] = await Promise.all([
+      // 支払区分も一緒に読む。読めなければ取り込まない（算定から除く額の要る月を確かめられず、
+      // 必須のチェックを飛ばして取り込むと、随時改定・定時決定の平均を誤るため）
+      const [employees, masters, mapping, groups] = await Promise.all([
         this.employeeRepo.loadAll(),
         this.masterRepo.loadMasters(),
         this.settingsRepo.loadSalaryMapping(),
+        this.settingsRepo.loadPayrollGroups(),
       ]);
-      // 支払区分を読めなくても取り込みは使える（算定から除く額の要る月を確かめないだけ）
-      this.groups.set(await Promise.resolve().then(() => this.settingsRepo.loadPayrollGroups()).catch(() => null));
+      this.groups.set(groups);
       this.employees.set(employees);
       this.offices.set(masters.offices);
       this.savedMapping.set(mapping);
@@ -182,7 +192,7 @@ export class SalaryImport implements OnInit {
 
   /** プレビューに使う、確定済みの月と登録済みの給与（ファイルの支払月の分） */
   private async refreshContext(): Promise<void> {
-    if (this.missing().length > 0) return;
+    if (this.mappingBlocked()) return;
     const months = [
       ...new Set(
         buildPreview(this.csvRows(), this.mapping(), {
@@ -219,6 +229,7 @@ export class SalaryImport implements OnInit {
   }
 
   protected async saveMapping(): Promise<void> {
+    if (this.mappingBlocked()) return;
     this.busy.set(true);
     try {
       await this.settingsRepo.saveSalaryMapping(this.mapping());
@@ -237,18 +248,37 @@ export class SalaryImport implements OnInit {
     if (rows.length === 0) return;
     this.busy.set(true);
     try {
-      await this.salaryRepo.saveMany(rows.map((r) => ({ salary: r.salary!, officeId: r.officeId! })));
+      const r = await this.salaryRepo.saveMany(rows.map((x) => ({ salary: x.salary!, officeId: x.officeId!, overwrite: x.status === 'overwrite' })));
       const skipped = this.preview().length - rows.length;
       // 算定から除く額がなくて取り込まなかった行（支払月・締め日の変更月）は、別に知らせる
-      const noExclusion = this.preview().filter((r) => r.errors.some((e) => e.includes('算定から除く額が要ります'))).length;
-      this.notice.set(
-        `${rows.length}件の給与を取り込みました。${skipped > 0 ? `取り込まなかった行は${skipped}件です。` : ''}` +
-          (noExclusion > 0
-            ? `このうち${noExclusion}件は、支払月・締め日の変更月の給与で「算定から除く額」がないため取り込んでいません。CSVの「算定から除く額」の列に額（なければ0）を入れて取り込み直すか、給与の画面で入れてください。`
-            : ''),
-      );
-      this.csvRows.set([]);
-      this.fileName.set('');
+      const noExclusion = this.preview().filter((p) => p.errors.some((e) => e.includes('算定から除く額が要ります'))).length;
+      const nameOf = (employeeId: string) => this.employees().find((e) => e.id === employeeId)?.name ?? '';
+      const parts = [
+        `${r.saved}件の給与を取り込みました。`,
+        skipped > 0 ? `取り込まなかった行は${skipped}件です。` : '',
+        noExclusion > 0
+          ? `このうち${noExclusion}件は、支払月・締め日の変更月の給与で「算定から除く額」がないため取り込んでいません。CSVの「算定から除く額」の列に額（なければ0）を入れて取り込み直すか、給与の画面で入れてください。`
+          : '',
+        r.conflicts.length > 0
+          ? `${r.conflicts.length}件は、確認のあとにほかの担当者が同じ支払日の給与を登録したため、上書きせずに取り込んでいません（${r.conflicts
+              .slice(0, 5)
+              .map((s) => `${nameOf(s.employeeId)}さん ${dateLabel(s.paidDate)}`)
+              .join('、')}${r.conflicts.length > 5 ? ' ほか' : ''}）。内容を確かめ、上書きするときは「上書きする」を選んで取り込み直してください。`
+          : '',
+        r.failed > 0
+          ? `${r.failed}件は、途中で書き込めなかったため取り込めていません（確定済みの月が含まれていないか、権限と通信を確かめてください）。同じファイルを取り込み直すと、取り込めた行は「登録済み」として出るので、二重にはなりません。`
+          : '',
+      ];
+      if (r.error) console.error(r.error);
+      this.notice.set(parts.join(''));
+      if (r.failed > 0 || r.conflicts.length > 0) {
+        // 一部だけ取り込めたときは、ファイルを残して、登録済みの給与を読み直す（取り込めた行は「上書き」に変わる）
+        this.overwrite.set(false);
+        await this.refreshContext();
+      } else {
+        this.csvRows.set([]);
+        this.fileName.set('');
+      }
     } catch (e) {
       console.error(e);
       this.notice.set('取り込めませんでした。確定済みの月が含まれていないか、権限と通信を確かめてください。');

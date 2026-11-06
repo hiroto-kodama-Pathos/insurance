@@ -137,6 +137,21 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
 await check('確定済みの月の給与は上書きできない', assertFails(setDoc(doc(staff, `${SI}/salaries/e1_2026-11-24`), salary('2026-11-24', 'honsha', 1))));
 await check('確定済みの月の給与は削除できない', assertFails(deleteDoc(doc(staff, `${SI}/salaries/e1_2026-11-24`))));
 await check('未確定の月の給与は削除できる', assertSucceeds(deleteDoc(doc(staff, `${SI}/salaries/e1_2026-10-25`))));
+// 画面を通らない書き込みでも、ありえない給与は止める（画面・CSVの validateSalary と同じ決まり）
+const sal = (id, extra) => setDoc(doc(staff, `${SI}/salaries/e1_${id}`), { ...salary(id, 'honsha'), ...extra });
+await check('遡及差額・現物給与・労働時間・時給単価・除く額が正しい給与は登録できる', assertSucceeds(sal('2026-10-01', { retroactiveDiff: 1000, inKindWages: 500, workingHours: 86.5, hourlyRate: 1200, excludedAmount: 0 })));
+await check('null の任意項目がある給与も登録できる', assertSucceeds(sal('2026-10-02', { retroactiveDiff: null, inKindWages: null, workingHours: null, hourlyRate: null, excludedAmount: null })));
+await check('うるう年の2月29日の給与は登録できる', assertSucceeds(setDoc(doc(staff, `${SI}/salaries/e1_2028-02-29`), salary('2028-02-29', 'honsha'))));
+await check('実在しない日付（2026-02-31）の給与は登録できない', assertFails(setDoc(doc(staff, `${SI}/salaries/e1_2026-02-31`), salary('2026-02-31', 'honsha'))));
+await check('平年の2月29日の給与は登録できない', assertFails(setDoc(doc(staff, `${SI}/salaries/e1_2027-02-29`), salary('2027-02-29', 'honsha'))));
+await check('遡及差額が固定的賃金を超える給与は登録できない', assertFails(sal('2026-10-03', { fixedWages: 1000, retroactiveDiff: 2000 })));
+await check('現物給与が文字列の給与は登録できない', assertFails(sal('2026-10-04', { inKindWages: '500' })));
+await check('現物給与が負の給与は登録できない', assertFails(sal('2026-10-05', { inKindWages: -1 })));
+await check('労働時間が745時間の給与は登録できない', assertFails(sal('2026-10-06', { workingHours: 745 })));
+await check('時給単価が0円の給与は登録できない', assertFails(sal('2026-10-07', { hourlyRate: 0 })));
+await check('除く額が遡及差額を除いた額を超える給与は登録できない', assertFails(sal('2026-10-08', { fixedWages: 1000, nonFixedWages: 0, retroactiveDiff: 500, excludedAmount: 600 })));
+await check('1億円以上の固定的賃金は登録できない', assertFails(sal('2026-10-09', { fixedWages: 100000000 })));
+await check('給与に決まっていない項目は足せない', assertFails(sal('2026-10-10', { memo: 'x' })));
 
 // ---- 給与の支払区分（管理者だけが追加・変更。削除はできない） ----
 const group = { name: '月給者', cutoffDay: 'end', paidIn: 'nextMonth', deductionTiming: 'nextMonth', payDay: 25, isDefault: true };

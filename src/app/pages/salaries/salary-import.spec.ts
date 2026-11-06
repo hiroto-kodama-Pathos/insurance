@@ -22,7 +22,11 @@ const person = (id: string, no: string, name: string): EmployeeRecord => ({
 
 describe('SalaryImport', () => {
   let fixture: ComponentFixture<SalaryImport>;
-  let saved: { salary: Omit<SalaryRecord, 'id'>; officeId: string }[];
+  let saved: { salary: Omit<SalaryRecord, 'id'>; officeId: string; overwrite: boolean }[];
+  /** 支払区分を読めない */
+  let groupsFail: boolean;
+  /** CSVの書き込みの結果（ほかの担当者が先に登録した行・途中で失敗した件数） */
+  let saveResult: { conflicts: number; failed: number };
   let savedMapping: SalaryMapping | null;
   let existing: SalaryRecord[];
   let closings: OfficeClosing[];
@@ -46,6 +50,10 @@ describe('SalaryImport', () => {
           provide: SettingsRepository,
           useValue: {
             loadSalaryMapping: async () => savedMapping,
+            loadPayrollGroups: async () => {
+              if (groupsFail) throw new Error('permission-denied');
+              return [{ id: 'g1', name: '月給', cutoffDay: 'end', paidIn: 'nextMonth', deductionTiming: 'nextMonth', payDay: 25, isDefault: true }];
+            },
             saveSalaryMapping: async (m: SalaryMapping) => {
               savedMapping = m;
             },
@@ -57,7 +65,10 @@ describe('SalaryImport', () => {
           useValue: {
             loadRange: async () => existing,
             saveMany: async (items: typeof saved) => {
-              saved.push(...items);
+              const ok = items.slice(0, items.length - saveResult.failed);
+              const conflicts = ok.slice(0, saveResult.conflicts).map((x) => x.salary);
+              saved.push(...ok.slice(saveResult.conflicts));
+              return { saved: ok.length - conflicts.length, conflicts, failed: saveResult.failed, error: saveResult.failed ? new Error('x') : null };
             },
           },
         },
@@ -69,6 +80,8 @@ describe('SalaryImport', () => {
   }
 
   beforeEach(() => {
+    groupsFail = false;
+    saveResult = { conflicts: 0, failed: 0 };
     saved = [];
     savedMapping = null;
     existing = [];
@@ -143,5 +156,42 @@ describe('SalaryImport', () => {
     ([...el().querySelectorAll('button')].find((b) => b.textContent!.includes('この対応づけを保存')) as HTMLButtonElement).click();
     await fixture.whenStable();
     expect(savedMapping!.fixedWages).toEqual(['基本給', '通勤手当']);
+  });
+
+  it('支払区分を読めないときは、算定から除く額のチェックを飛ばして取り込まず、画面を止める', async () => {
+    groupsFail = true;
+    await setup();
+    expect(el().textContent).toContain('読み込めませんでした');
+    expect(importButton()).toBeUndefined();
+  });
+
+  it('同じ列を固定的賃金と非固定的賃金の両方に選ぶと、取り込まない（二重に数えるため）', async () => {
+    isAdmin = true;
+    savedMapping = {
+      employeeNumber: '従業員コード', paidDate: '支給日', paymentBaseDays: '出勤日数',
+      fixedWages: ['基本給'], nonFixedWages: ['基本給'], retroactiveDiff: '', inKindWages: '',
+    };
+    await setup();
+    await load('従業員コード,支給日,出勤日数,基本給\r\n1,2026/10/25,31,300000\r\n');
+    expect(el().textContent).toContain('「基本給」の列を、固定的賃金と非固定的賃金の両方に選んでいます');
+    expect(el().querySelector('table.preview')).toBeNull();
+    const save = [...el().querySelectorAll('button')].find((b) => b.textContent!.includes('この対応づけを保存')) as HTMLButtonElement;
+    expect(save.disabled).toBe(true);
+  });
+
+  it('確認のあとにほかの担当者が登録した行は上書きせず、途中で書けなかった件数も出す（ファイルは残す）', async () => {
+    saveResult = { conflicts: 1, failed: 1 };
+    await setup();
+    await load(templateCsv() + '2,2026/10/25,30,260000,10000,,\r\n0001,2026-10-26,30,1,0,,\r\n');
+    importButton().click();
+    await fixture.whenStable();
+    await new Promise((r) => setTimeout(r));
+    fixture.detectChanges();
+    const text = el().textContent!;
+    expect(text).toContain('1件の給与を取り込みました。');
+    expect(text).toContain('1件は、確認のあとにほかの担当者が同じ支払日の給与を登録したため、上書きせずに取り込んでいません（山田 太郎さん 2026年10月25日）');
+    expect(text).toContain('1件は、途中で書き込めなかったため取り込めていません');
+    expect(el().querySelector('table.preview')).not.toBeNull();
+    expect(saved.map((x) => x.overwrite)).toEqual([false]);
   });
 });

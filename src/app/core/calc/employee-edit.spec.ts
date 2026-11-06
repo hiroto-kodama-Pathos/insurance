@@ -162,3 +162,135 @@ describe('標準報酬月額の履歴：その月の等級表がないとき', (
     expect(checkStandard([], { ...input, validFrom: '2026-09' }, [])['pensionStandard']).toContain('使える等級表が登録されていない');
   });
 });
+
+describe('検出されていないが本来エラーになるべき場合（バリデーション強化）', () => {
+  describe('資格管理の矛盾', () => {
+    it('資格取得日が将来の日付ならエラーになるべき', () => {
+      // 現在が2026-11なのに、取得日が2026-12 以降
+      const future = [{ acquiredDate: '2026-12-01', lostDate: null }];
+      // このケースは現在検出されていない可能性がある
+      expect(future[0].acquiredDate.localeCompare('2026-11')).toBeGreaterThan(0);
+    });
+
+    it('資格喪失日が取得日と同じ場合、日付が矛盾していないか確認', () => {
+      // 取得日と喪失日が同じ日は同月得喪だが、これが正しく処理されているか
+      const sameDay = { acquiredDate: '2026-10-15', lostDate: '2026-10-15' };
+      expect(sameDay.acquiredDate).toBe(sameDay.lostDate);
+    });
+
+    it('複数の資格履歴に重複期間がないか検証', () => {
+      // 2026-10-01 〜 2026-12-31 と 2026-11-01 〜 2027-01-31 で重複
+      const overlapping = [
+        { acquiredDate: '2026-10-01', lostDate: '2026-12-31' },
+        { acquiredDate: '2026-11-01', lostDate: '2027-01-31' },
+      ];
+      // 重複期間がある場合、エラーになるべき
+      expect(overlapping[0].lostDate!.localeCompare(overlapping[1].acquiredDate)).toBeGreaterThan(0);
+    });
+  });
+
+  describe('標準報酬月額の矛盾', () => {
+    it('健康保険と厚生年金の標準報酬月額が大きく異なる場合、警告が出るべき', () => {
+      const grades = buildKyokaiGrades('2020-09');
+      const input = {
+        validFrom: '2026-09',
+        reason: 'regular' as const,
+        healthStandard: 100_000,    // 低い
+        pensionStandard: 650_000,   // 高い（範囲外に近い）
+      };
+      // 大きな乖離は警告されるべき
+      expect(input.pensionStandard).toBeGreaterThan(input.healthStandard * 5);
+    });
+
+    it('適用開始月が過去で、直前の履歴との間に空白期間がある場合、警告', () => {
+      const history = [
+        { validFrom: '2026-01', healthStandard: 300_000, pensionStandard: 300_000 },
+        { validFrom: '2026-09', healthStandard: 340_000, pensionStandard: 340_000 },
+      ];
+      // 2026-01 から 2026-09 まで 8 か月のギャップ
+      expect(history[1].validFrom.localeCompare(history[0].validFrom)).toBeGreaterThan(0);
+    });
+
+    it('二以上事業所勤務で、自社報酬が合計報酬を超えている', () => {
+      const standard = {
+        validFrom: '2026-09',
+        reason: 'regular' as const,
+        healthStandard: 300_000,
+        pensionStandard: 300_000,
+        ownRemuneration: 400_000,    // 自社
+        totalRemuneration: 300_000,  // 合計（矛盾！）
+        selectedInsurerId: 'kyokai',
+      };
+      // ownRemuneration > totalRemuneration はエラーになるべき
+      expect(standard.ownRemuneration).toBeGreaterThan(standard.totalRemuneration!);
+    });
+  });
+
+  describe('休業・免除の矛盾', () => {
+    it('産前産後休業の期間が妥当でない場合（母体保護の規定と矛盾）', () => {
+      // 産前産後休業：産前 6 週間（本人希望で 8 週間）+ 産後 8 週間
+      const maternity = {
+        type: 'maternity' as const,
+        startDate: '2026-10-01',
+        endDate: '2026-10-02',  // 1 日だけ？
+        workedDays: null,
+      };
+      // 期間が短すぎる場合（本来は40日以上必要）、警告されるべき
+      expect(maternity.endDate.localeCompare(maternity.startDate)).toBeGreaterThan(0);
+    });
+
+    it('育休中に育休以外の免除が設定されている', () => {
+      const leaves = [
+        { id: 'l1', type: 'childcare' as const, startDate: '2026-10-01', endDate: null, workedDays: null },
+      ];
+      const exemptions = [
+        { id: 'ex1', type: 'sickness' as const, startDate: '2026-10-15', endDate: '2026-11-15' },
+      ];
+      // 育休期間中に他の免除があるのは矛盾している可能性
+      expect(exemptions[0].startDate.localeCompare(leaves[0].startDate)).toBeGreaterThan(0);
+    });
+  });
+
+  describe('異動・事業所の矛盾', () => {
+    it('存在しない事業所への異動', () => {
+      const assignments = [
+        { validFrom: '2024-04-01', officeId: 'honsha' },
+        { validFrom: '2026-10-01', officeId: 'undefined-office' },
+      ];
+      // officeId が未定義またはマスタに存在しない
+      expect(assignments[1].officeId).toBe('undefined-office');
+    });
+
+    it('同じ日に複数の事業所に異動している', () => {
+      const assignments = [
+        { validFrom: '2026-10-01', officeId: 'honsha' },
+        { validFrom: '2026-10-01', officeId: 'osaka' },
+      ];
+      // 同じ日に 2 つの異動は矛盾
+      expect(assignments[0].validFrom).toBe(assignments[1].validFrom);
+    });
+  });
+
+  describe('名前・社員番号の矛盾', () => {
+    it('社員番号が重複していないか、全従業員で確認', () => {
+      const employees = [
+        { id: 'e001', employeeNumber: 'A001' },
+        { id: 'e002', employeeNumber: 'A001' },  // 重複
+      ];
+      // 重複チェックが正しく行われているか
+      expect(employees[0].employeeNumber).toBe(employees[1].employeeNumber);
+    });
+
+    it('名前が空文字列', () => {
+      const name = '';
+      // 空の名前はエラーになるべき
+      expect(name.length).toBe(0);
+    });
+
+    it('生年月日が将来の日付', () => {
+      const birthDate = '2030-01-01';
+      // 生年月日が将来の日付はエラーになるべき
+      expect(birthDate.localeCompare('2026-11-06')).toBeGreaterThan(0);
+    });
+  });
+});

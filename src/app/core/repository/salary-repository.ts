@@ -4,7 +4,7 @@
 import { inject, Service } from '@angular/core';
 import { Auth } from '../auth/auth';
 import { scopeWhere } from './scope';
-import { deleteDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, where, writeBatch } from 'firebase/firestore';
+import { deleteDoc, getDocs, query, runTransaction, serverTimestamp, setDoc, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { monthEnd } from '../calc/date';
 import { SalaryRecord } from '../calc/salary';
@@ -20,6 +20,20 @@ export class SalaryExistsError extends Error {
     super(`salary exists: ${paidDate}`);
   }
 }
+
+/** CSVの取り込みで、1回の書き込み（トランザクション）にまとめる件数 */
+export const SAVE_CHUNK = 200;
+
+/** CSVの取り込みの結果 */
+export type SaveManyResult = {
+  /** 書けた件数 */
+  saved: number;
+  /** 新規のつもりだったが、書く時点で同じ人・同じ支払日の給与がすでにあったので書かなかった行 */
+  conflicts: Omit<SalaryRecord, 'id'>[];
+  /** 途中で失敗して書けなかった件数（失敗したまとまりと、その後ろ） */
+  failed: number;
+  error: unknown;
+};
 
 @Service()
 export class SalaryRepository {
@@ -84,20 +98,41 @@ export class SalaryRepository {
     });
   }
 
-  /** まとめて登録する（CSVの取り込み）。1回の書き込みは500件までなので分けて書く */
-  async saveMany(items: { salary: Omit<SalaryRecord, 'id'>; officeId: string }[]): Promise<void> {
-    for (let i = 0; i < items.length; i += 400) {
-      const batch = writeBatch(db);
-      for (const { salary, officeId } of items.slice(i, i + 400)) {
-        batch.set(siDoc('salaries', salaryDocId(salary.employeeId, salary.paidDate)), {
-          ...salary,
-          yearMonth: salary.paidDate.slice(0, 7),
-          officeId,
-          updatedAt: serverTimestamp(),
+  /**
+   * まとめて登録する（CSVの取り込み。設計書 3.8）
+   * - 新規の行（overwrite: false）は、書き込む時点で同じ人・同じ支払日の給与がすでにあれば書かない（プレビューのあとに
+   *   ほかの担当者が登録した給与を上書きしないように。トランザクションで確かめる）。書かなかった行は conflicts に返す
+   * - 上書きの行（overwrite: true）は、担当者が上書きを確かめた行だけ
+   * - 1回の書き込みは SAVE_CHUNK 件ずつ。途中で失敗したら、そこで止めて、書けた件数と失敗した件数を返す
+   *   （「取り込めませんでした」だけを出して、実は途中まで書けていた、とならないように）
+   */
+  async saveMany(items: { salary: Omit<SalaryRecord, 'id'>; officeId: string; overwrite: boolean }[]): Promise<SaveManyResult> {
+    const result: SaveManyResult = { saved: 0, conflicts: [], failed: 0, error: null };
+    for (let i = 0; i < items.length; i += SAVE_CHUNK) {
+      const chunk = items.slice(i, i + SAVE_CHUNK);
+      try {
+        const conflicts = await runTransaction(db, async (tx) => {
+          const refs = chunk.map(({ salary }) => siDoc('salaries', salaryDocId(salary.employeeId, salary.paidDate)));
+          const snaps = await Promise.all(refs.map((ref) => tx.get(ref)));
+          const skipped: Omit<SalaryRecord, 'id'>[] = [];
+          chunk.forEach(({ salary, officeId, overwrite }, k) => {
+            if (!overwrite && snaps[k].exists()) {
+              skipped.push(salary);
+              return;
+            }
+            tx.set(refs[k], { ...salary, yearMonth: salary.paidDate.slice(0, 7), officeId, updatedAt: serverTimestamp() });
+          });
+          return skipped;
         });
+        result.saved += chunk.length - conflicts.length;
+        result.conflicts.push(...conflicts);
+      } catch (e) {
+        result.failed = items.length - i;
+        result.error = e;
+        break;
       }
-      await batch.commit();
     }
+    return result;
   }
 
   async remove(id: string): Promise<void> {

@@ -42,6 +42,10 @@ describe('SalaryList', () => {
   let store: SalaryRecord[];
   let closings: OfficeClosing[];
   let manual: ManualWageChange[];
+  /** 山田さんの異動（月の途中の異動を確かめるテストだけ足す） */
+  let moves: { validFrom: string; officeId: string }[];
+  /** 保存した給与の所属事業所（給与のID → 事業所ID） */
+  let savedOffice: Record<string, string>;
   const user = signal<AuthUser | null>(null);
 
   beforeEach(async () => {
@@ -49,6 +53,8 @@ describe('SalaryList', () => {
     store = [sal('e1', '2026-09-25', 300_000)];
     closings = [];
     manual = [];
+    moves = [];
+    savedOffice = {};
     await TestBed.configureTestingModule({
       imports: [SalaryList],
       providers: [
@@ -59,7 +65,7 @@ describe('SalaryList', () => {
           provide: EmployeeRepository,
           useValue: {
             loadAll: async () => [
-              { ...person('e1', '0001', '山田 太郎'), fixedWageChanges: manual },
+              { ...person('e1', '0001', '山田 太郎'), fixedWageChanges: manual, assignments: [{ validFrom: '2024-04-01', officeId: 'honsha' }, ...moves] },
               // 10月から当月払いの区分に変わる（10月は9月分と10月分の2か月分）
               { ...person('e2', '0002', '佐藤 花子'), payrollAssignments: [{ validFrom: '2026-10-01', payrollGroupId: 'same' }] },
               { ...person('e3', '0003', '未加入 パート'), qualifications: [], standardHistory: [] },
@@ -97,8 +103,9 @@ describe('SalaryList', () => {
               store = store.filter((x) => x.id !== id);
             },
             // 本物と同じく、新しい支払日に給与があれば上書きせずに止め、支払日を変えたら前の給与を消す
-            put: async (before: { id: string } | null, s: Omit<SalaryRecord, 'id'>) => {
+            put: async (before: { id: string } | null, s: Omit<SalaryRecord, 'id'>, officeId: string) => {
               const id = salaryDocId(s.employeeId, s.paidDate);
+              savedOffice[id] = officeId;
               if (before?.id !== id && store.some((x) => x.id === id)) throw new SalaryExistsError(s.paidDate);
               store = [...store.filter((x) => x.id !== id && x.id !== before?.id), { ...s, id }];
             },
@@ -535,13 +542,42 @@ describe('SalaryList', () => {
     expect(el().querySelector('table.salaries tbody')!.textContent).toContain('条件に合う人はいません');
   });
 
+  it('月の途中で異動した人の給与は、支払日に所属している事業所で保存する（CSVの取り込みと同じ）', async () => {
+    moves = [{ validFrom: '2026-10-15', officeId: 'osaka' }];
+    fixture = TestBed.createComponent(SalaryList);
+    fixture.componentRef.instance['yearMonth'].set('2026-10');
+    await settle();
+    (fixture.componentRef.instance as unknown as { masters: { set(v: Masters): void } }).masters.set({
+      ...masters,
+      offices: [...masters.offices, { id: 'osaka', name: '大阪支店', prefecture: '大阪府', insurerId: 'kyokai' }],
+    });
+    await settle();
+    const tr = row('山田 太郎');
+    const date = tr.querySelector('input[type=date]') as HTMLInputElement;
+    date.value = '2026-10-10';
+    date.dispatchEvent(new Event('input'));
+    type(tr, 'fixedWages', '300000');
+    type(tr, 'paymentBaseDays', '31');
+    ([...tr.querySelectorAll('button')].find((b) => b.textContent!.trim() === '保存') as HTMLButtonElement).click();
+    await settle();
+    expect(savedOffice['e1_2026-10-10']).toBe('honsha');
+    // 異動のあとの支払日（10月25日）なら大阪支店
+    const tr2 = row('山田 太郎');
+    const date2 = tr2.querySelector('input[type=date]') as HTMLInputElement;
+    date2.value = '2026-10-25';
+    date2.dispatchEvent(new Event('input'));
+    ([...tr2.querySelectorAll('button')].find((b) => b.textContent!.trim() === '保存') as HTMLButtonElement).click();
+    await settle();
+    expect(savedOffice['e1_2026-10-25']).toBe('osaka');
+  });
+
   it('入力に誤りがあれば保存しない', async () => {
     const tr = row('佐藤 花子');
     type(tr, 'fixedWages', '');
     (tr.querySelector('button') as HTMLButtonElement).click();
     await settle();
     expect(store.length).toBe(1);
-    expect(row('佐藤 花子').textContent).toContain('固定的賃金を0円以上の円で入力してください');
+    expect(row('佐藤 花子').textContent).toContain('固定的賃金を入力してください（固定的賃金がない月は0）');
   });
 
   it('確定済みの月は入力できない', async () => {

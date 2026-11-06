@@ -151,28 +151,36 @@ export type SalaryInput = {
 
 export type SalaryErrors = Partial<Record<keyof SalaryInput, string>>;
 
-const isYen = (v: number | null) => v !== null && Number.isInteger(v) && v >= 0;
+/**
+ * 1回の支払いの金額の上限（1億円未満）。打ち間違い（桁の多い入力）と、JavaScript で正しく扱えない大きな数を止める。
+ * 画面・CSV・ルール（firestore.rules の validSalary）で同じ値を使う
+ */
+export const MAX_SALARY_YEN = 99_999_999;
+
+const isYen = (v: number | null) => v !== null && Number.isSafeInteger(v) && v >= 0 && v <= MAX_SALARY_YEN;
+const YEN_MESSAGE = `0円以上・${MAX_SALARY_YEN.toLocaleString('ja-JP')}円以下の円で入力してください`;
 
 export function validateSalary(input: SalaryInput): SalaryErrors {
   const e: SalaryErrors = {};
   if (!isValidDate(input.paidDate)) e.paidDate = '支払日を正しく入力してください';
-  if (!isYen(input.fixedWages)) e.fixedWages = '固定的賃金を0円以上の円で入力してください';
-  if (input.nonFixedWages !== null && !isYen(input.nonFixedWages)) e.nonFixedWages = '0円以上の円で入力してください';
+  if (input.fixedWages === null) e.fixedWages = '固定的賃金を入力してください（固定的賃金がない月は0）';
+  else if (!isYen(input.fixedWages)) e.fixedWages = `固定的賃金を${YEN_MESSAGE}`;
+  if (input.nonFixedWages !== null && !isYen(input.nonFixedWages)) e.nonFixedWages = YEN_MESSAGE;
   const d = input.paymentBaseDays;
   if (d === null || !Number.isInteger(d) || d < 0 || d > 31) e.paymentBaseDays = '支払基礎日数を0〜31日で入力してください';
   if (input.retroactiveDiff !== null) {
-    if (!isYen(input.retroactiveDiff)) e.retroactiveDiff = '0円以上の円で入力してください';
+    if (!isYen(input.retroactiveDiff)) e.retroactiveDiff = YEN_MESSAGE;
     else if (isYen(input.fixedWages) && input.retroactiveDiff > input.fixedWages!)
       e.retroactiveDiff = '遡及差額は固定的賃金の内数です（固定的賃金以下にしてください）';
   }
   if (input.inKindWages !== null) {
     const total = (input.fixedWages ?? 0) + (input.nonFixedWages ?? 0);
-    if (!isYen(input.inKindWages)) e.inKindWages = '0円以上の円で入力してください';
+    if (!isYen(input.inKindWages)) e.inKindWages = YEN_MESSAGE;
     else if (input.inKindWages > total) e.inKindWages = '現物給与は支払った額の内数です（固定的賃金と非固定的賃金の合計以下にしてください）';
   }
   const x = input.excludedAmount;
   if (x !== null && x !== undefined) {
-    if (!isYen(x)) e.excludedAmount = '0円以上の円で入力してください';
+    if (!isYen(x)) e.excludedAmount = YEN_MESSAGE;
     else if (x > (input.fixedWages ?? 0) - (input.retroactiveDiff ?? 0) + (input.nonFixedWages ?? 0))
       e.excludedAmount = '算定から除く額は、支払った額（遡及差額を除く）以下にしてください';
   }

@@ -1,5 +1,5 @@
 import { parseCsv } from './csv';
-import { buildPreview, findByNumber, ImportEmployee, missingColumns, PreviewContext, SalaryMapping, TEMPLATE_HEADERS, TEMPLATE_MAPPING, templateCsv } from './salary-import';
+import { buildPreview, findByNumber, ImportEmployee, mappingConflicts, missingColumns, PreviewContext, SalaryMapping, TEMPLATE_HEADERS, TEMPLATE_MAPPING, templateCsv } from './salary-import';
 
 const employees: ImportEmployee[] = [
   { id: 'e1', employeeNumber: '0001', name: '山田 太郎', assignments: [{ validFrom: '2024-04-01', officeId: 'honsha' }] },
@@ -117,5 +117,45 @@ describe('算定から除く額（支払月・締め日の変更月）', () => {
 
   it('前のテンプレート（算定から除く額の列なし）も、テンプレートの形式として読める', () => {
     expect(missingColumns(TEMPLATE_MAPPING, TEMPLATE_HEADERS)).toEqual([]);
+  });
+});
+
+describe('給与のCSV：空欄・桁の多すぎる金額・対応づけの矛盾（設計書 3.8）', () => {
+  const H = TEMPLATE_HEADERS.join(',');
+  const one = (line: string) => buildPreview(parseCsv(`${H}\r\n${line}\r\n`), TEMPLATE_MAPPING, ctx())[0];
+
+  it('固定的賃金が空欄ならエラー。「0」と入っていれば0円として取り込む（画面と同じ）', () => {
+    const blank = one('0001,2026-10-25,31,,20000,,,,');
+    expect(blank.status).toBe('error');
+    expect(blank.errors[0]).toContain('固定的賃金が空欄です');
+    const zero = one('0001,2026-10-25,31,0,20000,,,,');
+    expect(zero.status).toBe('new');
+    expect(zero.salary!.fixedWages).toBe(0);
+  });
+
+  it('複数の列を合計する固定的賃金も、すべて空欄ならエラー（どれかに額があれば取り込む）', () => {
+    const csv = (base: string, allow: string) => parseCsv(`従業員コード,支給日,出勤日数,基本給,役職手当\r\n1,2026/10/25,31,${base},${allow}\r\n`);
+    const m = { ...SOFT_MAPPING, fixedWages: ['基本給', '役職手当'], nonFixedWages: [] };
+    expect(buildPreview(csv('', ''), m, ctx())[0].errors[0]).toContain('「基本給」「役職手当」がすべて空欄');
+    expect(buildPreview(csv('', '20000'), m, ctx())[0].salary!.fixedWages).toBe(20_000);
+  });
+
+  it('桁の多すぎる金額・1億円以上は取り込まない（正しく扱えない数・打ち間違い）', () => {
+    expect(one('0001,2026-10-25,31,9007199254740993,0,,,,').errors).toContain('固定的賃金の「固定的賃金」を数値として読み取れません');
+    expect(one('0001,2026-10-25,31,100000000,0,,,,').errors[0]).toContain('99,999,999円以下');
+    expect(one('0001,2026-10-25,31,1e6,0,,,,').status).toBe('error');
+  });
+
+  it('同じ列を固定的賃金と非固定的賃金の両方に選んだら矛盾として返す', () => {
+    expect(mappingConflicts({ ...SOFT_MAPPING, nonFixedWages: ['残業手当', '基本給'] })).toEqual([
+      '「基本給」の列を、固定的賃金と非固定的賃金の両方に選んでいます（どちらか一方にしてください）',
+    ]);
+    expect(mappingConflicts(SOFT_MAPPING)).toEqual([]);
+  });
+
+  it('月の途中で異動した人の給与は、支払日に所属している事業所にする', () => {
+    const moved = [{ id: 'e1', employeeNumber: '0001', name: '山田 太郎', assignments: [{ validFrom: '2024-04-01', officeId: 'honsha' }, { validFrom: '2026-11-15', officeId: 'osaka' }] }];
+    const r = buildPreview(parseCsv(`${H}\r\n0001,2026-11-25,30,300000,0,,,,\r\n0001,2026-11-10,30,1000,0,,,,\r\n`), TEMPLATE_MAPPING, ctx({ employees: moved }));
+    expect(r.map((x) => x.officeId)).toEqual(['osaka', 'honsha']);
   });
 });

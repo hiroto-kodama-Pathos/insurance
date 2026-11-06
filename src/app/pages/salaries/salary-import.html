@@ -27,8 +27,8 @@
       </p>
 
       @if (!isTemplate()) {
-        <details class="mapping" [open]="missing().length > 0">
-          <summary>列の対応づけ{{ missing().length > 0 ? '（設定が必要です）' : '' }}</summary>
+        <details class="mapping" [open]="mappingBlocked()">
+          <summary>列の対応づけ{{ mappingBlocked() ? '（設定が必要です）' : '' }}</summary>
           @if (!isAdmin()) {
             <p class="hint">対応づけを保存できるのは管理者だけです。この画面で選んだ対応づけは、今回の取り込みにだけ使います。</p>
           }
@@ -56,13 +56,15 @@
             </fieldset>
           }
           @if (isAdmin()) {
-            <button type="button" [disabled]="busy() || missing().length > 0" (click)="saveMapping()">この対応づけを保存</button>
+            <button type="button" [disabled]="busy() || mappingBlocked()" (click)="saveMapping()">この対応づけを保存</button>
           }
         </details>
       }
 
       @if (missing().length > 0) {
         <p class="error">列の対応づけを設定してください。CSVにない列：{{ missing().join('、') }}</p>
+      } @else if (conflicts().length > 0) {
+        @for (c of conflicts(); track c) { <p class="error">{{ c }}</p> }
       } @else {
         <p class="counts">
           新規 {{ counts().new }}件・上書き {{ counts().overwrite }}件・エラー {{ counts().error }}件・確定済み {{ counts().closed }}件・担当範囲外 {{ counts().outOfScope }}件

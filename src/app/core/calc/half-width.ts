@@ -14,8 +14,10 @@ export function toHalfWidth(s: string): string {
 /**
  * 入力欄の数字（金額・日数・時間）を読む。全角でも半角でもよい
  * カンマ・空白と、「円」「日」「時間」の単位は取り除く。空欄は null、数字として読めなければ NaN
+ * 通常の10進数（「-」と小数点は可）だけを読む。「1e6」「0x10」「Infinity」などは NaN にする（Number() はこれらを数として読んでしまうため）
  */
 export function parseNumberInput(value: string | null | undefined): number | null {
   const t = toHalfWidth(value ?? '').replace(/[,\s円¥日時間]/g, '');
-  return t === '' ? null : Number(t);
+  if (t === '') return null;
+  return /^-?\d+(\.\d+)?$/.test(t) ? Number(t) : NaN;
 }

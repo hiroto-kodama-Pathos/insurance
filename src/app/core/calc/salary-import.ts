@@ -47,6 +47,15 @@ export function templateCsv(): string {
   return `${[...TEMPLATE_HEADERS, ...TEMPLATE_OPTIONAL_HEADERS].join(',')}\r\n0001,2026-10-25,31,340000,20000,,,,,\r\n`;
 }
 
+/**
+ * 対応づけの矛盾（同じ列を固定的賃金と非固定的賃金の両方に選ぶなど）。あれば取り込み・保存をしない
+ * 同じ列を両方で合計すると、その額が二重に数えられ、随時改定・定時決定の報酬を誤るため
+ */
+export function mappingConflicts(mapping: SalaryMapping): string[] {
+  const both = mapping.fixedWages.filter((c) => mapping.nonFixedWages.includes(c));
+  return both.map((c) => `「${c}」の列を、固定的賃金と非固定的賃金の両方に選んでいます（どちらか一方にしてください）`);
+}
+
 /** 対応づけが、このCSVの見出しで使えるか（使えない列名を返す） */
 export function missingColumns(mapping: SalaryMapping, headers: string[]): string[] {
   const required = [mapping.employeeNumber, mapping.paidDate, mapping.paymentBaseDays, ...mapping.fixedWages];
@@ -82,7 +91,10 @@ export type PreviewContext = {
   existingIds: Set<string>;
   /** 担当範囲（'all' または事業所ID） */
   scope: string;
-  /** その人のその支払月が、算定から除く額の要る月（支払月・締め日の変更月）か。なければ確かめない */
+  /**
+   * その人のその支払月が、算定から除く額の要る月（支払月・締め日の変更月）か。
+   * 取り込む画面では必ず渡す（支払区分を読めないときは、取り込み自体を止める）。渡さないのは、ファイルの支払月を集めるときだけ
+   */
   needsExclusion?: (employeeId: string, yearMonth: string) => boolean;
 };
 
@@ -144,7 +156,11 @@ function buildRows(rows: string[][], mapping: SalaryMapping, ctx: PreviewContext
       }
       return total;
     };
-    const fixedWages = sum(mapping.fixedWages, '固定的賃金') ?? 0;
+    // 固定的賃金は必須（画面と同じ）。対応づけた列がすべて空欄なら、0円とせずにエラーにする（0円は「0」と入っていれば取り込む）
+    const fixedSum = sum(mapping.fixedWages, '固定的賃金');
+    if (fixedSum === null && !errors.some((e) => e.startsWith('固定的賃金の')))
+      errors.push(`固定的賃金が空欄です（${mapping.fixedWages.map((c) => `「${c}」`).join('')}がすべて空欄。固定的賃金がない月は0を入れてください）`);
+    const fixedWages = fixedSum ?? 0;
     const nonFixedWages = sum(mapping.nonFixedWages, '非固定的賃金') ?? 0;
     const days = parseNumberLoose(cell(r, mapping.paymentBaseDays));
     const retro = parseNumberLoose(cell(r, mapping.retroactiveDiff));
