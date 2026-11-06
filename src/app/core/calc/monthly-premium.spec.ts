@@ -150,3 +150,49 @@ describe('介護保険の欄に出す理由（careNote）', () => {
     expect(careNote(null)).toBe('');
   });
 });
+
+describe('エッジケース：料率と計算条件', () => {
+  it('適用開始月より前の料率しか存在しない：料率未登録として扱う', () => {
+    // 2026-10 の料率が存在せず、2026-09 までしかない場合
+    const noRates: MonthlyPremiumInput['rates'] = {
+      health: { rate: 0, share: 0 },
+      care: { rate: 0, share: 0 },
+      childSupport: { rate: 0, share: 0 },
+      pension: { rate: 0, share: 0 },
+    };
+    const r = calcMonthlyPremium(input({ rates: noRates }));
+    expect(r.health?.employeeYen).toBe(0n);
+    expect(r.pension?.employeeYen).toBe(0n);
+  });
+
+  it('保険者の料率を変更した場合、計算に反映される', () => {
+    // 同じ月でも料率が変われば計算結果も変わる
+    const ratesOld = RATES;
+    const ratesNew = { ...RATES, health: { rate: 10_000, share: 500 } };
+    
+    const rOld = calcMonthlyPremium(input({ rates: ratesOld }));
+    const rNew = calcMonthlyPremium(input({ rates: ratesNew }));
+    
+    expect(rOld.health?.employeeYen).toBeLessThan(rNew.health?.employeeYen ?? 0n);
+  });
+
+  it('標準報酬月額が0の場合、保険料も0', () => {
+    const r = calcMonthlyPremium(input({ standard: { health: 0, pension: 0 } }));
+    expect(r.health?.employeeYen).toBe(0n);
+    expect(r.pension?.employeeYen).toBe(0n);
+  });
+
+  it('免除対象月は保険料が計算されない', () => {
+    const r = calcMonthlyPremium(input({ leaveExempt: true }));
+    expect(r.health).toBeNull();
+    expect(r.care).toBeNull();
+    expect(r.pension).toBeNull();
+  });
+
+  it('未加入の月は保険料が計算されない', () => {
+    const r = calcMonthlyPremium(input({ insured: false }));
+    expect(r.health).toBeNull();
+    expect(r.care).toBeNull();
+    expect(r.pension).toBeNull();
+  });
+});

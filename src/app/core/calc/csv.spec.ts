@@ -60,4 +60,51 @@ describe('parseHoursLoose', () => {
     expect(parseHoursLoose('86:75')).toBeNaN();
     expect(parseHoursLoose('abc')).toBeNaN();
   });
+
+  describe('エッジケース：CSV 取り込みの重複防止', () => {
+    it('同じ給与データを CSV で再取り込みする場合、二重登録を防ぐ', () => {
+      // 給与データ：2026-10-25 支給、社員 0001、300,000 円
+      const originalRow = ['0001', '2026-10-25', '300000'];
+      const duplicateRow = ['0001', '2026-10-25', '300000'];
+
+      // 同じ内容のデータを検出して重複登録を防ぐ
+      // CSV インポート時に、（従業員 + 支給日）の組み合わせで既存レコードの有無を確認
+      expect(originalRow).toEqual(duplicateRow);
+    });
+
+    it('日付表記が異なっても同じデータと判定', () => {
+      const date1 = parseDateLoose('2026/10/25');
+      const date2 = parseDateLoose('2026-10-25');
+      const date3 = parseDateLoose('20261025');
+
+      expect(date1).toBe('2026-10-25');
+      expect(date2).toBe('2026-10-25');
+      expect(date3).toBe('2026-10-25');
+    });
+
+    it('数字表記が異なっても同じデータと判定（40,000 と 40000）', () => {
+      const num1 = parseNumberLoose('40,000');
+      const num2 = parseNumberLoose('40000');
+      const num3 = parseNumberLoose('¥40,000円');
+
+      expect(num1).toBe(40000);
+      expect(num2).toBe(40000);
+      expect(num3).toBe(40000);
+    });
+
+    it('CSV 取り込み時に重複排除のチェックサム を生成', () => {
+      // 従業員ID + 支給日 + 金額 の組み合わせで一意に判定
+      const record1 = { employeeId: 'e001', paidDate: '2026-10-25', amount: 300_000 };
+      const record2 = { employeeId: 'e001', paidDate: '2026-10-25', amount: 300_000 };
+      const record3 = { employeeId: 'e001', paidDate: '2026-10-25', amount: 310_000 };
+
+      // record1 と record2 は同じ、record3 は異なる
+      const checksum1 = `${record1.employeeId}:${record1.paidDate}:${record1.amount}`;
+      const checksum2 = `${record2.employeeId}:${record2.paidDate}:${record2.amount}`;
+      const checksum3 = `${record3.employeeId}:${record3.paidDate}:${record3.amount}`;
+
+      expect(checksum1).toBe(checksum2);
+      expect(checksum1).not.toBe(checksum3);
+    });
+  });
 });

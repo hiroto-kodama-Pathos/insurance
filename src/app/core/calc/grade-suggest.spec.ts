@@ -80,4 +80,52 @@ describe('標準報酬月額が等級の額かのチェック', () => {
     expect(standardGradeError(null, '2026-10', 'health', 299_000)).toBeNull();
     expect(gradeTableAt(grades, '2026-10').length).toBe(50);
   });
+
+  describe('エッジケース：標準報酬月額が等級表に存在しない', () => {
+    it('等級表に存在しない金額は登録を拒否し、近い等級を提案', () => {
+      const error = standardGradeError(grades, '2026-10', 'health', 299_000);
+      expect(error).toContain('299,000円は健康保険の等級の額ではありません');
+      expect(error).toContain('28万円（21等級）');
+      expect(error).toContain('30万円（22等級）');
+    });
+
+    it('等級の下限ちょうどは許可される', () => {
+      // 健康保険の下限は5.8万円
+      expect(standardGradeError(grades, '2026-10', 'health', 58_000)).toBeNull();
+    });
+
+    it('等級の上限を超える金額は拒否される', () => {
+      // 健康保険の上限は139万円
+      const error = standardGradeError(grades, '2026-10', 'health', 1_400_000);
+      expect(error).toContain('139万円（50等級）');
+    });
+
+    it('厚生年金の範囲外は拒否される', () => {
+      // 厚生年金：8.8万円〜65万円
+      const errorLow = standardGradeError(grades, '2026-10', 'pension', 80_000);
+      const errorHigh = standardGradeError(grades, '2026-10', 'pension', 660_000);
+      expect(errorLow).toContain('8.8万円');
+      expect(errorHigh).toContain('65万円');
+    });
+
+    it('等級表改定後は新しい等級で提案', () => {
+      const newGrades = buildKyokaiGrades('2027-09');
+      expect(newGrades.length).toBeGreaterThan(0);
+      // 適用開始月が異なる等級表を使う
+      const suggestion = suggestStandards(300_000, newGrades, '2027-09', '1990-01-01');
+      expect(suggestion?.healthStandard).toBe(300_000);
+    });
+
+    it('適用開始月より前の等級表は使わない', () => {
+      // 2020年9月の等級表で2019年10月の計算をしてはいけない
+      const result = suggestStandards(300_000, grades, '2019-10', '1990-01-01');
+      expect(result).toBeNull();
+    });
+
+    it('計算に必要な等級表が欠落していると、誤った金額で確定させない', () => {
+      const emptyGrades: typeof grades = [];
+      const error = standardGradeError(emptyGrades, '2026-10', 'health', 300_000);
+      expect(error).toContain('登録されていないため、登録できません');
+    });
+  });
 });

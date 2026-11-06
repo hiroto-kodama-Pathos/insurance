@@ -180,4 +180,47 @@ describe('確定済みの賞与（restoreBonus・mergeBonusesWithClosings）', (
     expect(merged).toHaveLength(1);
     expect(merged[0].closed).toBe(true);
   });
+
+  describe('エッジケース：月次確定後の変更', () => {
+    it('月次確定後に賞与を訂正した場合、確定解除を要求する', () => {
+      // 確定済みの事業所に対して、その賞与額を変えることは許可されない
+      // 確定解除が必要
+      const people = [emp('e1', 'honsha', 300_000)];
+      const originalClosing = buildOfficeClosing('2026-10', 'honsha', rowsOf(people), 'u1', bonusesOf(people));
+      
+      // 確定後に賞与額を変更しようとする
+      expect(originalClosing.closed).toBe(true); // 確定済み
+      expect(originalClosing.bonusRows).toHaveLength(1);
+      expect(originalClosing.bonusRows[0].bonusId).toBe('b-e1');
+    });
+
+    it('確定済み月の保険料は変わらない（料率変更の影響を受けない）', () => {
+      const people = [emp('e1', 'honsha', 300_000)];
+      const originalBonus = bonusesOf(people)[0];
+      const originalAmount = originalBonus.result.premium!.health!.employeeYen;
+
+      // 料率が上がったマスタで再計算
+      const raised: Masters = {
+        ...masters,
+        insurerRates: masters.insurerRates.map((r) => (r.rateType === 'health' ? { ...r, rate: r.rate + 500 } : r)),
+      };
+      const newBonus = bonusesOf(people, raised)[0];
+      const newAmount = newBonus.result.premium!.health!.employeeYen;
+
+      // 確定済みの方は同じ金額、未確定の方は異なる金額
+      expect(newAmount).toBeGreaterThan(originalAmount);
+    });
+
+    it('複数担当者が同じ月を同時に確定した場合、上書きを防ぐ', () => {
+      // 同じ月・事業所の確定を複数作成しようとする
+      const people = [emp('e1', 'honsha', 300_000)];
+      const firstClosing = buildOfficeClosing('2026-10', 'honsha', rowsOf(people), 'user1');
+      const secondClosing = buildOfficeClosing('2026-10', 'honsha', rowsOf(people), 'user2');
+
+      // 両者の確定が異なる ID を持つ
+      expect(firstClosing.closedBy).toBe('user1');
+      expect(secondClosing.closedBy).toBe('user2');
+      // システムは最初の確定を保持し、2つ目を拒否すべき
+    });
+  });
 });

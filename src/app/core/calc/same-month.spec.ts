@@ -60,4 +60,53 @@ describe('同月得喪', () => {
     expect(calcEmployeeMonth(e, masters, '2026-10', 'combined').status).toBe('ok');
     expect(calcEmployeeMonth(e, masters, '2026-11', 'combined').status).toBe('notInsured');
   });
+
+  describe('エッジケース：同月得喪の複雑な状況', () => {
+    it('同じ月に複数回の入社・退社がある場合、喪失日が最後のもので判定', () => {
+      const qualifications = [
+        { acquiredDate: '2026-10-01', lostDate: '2026-10-05', lostReason: 'resignation' as const },
+        { acquiredDate: '2026-10-05', lostDate: '2026-10-15', lostReason: 'resignation' as const },
+      ];
+      expect(isSameMonth(qualifications[1], qualifications)).toBe(true);
+    });
+
+    it('同月得喪の月は保険料が 1 か月分かかる（日割りではない）', () => {
+      // 10月5日入社、10月21日退職でも 1 か月分の保険料
+      const masters: Masters = {
+        offices: [{ id: 'honsha', name: '本社', prefecture: '東京都', insurerId: 'kyokai' }],
+        insurers: [{ id: 'kyokai', type: 'kyokai', name: '協会けんぽ' }],
+        insurerRates: [
+          { insurerId: 'kyokai', rateType: 'health', prefecture: '東京都', validFrom: '2026-03', rate: 9850, employeeShare: 500 },
+          { insurerId: 'kyokai', rateType: 'childSupport', prefecture: null, validFrom: '2026-04', rate: 230, employeeShare: 500 },
+        ],
+        pensionRates: [{ validFrom: '2017-09', rate: 18300, employeeShare: 500 }],
+      };
+      const e = {
+        id: 'e1',
+        birthDate: '1990-01-01',
+        qualifications: [{ acquiredDate: '2026-10-05', lostDate: '2026-10-21' }],
+        leaves: [], exemptions: [],
+        assignments: [{ validFrom: '2026-10-05', officeId: 'honsha' }],
+        standardHistory: [{ validFrom: '2026-10', healthStandard: 300_000, pensionStandard: 300_000 }],
+      };
+      const result = calcEmployeeMonth(e, masters, '2026-10', 'combined');
+      expect(result.status).toBe('ok');
+      // 保険料が計算されていることを確認
+      expect(result.health?.employeeYen).toBeDefined();
+    });
+
+    it('月末（10月31日）に退職した場合、翌月（11月1日）喪失のため同月得喪ではない', () => {
+      const q = { acquiredDate: '2026-10-05', lostDate: '2026-11-01' };
+      expect(isSameMonth(q, [q])).toBe(false);
+    });
+
+    it('還付待ちの同月得喪は「要確認」に含まれる', () => {
+      const employees = [
+        { id: 'e1', employeeNumber: '0001', qualifications: [{ acquiredDate: '2026-10-05', lostDate: '2026-10-21', refundStatus: undefined as never }] },
+      ];
+      const pending = pendingRefunds(employees);
+      expect(pending).toHaveLength(1);
+      expect(pending[0].employee.id).toBe('e1');
+    });
+  });
 });
