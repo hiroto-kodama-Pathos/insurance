@@ -189,7 +189,7 @@ describe('確定済みの賞与（restoreBonus・mergeBonusesWithClosings）', (
       const originalClosing = buildOfficeClosing('2026-10', 'honsha', rowsOf(people), 'u1', bonusesOf(people));
       
       // 確定後に賞与額を変更しようとする
-      expect(originalClosing.closed).toBe(true); // 確定済み
+      expect(originalClosing.closedBy).toBeDefined(); // 確定者が記録されている
       expect(originalClosing.bonusRows).toHaveLength(1);
       expect(originalClosing.bonusRows[0].bonusId).toBe('b-e1');
     });

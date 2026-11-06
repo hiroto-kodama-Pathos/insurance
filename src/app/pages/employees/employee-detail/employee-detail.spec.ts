@@ -531,6 +531,36 @@ describe('EmployeeDetail', () => {
     expect(calls).toEqual([['removeDependent', 'e1', 'd1', '2026-11-01']]);
   });
 
+  it('同じ人の二重登録・本人を被扶養者にする・本人の資格がない日の被扶養者は登録しない', async () => {
+    button('被扶養者を追加').click();
+    fixture.detectChanges();
+    input('input[name=dependentName]', '山田花子');
+    input('input[name=dependentBirth]', '1982-03-03');
+    input('input[name=dependentCertified]', '2025-04-01');
+    await submit();
+    expect(el().textContent).toContain('すでに被扶養者として登録されています');
+    input('input[name=dependentName]', '山田 太郎');
+    input('input[name=dependentBirth]', '1980-05-10');
+    await submit();
+    expect(el().textContent).toContain('本人を被扶養者にはできません');
+    input('input[name=dependentName]', '山田 一郎');
+    input('input[name=dependentBirth]', '2010-01-01');
+    input('input[name=dependentCertified]', '2022-04-01');
+    await submit();
+    expect(el().textContent).toContain('扶養に入った日に、本人の社会保険の資格がありません');
+    expect(calls).toEqual([]);
+  });
+
+  it('壊れた被扶養者のデータは、計算に使っていないことを出し、削除できる', async () => {
+    detailOverride = { brokenDependents: [{ id: 'bad1', text: '氏名：a・生年月日：（なし）・扶養に入った日：2024-04-01・外れた日：（なし）' }] };
+    await reload();
+    const box = el().querySelector('#card-family .broken-leave')!;
+    expect(box.textContent).toContain('壊れた被扶養者のデータがあります（計算に使っていません）');
+    (box.querySelector('button') as HTMLButtonElement).click();
+    await answer(true);
+    expect(calls).toContainEqual(['deleteDependent', 'e1', 'bad1']);
+  });
+
   it('被扶養者の介護保険の適用除外を登録し、あとから非該当年月日を入れる', async () => {
     button('介護保険の適用除外を追加').click();
     fixture.detectChanges();
@@ -701,20 +731,53 @@ describe('EmployeeDetail', () => {
   it('休業は種類・開始日も直せる。ほかの休業と期間が重なる直し方は入れない', async () => {
     detailOverride = {
       leaves: [
-        { id: 'l1', type: 'maternity', startDate: '2022-01-01', endDate: '2022-03-31', workedDays: null },
-        { id: 'l2', type: 'childcare', startDate: '2022-04-01', endDate: '2022-09-30', workedDays: null },
+        { id: 'l1', type: 'maternity', startDate: '2025-01-01', endDate: '2025-03-31', workedDays: null },
+        { id: 'l2', type: 'childcare', startDate: '2025-04-01', endDate: '2025-09-30', workedDays: null },
       ],
     };
     await reload();
     rowButton('#card-leave table', '育児休業', '直す').click();
     fixture.detectChanges();
-    input('input[name=leaveStart]', '2022-03-15');
+    input('input[name=leaveStart]', '2025-03-15');
     await submit();
     expect(calls).toEqual([]);
-    expect(el().textContent).toContain('ほかの休業（産前産後休業 2022年1月1日〜2022年3月31日）と期間が重なっています');
-    input('input[name=leaveStart]', '2022-04-02');
+    expect(el().textContent).toContain('ほかの休業（産前産後休業 2025年1月1日〜2025年3月31日）と期間が重なっています');
+    input('input[name=leaveStart]', '2025-04-02');
     await submit();
-    expect(calls).toEqual([['updateLeave', 'e1', 'l2', { type: 'childcare', startDate: '2022-04-02', endDate: '2022-09-30', workedDays: null }]]);
+    expect(calls).toEqual([['updateLeave', 'e1', 'l2', { type: 'childcare', startDate: '2025-04-02', endDate: '2025-09-30', workedDays: null }]]);
+  });
+
+  it('休業を産前産後休業に切り替えたら、就業した日数を消す（欄が隠れてエラーが見えないまま保存できなくならないように）', async () => {
+    button('休業を追加').click();
+    fixture.detectChanges();
+    input('input[name=leaveStart]', '2026-05-01');
+    input('input[name=workedDays]', '3');
+    const type = el().querySelector('select[name=leaveType]') as HTMLSelectElement;
+    type.value = 'maternity';
+    type.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    await submit();
+    expect(calls).toEqual([['addLeave', 'e1', { type: 'maternity', startDate: '2026-05-01', endDate: '', workedDays: null }]]);
+  });
+
+  it('資格の期間の外の休業（年の打ち間違い）は登録しない', async () => {
+    button('休業を追加').click();
+    fixture.detectChanges();
+    input('input[name=leaveStart]', '2023-01-01');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('開始日が資格の期間（資格取得日〜資格喪失日の前日）の外です');
+  });
+
+  it('壊れた休業のデータは、計算に使っていないことを出し、削除できる', async () => {
+    detailOverride = { brokenLeaves: [{ id: 'bad1', text: '種類：xxx・開始日：（なし）・終了日：（なし）・就業日数：（なし）' }] };
+    await reload();
+    const box = el().querySelector('.broken-leave')!;
+    expect(box.textContent).toContain('壊れた休業のデータがあります（計算に使っていません）');
+    expect(box.textContent).toContain('種類：xxx');
+    (box.querySelector('button') as HTMLButtonElement).click();
+    await answer(true);
+    expect(calls).toContainEqual(['deleteLeave', 'e1', 'bad1']);
   });
 
   it('所属の履歴は全担当だけが直せる。1件だけの所属は削除しない', async () => {

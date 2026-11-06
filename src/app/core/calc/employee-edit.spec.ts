@@ -79,6 +79,40 @@ describe('休業', () => {
       checkLeave({ type: 'maternity', startDate: '2026-10-01', endDate: '', workedDays: 2 })['workedDays'],
     ).toBeDefined();
   });
+
+  describe('ありえない期間・就業日数（免除を誤るので入れない）', () => {
+    const L = (type: 'maternity' | 'childcare', startDate: string, endDate: string, workedDays: number | null = null) => ({ type, startDate, endDate, workedDays });
+    const quals = [{ acquiredDate: '2024-04-01', lostDate: null }];
+
+    it('就業した日数：休業の日数の半分まで。28日を超える休業・終了日のない休業には入れない', () => {
+      expect(checkLeave(L('childcare', '2026-05-01', '2026-05-05', 10))['workedDays']).toContain('5日の休業なら多くても2日');
+      expect(checkLeave(L('childcare', '2026-05-01', '2026-05-28', 20))['workedDays']).toContain('28日の休業なら多くても14日');
+      expect(checkLeave(L('childcare', '2026-05-01', '2026-05-28', 10))).toEqual({});
+      expect(checkLeave(L('childcare', '2026-05-01', '2026-06-30', 3))['workedDays']).toContain('この休業は61日です');
+      expect(checkLeave(L('childcare', '2026-05-01', '', 3))['workedDays']).toContain('終了日を入れた産後パパ育休');
+      expect(checkLeave(L('childcare', '2026-05-01', '', 0))).toEqual({});
+    });
+
+    it('産前産後休業が半年を超える・育児休業が3年以上は、年の誤りとして止める', () => {
+      expect(checkLeave(L('maternity', '2026-01-01', '2027-03-31'))['endDate']).toContain('産前産後休業が455日になっています');
+      expect(checkLeave(L('maternity', '2026-04-01', '2026-09-27'))).toEqual({}); // 180日
+      expect(checkLeave(L('childcare', '2026-01-01', '2030-12-31'))['endDate']).toContain('子が3歳になるまで');
+      expect(checkLeave(L('childcare', '2026-01-01', '2028-12-31'))).toEqual({});
+    });
+
+    it('2022年9月以前に始まった育児休業は入れない（制度が違う）。産休は入れられる', () => {
+      expect(checkLeave(L('childcare', '2022-09-30', '2022-10-20'))['startDate']).toContain('2022年9月以前');
+      expect(checkLeave(L('childcare', '2022-10-01', '2022-10-20'))).toEqual({});
+      expect(checkLeave(L('maternity', '2022-05-01', '2022-08-20'))).toEqual({});
+    });
+
+    it('資格の期間の外・1年以上先の休業は、年の誤りとして止める', () => {
+      expect(checkLeave(L('childcare', '2023-01-01', '2023-03-31'), quals, '2026-11-06')['startDate']).toContain('資格の期間');
+      expect(checkLeave(L('childcare', '2026-04-01', ''), [{ acquiredDate: '2024-04-01', lostDate: '2026-04-01' }], '2026-11-06')['startDate']).toContain('資格の期間');
+      expect(checkLeave(L('childcare', '2099-01-01', ''), quals, '2026-11-06')['startDate']).toContain('1年以上先');
+      expect(checkLeave(L('maternity', '2027-09-01', ''), quals, '2026-11-06')).toEqual({});
+    });
+  });
 });
 
 describe('氏名の変更', () => {

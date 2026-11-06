@@ -270,6 +270,14 @@
         </table>
       </div>
 
+      @for (b of detail()!.brokenLeaves ?? []; track b.id) {
+        <div class="broken-leave" role="alert">
+          <strong>壊れた休業のデータがあります（計算に使っていません）</strong>
+          <span>{{ b.text }}</span>
+          <span class="hint">種類・開始日・終了日などが正しくないため、保険料の免除の計算に使っていません。この休業が実際にあるときは、削除してから「休業を追加」で登録し直してください。</span>
+          <button type="button" class="secondary danger" [disabled]="saving()" (click)="deleteBroken('leave', b.id, b.text)">このデータを削除</button>
+        </div>
+      }
       <p class="hint">保険料の免除は、休業を登録すると計算に反映されます。取得者申出書を届け出たら「届出済みにする」を押してください（届出の画面と同じ記録です）。それまで一覧では「申出待ち」と表示します。</p>
 
       <h3>休職</h3>
@@ -349,6 +357,14 @@
           </tbody>
         </table>
       </div>
+      @for (b of detail()!.brokenDependents ?? []; track b.id) {
+        <div class="broken-leave" role="alert">
+          <strong>壊れた被扶養者のデータがあります（計算に使っていません）</strong>
+          <span>{{ b.text }}</span>
+          <span class="hint">生年月日・扶養に入った日などが正しくないため、特定被保険者の判定・届出の期限に使っていません。この人が実際に扶養に入っているときは、削除してから「被扶養者を追加」で登録し直してください。</span>
+          <button type="button" class="secondary danger" [disabled]="saving()" (click)="deleteBroken('dependent', b.id, b.text)">このデータを削除</button>
+        </div>
+      }
 
       <h3>適用除外</h3>
       <div class="table-wrap">

@@ -208,8 +208,18 @@ export class Home implements OnInit {
     if (!m) return [];
     return this.employees()
       .map((e) => ({ employee: e, status: calcEmployeeMonth(e, m, this.thisMonth(), this.rounding()).status }))
-      .filter((x) => PROBLEM_LABEL[x.status])
-      .map((x) => ({ ...x, label: PROBLEM_LABEL[x.status]! }))
+      .map((x) => ({
+        ...x,
+        // 壊れた休業のデータは計算に使っていない（免除が抜けている可能性がある）ので、計算できても知らせる
+        label: [
+          PROBLEM_LABEL[x.status],
+          x.employee.brokenLeaves ? `壊れた休業のデータが${x.employee.brokenLeaves}件あります（計算に使っていません。詳細で削除して登録し直してください）` : null,
+          x.employee.brokenDependents ? `壊れた被扶養者のデータが${x.employee.brokenDependents}件あります（計算に使っていません。詳細で削除して登録し直してください）` : null,
+        ]
+          .filter((t) => t)
+          .join('。'),
+      }))
+      .filter((x) => x.label)
       .sort((a, b) => a.employee.employeeNumber.localeCompare(b.employee.employeeNumber));
   });
 

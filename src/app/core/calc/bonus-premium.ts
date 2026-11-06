@@ -4,7 +4,7 @@
 // 厚生年金が「同じ月に払った賞与の合計150万円」。
 import { isSpecialInsuredMonth } from './dependent';
 import { daysInMonth, formatDate, monthEnd, monthOf, parseDate, previousDay } from './date';
-import { exemptedInsurances, Leave, nextDay, Qualification } from './eligibility';
+import { exemptedInsurances, isValidLeave, Leave, nextDay, Qualification } from './eligibility';
 import { EmployeeData, findEffective, Masters } from './employee-month';
 import { calcMonthlyPremium, ChildSupportRounding, MonthlyPremium, MonthlyPremiumInput, RateShare } from './monthly-premium';
 import { Assignment, findOffice } from './office';
@@ -150,6 +150,7 @@ export function bonusExemptingLeave<L extends Leave>(leaves: L[], paidDate: stri
   const ym = monthOf(paidDate);
   const end = monthEnd(ym);
   for (const l of leaves) {
+    if (!isValidLeave(l)) continue; // 壊れたデータは使わない（読み込みでも除いている）
     if (l.type === 'maternity') {
       const until = l.endDate ? monthOf(nextDay(l.endDate)) : null;
       if (monthOf(l.startDate) <= ym && (until === null || ym < until)) return l;

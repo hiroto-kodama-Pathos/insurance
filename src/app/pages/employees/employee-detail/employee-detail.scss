@@ -34,3 +34,18 @@ fieldset.breakdown {
 .card .form { border-color: #9db7dd; box-shadow: 0 0 0 3px #e7f1fb; }
 .page-header h1 { margin: 0; }
 .back-links { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+
+// 壊れた休業のデータ（計算に使っていない。削除して登録し直してもらう）
+.broken-leave {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  align-items: center;
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--c-danger);
+  border-radius: var(--radius);
+  background: var(--c-danger-weak);
+  color: var(--c-danger);
+  .hint { flex-basis: 100%; color: var(--c-text); }
+}

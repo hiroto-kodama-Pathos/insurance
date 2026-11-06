@@ -408,6 +408,24 @@ service cloud.firestore {
 
       // 給与の支払区分：管理者だけが追加・変更・削除する。削除は、使用中（従業員が属した・初期値）でないことを画面で確かめてから
       function isPayDay(v) { return v == 'end' || (v is int && v >= 1 && v <= 30); }
+      // 休業（産前産後休業・育児休業）のデータの形。壊れたデータで保険料の免除の計算が止まったり誤ったりしないように（設計書 2.12）
+      function isYmd(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
+      function isLeaveData(d) {
+        return d.keys().hasOnly(['type', 'startDate', 'endDate', 'workedDays'])
+          && d.type in ['maternity', 'childcare']
+          && isYmd(d.startDate)
+          && (d.get('endDate', null) == null || (isYmd(d.endDate) && d.endDate >= d.startDate))
+          && (d.get('workedDays', null) == null || (d.workedDays is int && d.workedDays >= 0));
+      }
+      // 被扶養者のデータの形（壊れたデータで特定被保険者の判定・届出の期限の計算が止まらないように。設計書 2.6）。
+      // 外れた日は扶養に入った日以後（資格を失った日に一緒に外れるときは同じ日もありうる）。介護保険の適用除外の中身は画面で確かめる
+      function isDependentData(d) {
+        return d.keys().hasOnly(['name', 'birthDate', 'certifiedDate', 'removedDate', 'careExemptions'])
+          && d.name is string && d.name.size() > 0 && d.name.size() <= 50
+          && isYmd(d.birthDate) && isYmd(d.certifiedDate) && d.certifiedDate >= d.birthDate
+          && (d.get('removedDate', null) == null || (isYmd(d.removedDate) && d.removedDate >= d.certifiedDate))
+          && (!('careExemptions' in d) || (d.careExemptions is list && d.careExemptions.size() <= 50));
+      }
       match /payrollGroups/{id} {
         allow read: if isSiUser();
         allow delete: if isSiAdmin() && resource.data.get('isDefault', false) != true;
@@ -461,9 +479,14 @@ service cloud.firestore {
           allow read: if isSiUser() && employeeInScope(employeeId);
           allow create: if isSiUser() && employeeInScopeAfter(employeeId)
             && (sub != 'assignments' || scopeAll() || request.resource.data.officeId == siScope())
+            && (sub != 'leaves' || isLeaveData(request.resource.data))
+            && (sub != 'dependents' || isDependentData(request.resource.data))
             && (sub != 'changeLogs' || (request.resource.data.by == request.auth.token.email
               && request.resource.data.at == request.time && request.resource.data.text is string));
-          allow update, delete: if isSiUser() && employeeInScope(employeeId) && sub != 'changeLogs' && (sub != 'assignments' || scopeAll());
+          allow update: if isSiUser() && employeeInScope(employeeId) && sub != 'changeLogs' && (sub != 'assignments' || scopeAll())
+            && (sub != 'leaves' || isLeaveData(request.resource.data))
+            && (sub != 'dependents' || isDependentData(request.resource.data));
+          allow delete: if isSiUser() && employeeInScope(employeeId) && sub != 'changeLogs' && (sub != 'assignments' || scopeAll());
         }
       }
 

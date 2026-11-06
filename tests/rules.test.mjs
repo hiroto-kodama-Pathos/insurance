@@ -146,6 +146,33 @@ await check('担当者は支払区分を読める', assertSucceeds(getDoc(doc(st
 await check('締め日が31日の支払区分は登録できない', assertFails(setDoc(doc(admin, `${SI}/payrollGroups/g3`), { ...group, cutoffDay: 31 })));
 await check('控除のタイミングが不正な支払区分は登録できない', assertFails(setDoc(doc(admin, `${SI}/payrollGroups/g3`), { ...group, deductionTiming: 'x' })));
 await check('管理者でも支払区分は削除できない', assertFails(deleteDoc(doc(admin, `${SI}/payrollGroups/g1`))));
+// ---- 休業のデータの形（壊れたデータで免除の計算が止まったり誤ったりしないように） ----
+const leave = (id) => doc(staff, `${SI}/employees/e1/leaves/${id}`);
+await check('担当者は育児休業を登録できる', assertSucceeds(setDoc(leave('l1'), { type: 'childcare', startDate: '2026-05-01', endDate: '2026-05-20', workedDays: 2 })));
+await check('終了日なし（休業中）の産休を登録できる', assertSucceeds(setDoc(leave('l2'), { type: 'maternity', startDate: '2026-09-01', endDate: null, workedDays: null })));
+await check('休業の終了日を直せる', assertSucceeds(updateDoc(leave('l2'), { endDate: '2026-12-01' })));
+await check('種類が不明の休業は登録できない', assertFails(setDoc(leave('x1'), { type: 'xxx', startDate: '2026-05-01', endDate: null, workedDays: null })));
+await check('開始日がない休業は登録できない', assertFails(setDoc(leave('x2'), { type: 'childcare', endDate: null, workedDays: null })));
+await check('開始日の形が違う休業は登録できない', assertFails(setDoc(leave('x3'), { type: 'childcare', startDate: '2026/05/01', endDate: null, workedDays: null })));
+await check('終了日が開始日より前の休業は登録できない', assertFails(setDoc(leave('x4'), { type: 'childcare', startDate: '2026-05-10', endDate: '2026-05-01', workedDays: null })));
+await check('就業日数がマイナス・小数の休業は登録できない', assertFails(setDoc(leave('x5'), { type: 'childcare', startDate: '2026-05-01', endDate: '2026-05-20', workedDays: -1 })));
+await check('休業に決まっていない項目は足せない', assertFails(setDoc(leave('x6'), { type: 'childcare', startDate: '2026-05-01', endDate: null, workedDays: null, memo: 'x' })));
+await check('直すときも、終了日を開始日より前にできない', assertFails(updateDoc(leave('l1'), { endDate: '2026-04-01' })));
+await check('休業は削除できる', assertSucceeds(deleteDoc(leave('l1'))));
+
+// ---- 被扶養者のデータの形 ----
+const dep = (id) => doc(staff, `${SI}/employees/e1/dependents/${id}`);
+await check('担当者は被扶養者を登録できる', assertSucceeds(setDoc(dep('d1'), { name: '山田 花子', birthDate: '1990-01-01', certifiedDate: '2024-04-01', removedDate: null })));
+await check('被扶養者を扶養から外せる（資格を失った日と同じ日も可）', assertSucceeds(updateDoc(dep('d1'), { removedDate: '2024-04-01' })));
+await check('被扶養者の介護保険の適用除外を登録できる', assertSucceeds(updateDoc(dep('d1'), { removedDate: null, careExemptions: [{ startDate: '2035-01-01', endDate: null }] })));
+await check('氏名が空の被扶養者は登録できない', assertFails(setDoc(dep('x1'), { name: '', birthDate: '1990-01-01', certifiedDate: '2024-04-01', removedDate: null })));
+await check('生年月日がない被扶養者は登録できない', assertFails(setDoc(dep('x2'), { name: 'a', certifiedDate: '2024-04-01', removedDate: null })));
+await check('扶養に入った日が生年月日より前の被扶養者は登録できない', assertFails(setDoc(dep('x3'), { name: 'a', birthDate: '2024-01-01', certifiedDate: '2023-04-01', removedDate: null })));
+await check('外れた日が扶養に入った日より前の被扶養者は登録できない', assertFails(setDoc(dep('x4'), { name: 'a', birthDate: '1990-01-01', certifiedDate: '2024-04-01', removedDate: '2024-03-31' })));
+await check('被扶養者に決まっていない項目は足せない', assertFails(setDoc(dep('x5'), { name: 'a', birthDate: '1990-01-01', certifiedDate: '2024-04-01', removedDate: null, memo: 'x' })));
+await check('直すときも、扶養に入った日を生年月日より前にできない', assertFails(updateDoc(dep('d1'), { certifiedDate: '1980-01-01' })));
+await check('被扶養者は削除できる', assertSucceeds(deleteDoc(dep('d1'))));
+
 await check('担当者は従業員の支払区分の履歴を登録できる', assertSucceeds(setDoc(doc(staff, `${SI}/employees/e1/payrollAssignments/p1`), { validFrom: '2026-10-01', payrollGroupId: 'g1' })));
 
 // ---- 届出済みの記録 ----

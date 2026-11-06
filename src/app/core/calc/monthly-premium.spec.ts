@@ -182,11 +182,11 @@ describe('エッジケース：料率と計算条件', () => {
     expect(r.pension?.employeeYen).toBe(0n);
   });
 
-  it('免除対象月は保険料が計算されない', () => {
+  it('免除対象月は保険料が 0 円で計算される', () => {
     const r = calcMonthlyPremium(input({ leaveExempt: true }));
-    expect(r.health).toBeNull();
-    expect(r.care).toBeNull();
-    expect(r.pension).toBeNull();
+    expect(r.health?.employeeYen).toBe(0n);
+    expect(r.care?.employeeYen).toBe(0n);
+    expect(r.pension?.employeeYen).toBe(0n);
   });
 
   it('未加入の月は保険料が計算されない', () => {

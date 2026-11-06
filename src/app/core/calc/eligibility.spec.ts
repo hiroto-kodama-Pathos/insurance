@@ -1,4 +1,4 @@
-import { exemptedInsurances, exemptingLeave, isInsuredInMonth, isLeaveExemptMonth, leaveExemptLabel, leaveFilingId, nextDay } from './eligibility';
+import { exemptedInsurances, exemptingLeave, isInsuredInMonth, isLeaveExemptMonth, isValidLeave, leaveExemptLabel, leaveFilingId, nextDay } from './eligibility';
 
 describe('翌日', () => {
   it('月末・年末・うるう年をまたぐ', () => {
@@ -128,5 +128,27 @@ describe('産休・育休の申出待ちの表示', () => {
     expect(leaveExemptLabel('e1', maternity, new Set())).toBe('産休免除（申出待ち）');
     expect(leaveExemptLabel('e1', maternity, new Set(['e1_leave_2026-08-10']))).toBe('産休免除');
     expect(leaveExemptLabel('e1', short1, new Set())).toBe('育休免除（申出待ち）');
+  });
+});
+
+describe('壊れた休業・ありえない就業日数', () => {
+  it('就業した日数が休業の日数より多くても、同じ月のほかの育休の日数を減らさない', () => {
+    const leaves = [
+      { type: 'childcare' as const, startDate: '2026-05-01', endDate: '2026-05-05', workedDays: 10 },
+      { type: 'childcare' as const, startDate: '2026-05-10', endDate: '2026-05-25', workedDays: null },
+    ];
+    expect(isLeaveExemptMonth(leaves, '2026-05')).toBe(true);
+  });
+
+  it('種類・開始日・終了日・就業日数の形が正しい休業だけを、計算に使うデータとする', () => {
+    expect(isValidLeave({ type: 'childcare', startDate: '2026-05-01', endDate: null })).toBe(true);
+    expect(isValidLeave({ type: 'maternity', startDate: '2026-05-01', endDate: '2026-08-01', workedDays: null })).toBe(true);
+    expect(isValidLeave({ type: 'xxx', startDate: '2026-05-01', endDate: null })).toBe(false);
+    expect(isValidLeave({ type: 'childcare', endDate: null })).toBe(false);
+    expect(isValidLeave({ type: 'childcare', startDate: '2026-02-30', endDate: null })).toBe(false);
+    expect(isValidLeave({ type: 'childcare', startDate: '2026/05/01', endDate: null })).toBe(false);
+    expect(isValidLeave({ type: 'childcare', startDate: '2026-07-10', endDate: '2026-05-01' })).toBe(false);
+    expect(isValidLeave({ type: 'childcare', startDate: '2026-05-01', endDate: null, workedDays: -1 })).toBe(false);
+    expect(isValidLeave(null)).toBe(false);
   });
 });

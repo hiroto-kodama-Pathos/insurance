@@ -247,7 +247,11 @@ export function validateNewEmployee(input: NewEmployeeInput, existingNumbers: st
   if (input.insured) {
     (input.dependents ?? []).forEach((raw, k) => {
       const d = withCertifiedDate(raw, input.acquiredDate);
-      const de = checkDependent(d, today);
+      // 本人を被扶養者にする誤り・同じ人を2行入れる誤りも止める（前の行と比べる）
+      const de = checkDependent(d, today, {
+        self: { name: input.name, birthDate: input.birthDate },
+        others: (input.dependents ?? []).slice(0, k),
+      });
       let msg = de.name ?? de.birthDate ?? de.certifiedDate;
       if (!msg && isValidDate(input.acquiredDate) && d.certifiedDate < input.acquiredDate) msg = '扶養に入った日は資格取得日以後にしてください';
       if (msg) e[`dependent${k}`] = `被扶養者${k + 1}人目：${msg}`;

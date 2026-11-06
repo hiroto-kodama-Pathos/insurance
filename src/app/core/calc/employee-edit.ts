@@ -146,19 +146,64 @@ export type LeaveInput = {
   workedDays: number | null;
 };
 
-/** 産前産後休業・育児休業の追加・終了日の変更 */
-export function checkLeave(input: LeaveInput): Errors {
+/** 育児休業の保険料の免除・14日以上の決まりが今の制度になった日（これより前に始まった育児休業は扱わない） */
+export const CHILDCARE_RULE_FROM = '2022-10-01';
+/** 産前産後休業の長さの上限（多胎の産前98日＋産後56日に、出産が予定日より遅れた日数の余裕を足した日数） */
+export const MATERNITY_MAX_DAYS = 180;
+/** 産後パパ育休（出生時育児休業）の長さの上限 */
+const PATERNITY_MAX_DAYS = 28;
+
+/** 開始日から終了日までの日数（両端を含む） */
+export function daysInclusive(start: string, end: string): number {
+  const t = (s: string) => Date.UTC(Number(s.slice(0, 4)), Number(s.slice(5, 7)) - 1, Number(s.slice(8, 10)));
+  return Math.round((t(end) - t(start)) / 86_400_000) + 1;
+}
+
+/** n年後の同じ日（2/29 は 2/28 にする） */
+function addYears(date: string, n: number): string {
+  const y = Number(date.slice(0, 4)) + n;
+  const md = date.slice(5);
+  return md === '02-29' && !isValidDate(`${y}-02-29`) ? `${y}-02-28` : `${y}-${md}`;
+}
+
+/**
+ * 産前産後休業・育児休業の追加・訂正（設計書 2.12）。
+ * 打ち間違い（年の誤りなど）や、制度上ありえない期間・就業日数は、保険料の免除を誤るので入れない
+ * @param qualifications 資格の期間（開始日がその中にあるかを見る）。渡さなければ見ない
+ * @param today 今日（'YYYY-MM-DD'）。開始日が1年より先なら止める。渡さなければ見ない
+ */
+export function checkLeave(input: LeaveInput, qualifications: Qualification[] | null = null, today: string | null = null): Errors {
   const errors: Errors = {};
-  if (!isValidDate(input.startDate)) errors['startDate'] = '開始日を正しく入力してください';
+  const startOk = isValidDate(input.startDate);
+  if (!startOk) errors['startDate'] = '開始日を正しく入力してください';
+  else if (input.type === 'childcare' && input.startDate < CHILDCARE_RULE_FROM)
+    errors['startDate'] = '2022年9月以前に始まった育児休業は登録できません（免除の決まりが今と違うため。このアプリは2022年10月以降の制度で計算します）';
+  else if (today && input.startDate > addYears(today, 1))
+    errors['startDate'] = '開始日が1年以上先です。年を確かめてください';
+  else if (qualifications && !qualifications.some((q) => q.acquiredDate <= input.startDate && (q.lostDate === null || input.startDate < q.lostDate)))
+    errors['startDate'] = '開始日が資格の期間（資格取得日〜資格喪失日の前日）の外です。年を確かめてください（資格のない期間の休業は免除に関係しません）';
+
+  const endOk = input.endDate !== '' && isValidDate(input.endDate);
   if (input.endDate !== '') {
-    if (!isValidDate(input.endDate)) errors['endDate'] = '終了日を正しく入力してください';
-    else if (isValidDate(input.startDate) && input.endDate < input.startDate)
-      errors['endDate'] = '終了日は開始日以降の日付にしてください';
+    if (!endOk) errors['endDate'] = '終了日を正しく入力してください';
+    else if (startOk && input.endDate < input.startDate) errors['endDate'] = '終了日は開始日以降の日付にしてください';
+    else if (startOk && input.type === 'maternity' && daysInclusive(input.startDate, input.endDate) > MATERNITY_MAX_DAYS)
+      errors['endDate'] = `産前産後休業が${daysInclusive(input.startDate, input.endDate)}日になっています。産前産後休業は長くても半年ほど（多胎の産前98日＋産後56日）です。終了日の年を確かめてください（続けて育児休業を取るときは、育児休業として別に登録します）`;
+    else if (startOk && input.type === 'childcare' && input.endDate >= addYears(input.startDate, 3))
+      errors['endDate'] = '育児休業が3年以上になっています。育児休業の保険料の免除は、子が3歳になるまでです。終了日の年を確かめてください';
   }
+
   if (input.workedDays !== null) {
+    const days = startOk && endOk && input.endDate >= input.startDate ? daysInclusive(input.startDate, input.endDate) : null;
     if (input.type !== 'childcare') errors['workedDays'] = '就業した日数は育児休業（産後パパ育休）だけ入力できます';
-    else if (!Number.isInteger(input.workedDays) || input.workedDays < 0)
-      errors['workedDays'] = '就業した日数は0以上の整数で入力してください';
+    else if (!Number.isInteger(input.workedDays) || input.workedDays < 0) errors['workedDays'] = '就業した日数は0以上の整数で入力してください';
+    else if (input.workedDays === 0) {
+      // 0日は入れていないのと同じ
+    } else if (input.endDate === '') errors['workedDays'] = '就業した日数は、終了日を入れた産後パパ育休（28日以内）だけ入力できます';
+    else if (days !== null && days > PATERNITY_MAX_DAYS)
+      errors['workedDays'] = `就業した日数は産後パパ育休（28日以内の休業）だけ入力できます（この休業は${days}日です）`;
+    else if (days !== null && input.workedDays > Math.floor(days / 2))
+      errors['workedDays'] = `就業した日数が多すぎます。産後パパ育休中に就業できるのは休業中の所定労働日数の半分までで、${days}日の休業なら多くても${Math.floor(days / 2)}日です`;
   }
   return errors;
 }

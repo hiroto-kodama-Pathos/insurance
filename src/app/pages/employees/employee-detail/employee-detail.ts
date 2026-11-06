@@ -23,6 +23,7 @@ import { REFUND_KEYS, REFUND_LABEL, RefundStatus, sameMonthCases } from '../../.
 import {
   careExemptionLabel,
   checkDependent,
+  type DependentContext,
   checkDependentCareExemption,
   checkRemoval,
   Dependent,
@@ -638,7 +639,21 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   /** 資格を失う日に扶養から外れる被扶養者（まだ扶養中の人） */
   private openDependentIds(lostDate: string | null): string[] {
     if (!lostDate) return [];
-    return (this.detail()?.dependents ?? []).filter((x) => x.removedDate === null || x.removedDate > lostDate).filter((x) => dependentOutDate(x, lostDate) === null).map((x) => x.id);
+    // 資格を失った日より後に扶養に入る予定の人は含めない（外れた日が扶養に入った日より前になってしまうため）
+    return (this.detail()?.dependents ?? [])
+      .filter((x) => x.certifiedDate <= lostDate && (x.removedDate === null || x.removedDate > lostDate))
+      .filter((x) => dependentOutDate(x, lostDate) === null)
+      .map((x) => x.id);
+  }
+
+  /** 被扶養者の追加・訂正のチェックに使う、本人の資格の期間・本人・ほかの被扶養者（editingId の人は除く） */
+  private dependentContext(editingId: string | null): DependentContext {
+    const d = this.detail()!;
+    return {
+      qualifications: d.qualifications,
+      self: { name: d.name, birthDate: d.birthDate },
+      others: d.dependents.filter((x) => x.id !== editingId),
+    };
   }
 
   /** 今日の時点で扶養から外れていれば、その日と理由（75歳の誕生日を含む）。扶養中は null */
@@ -1076,6 +1091,32 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     }
   }
 
+  /** 壊れた休業・被扶養者のデータを消す（計算に使っていないので、削除しても保険料は変わらない） */
+  protected async deleteBroken(kind: 'leave' | 'dependent', id: string, text: string): Promise<void> {
+    const d = this.detail();
+    if (!d) return;
+    const label = kind === 'leave' ? '休業' : '被扶養者';
+    const ok = await this.confirm.ask({
+      title: `壊れた${label}のデータを削除`,
+      message: `壊れた${label}のデータ（${text}）を削除します。元に戻せません。このデータは計算に使っていないので、保険料は変わりません。実際にある${label}なら、削除のあとで登録し直してください。`,
+      ok: '削除する',
+      danger: true,
+    });
+    if (!ok) return;
+    this.saving.set(true);
+    try {
+      const remove = () => (kind === 'leave' ? this.repo.deleteLeave(d.id, id) : this.repo.deleteDependent(d.id, id));
+      const logged = await this.repo.withLog(d.id, `壊れた${label}のデータを削除（${text}）`, remove);
+      this.notice.set(`壊れた${label}のデータを削除しました。${logged ? '' : LOG_FAILED}`);
+      await this.reload();
+    } catch (e) {
+      console.error(e);
+      this.notice.set('削除できませんでした。権限と通信を確かめてください。');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
   /** 開いているフォームの入力（画面を移る前の確認に使う） */
   private readonly snapshot = new FormSnapshot(() => [
     this.date(), this.reason(), this.officeId(), this.standardForm(), this.remuneration(), this.breakdown(), this.multiOffice(),
@@ -1118,7 +1159,8 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     return BREAKDOWN_KEYS.filter((k) => b[k] > 0).map((k) => `${BREAKDOWN_LABEL[k]} ${b[k].toLocaleString('ja-JP')}`).join('／');
   }
   protected setLeave(key: 'type' | 'startDate' | 'endDate', value: string): void {
-    this.leaveForm.update((f) => ({ ...f, [key]: value }));
+    // 産前産後休業にしたら、就業した日数を消す（産休では入れられず、欄も隠れるので、残すとエラーが見えないまま保存できない）
+    this.leaveForm.update((f) => ({ ...f, [key]: value, ...(key === 'type' && value === 'maternity' ? { workedDays: null } : {}) }));
   }
   protected setWorkedDays(value: string): void {
     this.leaveForm.update((f) => ({ ...f, workedDays: parseNumberInput(value) }));
@@ -1231,6 +1273,12 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const r = checkQualificationEdit(d.qualifications, id, f);
       errors = r.errors;
       const moves = dependentMoves(d.dependents, before.lostDate, r.lostDate);
+      // 外れた日を合わせると、扶養に入った日より前になる被扶養者がいれば止める（外れた日が扶養に入った日より前のデータはルールでも入らない）
+      const early = moves
+        .map((m) => ({ m, x: d.dependents.find((y) => y.id === m.id)! }))
+        .find(({ m, x }) => m.removedDate !== null && m.removedDate < x.certifiedDate);
+      if (early && !errors['lostDate'])
+        errors = { ...errors, lostDate: `${early.x.name}さんが扶養に入った日（${dateLabel(early.x.certifiedDate)}）より前になります。先に${early.x.name}さんの扶養の期間を直してください` };
       action = () => this.repo.updateQualification(d.id, id, { acquiredDate: f.acquiredDate, lostDate: r.lostDate, lostReason: f.lostReason || null }, moves);
       message =
         (before.lostDate && !r.lostDate ? '退職（資格喪失）を取り消し、加入中に戻しました。' : '資格の期間を直しました。') +
@@ -1240,10 +1288,10 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const id = this.editingId()!;
       const f = this.dependentForm();
       const removed = this.date();
-      errors = checkDependent(f, today());
+      errors = checkDependent(f, today(), this.dependentContext(id));
       if (removed) {
         const x = d.dependents.find((y) => y.id === id)!;
-        errors = { ...errors, ...checkRemoval({ ...x, certifiedDate: f.certifiedDate }, removed) };
+        errors = { ...errors, ...checkRemoval({ ...x, birthDate: f.birthDate, certifiedDate: f.certifiedDate }, removed, today()) };
       }
       action = () => this.repo.updateDependent(d.id, id, { ...f, removedDate: removed || null });
       message = `被扶養者（${f.name.trim()}さん）を直しました。`;
@@ -1285,13 +1333,13 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       message = `社員番号を「${before}」から「${r.number}」に変えました。給与ソフトのCSVを取り込むときは、新しい社員番号で照らし合わせます。`;
     } else if (mode === 'dependent') {
       const f = this.dependentForm();
-      errors = checkDependent(f, today());
+      errors = checkDependent(f, today(), this.dependentContext(null));
       action = () => this.repo.addDependent(d.id, f);
       message = `被扶養者（${f.name.trim()}さん）を登録しました。被扶養者異動届：${dateLabel(dependentReportDeadline(f.certifiedDate))}まで（5日以内）`;
     } else if (mode === 'dependentRemove') {
       const id = this.editingDependentId()!;
       const dep = d.dependents.find((x) => x.id === id)!;
-      errors = checkRemoval(dep, this.date());
+      errors = checkRemoval(dep, this.date(), today());
       action = () => this.repo.removeDependent(d.id, id, this.date());
       message = `${dep.name}さんを${dateLabel(this.date())}に扶養から外しました。被扶養者異動届：${dateLabel(dependentReportDeadline(this.date()))}まで（5日以内）`;
     } else if (mode === 'dependentExemption' || mode === 'dependentExemptionEnd') {
@@ -1299,7 +1347,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const dep = d.dependents.find((x) => x.id === id)!;
       const f = this.depExemptionForm();
       const index = mode === 'dependentExemption' ? null : this.editingDepExemptionIndex();
-      errors = checkDependentCareExemption(dep, f, index);
+      errors = checkDependentCareExemption(dep, f, index, today());
       if (mode === 'dependentExemptionEnd' && f.endDate === '') errors = { ...errors, endDate: '非該当年月日を入力してください' };
       action = () => this.repo.setDependentCareExemptions(d.id, id, withCareExemption(dep, f, index));
       const n = exemptionNotice('care', f.startDate);
@@ -1350,7 +1398,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       message = `${yearMonthLabel(t?.validFrom)}分からの標準報酬月額を、通知書の値で確定しました。`;
     } else if (mode === 'leave') {
       const f = this.leaveForm();
-      errors = { ...checkLeaveOverlap(d.leaves, f.startDate, f.endDate), ...checkLeave(f) };
+      errors = { ...checkLeaveOverlap(d.leaves, f.startDate, f.endDate), ...checkLeave(f, d.qualifications, today()) };
       action = () => this.repo.addLeave(d.id, f);
       message = '休業を登録しました。';
     } else if (mode === 'absence' || 'absenceId' in mode) {
@@ -1361,7 +1409,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       message = id ? '休職の期間を変更しました。' : '休職を登録しました。保険料は通常どおりかかります（免除はありません）。';
     } else {
       const f = this.leaveForm();
-      errors = { ...checkLeaveOverlap(d.leaves.filter((l) => l.id !== mode.leaveId), f.startDate, f.endDate), ...checkLeave(f) };
+      errors = { ...checkLeaveOverlap(d.leaves.filter((l) => l.id !== mode.leaveId), f.startDate, f.endDate), ...checkLeave(f, d.qualifications, today()) };
       action = () => this.repo.updateLeave(d.id, mode.leaveId, f);
       message = '休業を直しました。保険料の免除は、直した期間で計算し直します。';
     }

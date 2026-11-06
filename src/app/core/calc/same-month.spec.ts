@@ -92,7 +92,7 @@ describe('同月得喪', () => {
       const result = calcEmployeeMonth(e, masters, '2026-10', 'combined');
       expect(result.status).toBe('ok');
       // 保険料が計算されていることを確認
-      expect(result.health?.employeeYen).toBeDefined();
+      expect(result.premium?.health?.employeeYen).toBeDefined();
     });
 
     it('月末（10月31日）に退職した場合、翌月（11月1日）喪失のため同月得喪ではない', () => {

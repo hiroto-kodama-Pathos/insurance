@@ -67,7 +67,8 @@ export function isDependentCareExemptInMonth(d: Dependent, yearMonth: string): b
 export function isSpecialInsuredMonth(insurer: Insurer, dependents: Dependent[] | undefined, yearMonth: string): boolean {
   if (insurer.type !== 'kumiai' || !insurer.specialInsuredEnabled) return false;
   return (dependents ?? []).some(
-    (d) => isDependentInMonth(d, yearMonth) && careStatus(d.birthDate, yearMonth) === 'second' && !isDependentCareExemptInMonth(d, yearMonth),
+    // 壊れたデータは読み込みで除くが、念のため計算でも使わない（例外で画面が止まらないように）
+    (d) => isValidDependent(d) && isDependentInMonth(d, yearMonth) && careStatus(d.birthDate, yearMonth) === 'second' && !isDependentCareExemptInMonth(d, yearMonth),
   );
 }
 
@@ -81,29 +82,89 @@ export function dependentReportDeadline(date: string): string {
 export type DependentInput = { name: string; birthDate: string; certifiedDate: string };
 export type DependentErrors = Partial<Record<'name' | 'birthDate' | 'certifiedDate' | 'removedDate', string>>;
 
-/** 75歳の誕生日（'YYYY-MM-DD' の文字列で比べる） */
-const birthday75 = (birthDate: string) => `${Number(birthDate.slice(0, 4)) + 75}${birthDate.slice(4)}`;
+/** 75歳の誕生日（後期高齢者医療の被保険者になり、扶養から外れる日。2/29生まれは平年は3/1） */
+const birthday75 = (birthDate: string) => birthdayAt(birthDate, 75);
 
-/** @param today 今日 'YYYY-MM-DD'。渡すと、生年月日が今日より後でないかも確かめる */
-export function checkDependent(input: DependentInput, today?: string): DependentErrors {
+/** 氏名を比べるときの形（空白を除く） */
+export const normName = (s: string) => s.replace(/[\s　]/g, '');
+
+/** n年後の同じ日（年の打ち間違いの確認に使う） */
+function yearsLater(date: string, n: number): string {
+  return `${Number(date.slice(0, 4)) + n}${date.slice(4)}`;
+}
+
+/** 被扶養者の登録の確認に使う、本人と、ほかの被扶養者（設計書 2.6） */
+export type DependentContext = {
+  /** 本人の資格の期間（扶養に入った日に資格があるかを見る） */
+  qualifications?: { acquiredDate: string; lostDate: string | null }[];
+  /** 本人（本人を被扶養者にする誤りを止める） */
+  self?: { name: string; birthDate: string };
+  /** すでに登録してあるほかの被扶養者（直すときは、直している人を除いて渡す） */
+  others?: { name: string; birthDate: string }[];
+};
+
+/**
+ * 被扶養者の追加・訂正のチェック
+ * @param today 今日 'YYYY-MM-DD'。渡すと、生年月日が今日より後・扶養に入った日が1年以上先でないかも確かめる
+ * @param ctx 本人の資格の期間・本人・ほかの被扶養者。渡したものだけ確かめる
+ */
+export function checkDependent(input: DependentInput, today?: string, ctx: DependentContext = {}): DependentErrors {
   const e: DependentErrors = {};
+  const name = normName(input.name);
   if (!input.name.trim()) e.name = '氏名を入力してください';
   else if (input.name.trim().length > 50) e.name = '氏名は50文字以内で入力してください';
+  else if (ctx.self && normName(ctx.self.name) === name && ctx.self.birthDate === input.birthDate)
+    e.name = '本人を被扶養者にはできません（氏名・生年月日が本人と同じです）';
+  else if ((ctx.others ?? []).some((o) => normName(o.name) === name && o.birthDate === input.birthDate))
+    e.name = 'この人（氏名・生年月日が同じ人）は、すでに被扶養者として登録されています。期間を変えるときは、その人の「直す」を使ってください';
   if (!isValidDate(input.birthDate)) e.birthDate = '生年月日を正しく入力してください';
   else if (today && input.birthDate > today) e.birthDate = '生年月日に、今日より後の日は入れられません';
   if (!isValidDate(input.certifiedDate)) e.certifiedDate = '扶養に入った日を正しく入力してください';
+  else if (today && input.certifiedDate > yearsLater(today, 1)) e.certifiedDate = '扶養に入った日が1年以上先です。年を確かめてください';
   else if (isValidDate(input.birthDate) && input.certifiedDate < input.birthDate)
     e.certifiedDate = '扶養に入った日は生年月日以降の日にしてください';
   // 75歳以上（誕生日から）は後期高齢者医療制度の対象で、健康保険の被扶養者になれない（設計書 2.8）
   else if (isValidDate(input.birthDate) && input.certifiedDate >= birthday75(input.birthDate))
     e.birthDate = '75歳以上の人は後期高齢者医療制度の対象のため、被扶養者として登録できません';
+  else if (ctx.qualifications && !ctx.qualifications.some((q) => q.acquiredDate <= input.certifiedDate && (q.lostDate === null || input.certifiedDate < q.lostDate)))
+    e.certifiedDate = '扶養に入った日に、本人の社会保険の資格がありません（資格取得日〜資格喪失日の前日にしてください）';
   return e;
 }
 
-export function checkRemoval(d: Dependent, removedDate: string): DependentErrors {
+/**
+ * 扶養から外れた日のチェック
+ * @param today 今日。渡すと、1年以上先の日を止める
+ */
+export function checkRemoval(d: Dependent, removedDate: string, today?: string): DependentErrors {
   if (!isValidDate(removedDate)) return { removedDate: '扶養から外れた日を正しく入力してください' };
   if (removedDate <= d.certifiedDate) return { removedDate: '扶養から外れた日は、扶養に入った日より後の日にしてください' };
+  if (today && removedDate > yearsLater(today, 1)) return { removedDate: '扶養から外れた日が1年以上先です。年を確かめてください' };
+  if (isValidDate(d.birthDate) && removedDate > birthday75(d.birthDate))
+    return { removedDate: `75歳の誕生日（${dateLabel(birthday75(d.birthDate))}）に扶養から外れています。外れた日はその日までにしてください` };
   return {};
+}
+
+const isDate = (v: unknown): v is string => typeof v === 'string' && isValidDate(v);
+
+/**
+ * 計算に使える被扶養者のデータか（氏名・生年月日・扶養に入った日・外れた日・介護保険の適用除外の形）。
+ * 壊れたデータ（直接書き込まれたものなど）で計算が止まらないよう、読み込むときにこれで分け、
+ * 壊れたものは計算に使わず詳細とトップに出す（設計書 2.6）
+ */
+export function isValidDependent(d: unknown): d is Dependent {
+  if (!d || typeof d !== 'object') return false;
+  const x = d as Record<string, unknown>;
+  if (typeof x['name'] !== 'string' || !x['name'].trim()) return false;
+  if (!isDate(x['birthDate']) || !isDate(x['certifiedDate']) || x['certifiedDate'] < x['birthDate']) return false;
+  const removed = x['removedDate'];
+  // 外れた日は扶養に入った日以後（資格を失った日に一緒に外れる場合は、同じ日もありうる）
+  if (removed !== null && removed !== undefined && (!isDate(removed) || removed < x['certifiedDate'])) return false;
+  const ex = x['careExemptions'];
+  if (ex === undefined || ex === null) return true;
+  return (
+    Array.isArray(ex) &&
+    ex.every((y) => y && isDate(y.startDate) && (y.endDate === null || y.endDate === undefined || (isDate(y.endDate) && y.endDate > y.startDate)))
+  );
 }
 
 export type DependentCareExemptionInput = { startDate: string; endDate: string };
@@ -117,10 +178,22 @@ export function checkDependentCareExemption(
   d: Dependent,
   input: DependentCareExemptionInput,
   editingIndex: number | null = null,
+  today?: string,
 ): DependentCareExemptionErrors {
   const e: DependentCareExemptionErrors = {};
+  const out = dependentOut(d);
   if (!isValidDate(input.startDate)) e.startDate = '該当年月日を正しく入力してください';
   else if (input.startDate < d.birthDate) e.startDate = '該当年月日は生年月日以降の日にしてください';
+  else if (editingIndex === null && today && input.startDate > yearsLater(today, 1)) e.startDate = '該当年月日が1年以上先です。年を確かめてください';
+  // 被扶養者の介護保険の適用除外は、特定被保険者の判定（扶養中の40〜64歳）にだけ使う。扶養でない期間・対象年齢でない人には登録しない
+  else if (editingIndex === null && input.startDate < d.certifiedDate) e.startDate = `該当年月日は、扶養に入った日（${dateLabel(d.certifiedDate)}）以後にしてください`;
+  else if (editingIndex === null && out && input.startDate >= out.date)
+    e.startDate = `該当年月日は、扶養から外れた日（${dateLabel(out.date)}）より前にしてください`;
+  else if (editingIndex === null && careStatus(d.birthDate, monthOf(input.startDate)) !== 'second')
+    e.startDate =
+      careStatus(d.birthDate, monthOf(input.startDate)) === 'none'
+        ? 'この月はまだ40歳になっていないため、介護保険の適用除外は要りません（介護保険は40〜64歳の人の制度です）'
+        : 'この月は65歳以上のため、被扶養者の介護保険の適用除外は要りません（特定被保険者の判定は40〜64歳の被扶養者だけです）';
   if (input.endDate !== '' && !isValidDate(input.endDate)) e.endDate = '非該当年月日を正しく入力してください';
   else if (input.endDate !== '' && isValidDate(input.startDate) && input.endDate <= input.startDate)
     e.endDate = '非該当年月日は該当年月日より後の日にしてください';

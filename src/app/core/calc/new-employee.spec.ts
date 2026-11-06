@@ -116,6 +116,17 @@ describe('生年月日の入力チェックと、児童の注意', () => {
     expect(e['dependent0']).toContain('今日より後');
   });
 
+  it('本人と同じ人・同じ人を2行入れた被扶養者はエラー', () => {
+    const e = validateNewEmployee(
+      { ...ok, dependents: [{ name: '田中　次郎', birthDate: '1990-04-01', certifiedDate: '' }, { name: '田中 花子', birthDate: '2015-01-01', certifiedDate: '' }, { name: '田中花子', birthDate: '2015-01-01', certifiedDate: '' }] },
+      [],
+      '2026-11-02',
+    );
+    expect(e['dependent0']).toContain('本人を被扶養者にはできません');
+    expect(e['dependent1']).toBeUndefined();
+    expect(e['dependent2']).toContain('すでに被扶養者として登録されています');
+  });
+
   it('満15歳に達した日（誕生日の前日）以後の最初の3月31日', () => {
     expect(childLaborEndDate('2011-04-01')).toBe('2026-03-31'); // 2026-03-31 に15歳に達する → その日
     expect(childLaborEndDate('2011-04-02')).toBe('2027-03-31'); // 2026-04-01 に15歳に達する → 翌年

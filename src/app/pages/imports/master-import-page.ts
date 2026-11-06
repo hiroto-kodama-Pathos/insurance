@@ -102,7 +102,7 @@ export class MasterImportPage implements OnInit {
 
   private readonly dependentPreview = computed<ImportRow<DependentToImport>[]>(() =>
     this.ready() && this.kind() === 'dependent'
-      ? buildDependentImport(this.csvRows(), this.mapping(), this.employees(), this.scope())
+      ? buildDependentImport(this.csvRows(), this.mapping(), this.employees(), this.scope(), new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()))
       : [],
   );
 

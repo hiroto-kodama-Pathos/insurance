@@ -74,6 +74,7 @@ export function exemptingLeave<L extends Leave>(leaves: L[], yearMonth: string):
   let shortDays = 0;
   let firstShort: L | null = null;
   for (const l of leaves) {
+    if (!isValidLeave(l)) continue; // 壊れたデータは読み込みで除くが、念のため計算でも使わない（例外で画面が止まらないように）
     const start = monthOf(l.startDate);
     if (yearMonth < start) continue;
     if (l.endDate === null) return l; // まだ終わっていない
@@ -81,11 +82,35 @@ export function exemptingLeave<L extends Leave>(leaves: L[], yearMonth: string):
     if (yearMonth < resume) return l;
     if (l.type === 'childcare' && start === resume && start === yearMonth) {
       const days = parseDate(l.endDate).d - parseDate(l.startDate).d + 1;
-      shortDays += days - (l.workedDays ?? 0);
+      // 就業した日数が休業の日数より多い入力でも、ほかの休業の日数を減らさない（入力のチェックでも止める）
+      shortDays += Math.max(0, days - (l.workedDays ?? 0));
       firstShort ??= l;
     }
   }
   return shortDays >= 14 ? firstShort : null;
+}
+
+const DATE = /^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$/;
+const isDate = (v: unknown): v is string => {
+  if (typeof v !== 'string' || !DATE.test(v)) return false;
+  const { y, m, d } = parseDate(v);
+  return d <= daysInMonth(y, m);
+};
+
+/**
+ * 計算に使える休業のデータか（種類・開始日・終了日・就業日数の形）。
+ * 画面からは入力のチェックとルールで入らないが、壊れたデータ（直接書き込まれたものなど）で計算が止まらないよう、
+ * 読み込むときにこれで分け、壊れたものは計算に使わず詳細とトップに出す（設計書 2.12）
+ */
+export function isValidLeave(l: unknown): l is Leave {
+  if (!l || typeof l !== 'object') return false;
+  const x = l as Record<string, unknown>;
+  if (x['type'] !== 'maternity' && x['type'] !== 'childcare') return false;
+  if (!isDate(x['startDate'])) return false;
+  const end = x['endDate'];
+  if (end !== null && end !== undefined && (!isDate(end) || end < (x['startDate'] as string))) return false;
+  const w = x['workedDays'];
+  return w === null || w === undefined || (typeof w === 'number' && Number.isInteger(w) && w >= 0);
 }
 
 /** 休業の取得者申出書の届出のID（届出の期限の一覧・filings と同じ「従業員ID_leave_開始日」） */

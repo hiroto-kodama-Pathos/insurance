@@ -1,5 +1,5 @@
 import { calcEmployeeMonth, EmployeeData, Masters } from './employee-month';
-import { checkDependent, checkRemoval, dependentOut, dependentReportDeadline, isDependentInMonth, isSpecialInsuredMonth } from './dependent';
+import { checkDependent, checkDependentCareExemption, checkRemoval, dependentOut, dependentReportDeadline, isDependentInMonth, isSpecialInsuredMonth, isValidDependent } from './dependent';
 
 const kumiai = { id: 'k1', type: 'kumiai' as const, name: '〇〇健康保険組合', specialInsuredEnabled: true };
 // 妻：1980年5月10日生まれ（2020年5月に40歳、2045年5月に65歳）
@@ -81,5 +81,56 @@ describe('被扶養者の入力チェック：75歳以上', () => {
   it('扶養に入る日に75歳以上なら登録できない（75歳の誕生日の前日までは登録できる）', () => {
     expect(checkDependent({ name: '父', birthDate: '1951-11-02', certifiedDate: '2026-11-02' }).birthDate).toContain('75歳以上');
     expect(checkDependent({ name: '父', birthDate: '1951-11-02', certifiedDate: '2026-11-01' })).toEqual({});
+  });
+});
+
+describe('被扶養者のありえない入力・壊れたデータ', () => {
+  const T = '2026-11-06';
+  const D = (name: string, birthDate: string, certifiedDate: string) => ({ name, birthDate, certifiedDate });
+  const ctx = {
+    qualifications: [{ acquiredDate: '2024-04-01', lostDate: null }],
+    self: { name: '山田 太郎', birthDate: '1980-05-10' },
+    others: [{ name: '山田 花子', birthDate: '1990-01-01' }],
+  };
+  const dep = { name: '山田 花子', birthDate: '1990-01-01', certifiedDate: '2024-04-01', removedDate: null };
+
+  it('扶養に入った日に本人の資格がない・本人と同じ人・二重登録・1年以上先は止める', () => {
+    expect(checkDependent(D('a', '2010-01-01', '2020-04-01'), T, ctx).certifiedDate).toContain('本人の社会保険の資格がありません');
+    expect(checkDependent(D('山田太郎', '1980-05-10', '2024-04-01'), T, ctx).name).toContain('本人を被扶養者にはできません');
+    expect(checkDependent(D('山田　花子', '1990-01-01', '2025-04-01'), T, ctx).name).toContain('すでに被扶養者として登録されています');
+    expect(checkDependent(D('a', '2010-01-01', '2028-04-01'), T, ctx).certifiedDate).toContain('1年以上先');
+    // 2099年は75歳の文ではなく、年の誤りとして出す
+    const far = checkDependent(D('a', '2010-01-01', '2099-04-01'), T, ctx);
+    expect(far.certifiedDate).toContain('1年以上先');
+    expect(far.birthDate).toBeUndefined();
+    expect(checkDependent(D('山田 一郎', '2015-01-01', '2024-04-01'), T, ctx)).toEqual({});
+  });
+
+  it('外れた日：1年以上先・75歳の誕生日より後は止める（誕生日ちょうどは入れられる）', () => {
+    expect(checkRemoval(dep, '2030-04-01', T).removedDate).toContain('1年以上先');
+    const old = { ...dep, birthDate: '1950-01-01' };
+    expect(checkRemoval(old, '2026-01-01', T).removedDate).toContain('75歳の誕生日（2025年1月1日）に扶養から外れています');
+    expect(checkRemoval(old, '2025-01-01', T)).toEqual({});
+  });
+
+  it('介護保険の適用除外：扶養の期間の中・40〜64歳の月だけ。1年以上先は止める', () => {
+    expect(checkDependentCareExemption(dep, { startDate: '2020-01-01', endDate: '' }, null, T).startDate).toContain('扶養に入った日');
+    expect(checkDependentCareExemption({ ...dep, removedDate: '2025-04-01' }, { startDate: '2026-01-01', endDate: '' }, null, T).startDate).toContain('扶養から外れた日');
+    expect(checkDependentCareExemption({ ...dep, birthDate: '2015-01-01' }, { startDate: '2026-01-01', endDate: '' }, null, T).startDate).toContain('40歳になっていない');
+    expect(checkDependentCareExemption({ ...dep, birthDate: '1955-01-01' }, { startDate: '2026-01-01', endDate: '' }, null, T).startDate).toContain('65歳以上');
+    expect(checkDependentCareExemption({ ...dep, birthDate: '1980-01-01' }, { startDate: '2099-01-01', endDate: '' }, null, T).startDate).toContain('1年以上先');
+    expect(checkDependentCareExemption({ ...dep, birthDate: '1980-01-01' }, { startDate: '2026-01-01', endDate: '' }, null, T)).toEqual({});
+  });
+
+  it('壊れたデータは計算に使うデータとしない。特定被保険者の判定も止まらない', () => {
+    expect(isValidDependent(dep)).toBe(true);
+    expect(isValidDependent({ ...dep, removedDate: '2024-04-01' })).toBe(true); // 資格を失った日に一緒に外れる
+    expect(isValidDependent({ ...dep, certifiedDate: undefined })).toBe(false);
+    expect(isValidDependent({ ...dep, birthDate: undefined })).toBe(false);
+    expect(isValidDependent({ ...dep, name: ' ' })).toBe(false);
+    expect(isValidDependent({ ...dep, removedDate: '2024-01-01' })).toBe(false);
+    expect(isValidDependent({ ...dep, careExemptions: 'x' })).toBe(false);
+    expect(isValidDependent({ ...dep, careExemptions: [{ startDate: '2026-02-30', endDate: null }] })).toBe(false);
+    expect(isSpecialInsuredMonth(kumiai, [{ ...dep, birthDate: undefined as unknown as string }], '2026-05')).toBe(false);
   });
 });

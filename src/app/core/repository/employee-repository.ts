@@ -1,4 +1,6 @@
 // 従業員と、計算に使うサブコレクションの読み込み（設計書 4章 employees）
+import { isValidLeave } from '../calc/eligibility';
+import { isValidDependent } from '../calc/dependent';
 import { Auth } from '../auth/auth';
 import { employeeScopeWhere } from './scope';
 import { Absence, AbsenceInput } from '../calc/absence';
@@ -45,6 +47,10 @@ export type EmployeeRecord = EmployeeData & {
   eligibility?: StoredEligibility | null;
   /** 担当者が「固定的賃金の変動として登録」した変動（設計書 2.13） */
   fixedWageChanges?: ManualWageChange[];
+  /** 壊れた休業のデータの件数（計算には使っていない。トップの「保険料を計算できない人」に出す） */
+  brokenLeaves?: number;
+  /** 壊れた被扶養者のデータの件数（同上） */
+  brokenDependents?: number;
 };
 
 /** 変更の記録（誰が・いつ・何を変えたか。設計書 3.1・4章 changeLogs） */
@@ -61,11 +67,15 @@ export type EmployeeDetail = {
   birthDate: string;
   qualifications: WithId<Qualification & { lostReason: string | null }>[];
   leaves: WithId<Leave>[];
+  /** 壊れた休業のデータ（計算に使わず、削除して登録し直してもらう） */
+  brokenLeaves?: { id: string; text: string }[];
   exemptions: WithId<Exemption>[];
   assignments: WithId<Assignment>[];
   standardHistory: WithId<StandardHistory & { reason: string; remuneration: number | null; remunerationBreakdown?: Record<BreakdownKey, number> | null }>[];
   insuredTypes: WithId<InsuredTypeHistory>[];
   dependents: WithId<Dependent>[];
+  /** 壊れた被扶養者のデータ（計算に使わず、削除して登録し直してもらう） */
+  brokenDependents?: { id: string; text: string }[];
   payrollAssignments: WithId<PayrollAssignment>[];
   absences: WithId<Absence>[];
   eligibility?: StoredEligibility | null;
@@ -389,7 +399,7 @@ export class EmployeeRepository {
     };
     const [qualifications, leaves, exemptions, assignments, standardHistory, insuredTypes, dependents, payrollAssignments, absences] = await Promise.all([
       withId('qualifications', (x) => ({ ...toQualification(x), lostReason: x['lostReason'] ?? null })),
-      withId('leaves', toLeave),
+      (async () => (await getDocs(employeeSubCol(id, 'leaves'))).docs.map((x) => ({ ...x.data(), id: x.id }) as DocumentData))(),
       withId('exemptions', toExemption),
       withId('assignments', toAssignment),
       withId('standardRemunerations', (x) => ({
@@ -399,7 +409,7 @@ export class EmployeeRepository {
         remunerationBreakdown: x['remunerationBreakdown'] ?? null,
       })),
       withId('insuredTypes', toInsuredType),
-      withId('dependents', toDependent),
+      (async () => (await getDocs(employeeSubCol(id, 'dependents'))).docs.map((x) => ({ ...x.data(), id: x.id }) as DocumentData))(),
       withId('payrollAssignments', toPayrollAssignment),
       withId('absences', toAbsence),
     ]);
@@ -409,12 +419,14 @@ export class EmployeeRepository {
       name: d['name'] ?? '',
       birthDate: d['birthDate'],
       qualifications,
-      leaves,
+      leaves: leaves.filter((l) => isValidLeave(toLeave(l))).map((l) => ({ ...toLeave(l), id: l['id'] as string })),
+      brokenLeaves: leaves.filter((l) => !isValidLeave(toLeave(l))).map((l) => ({ id: l['id'] as string, text: brokenLeaveText(l) })),
       exemptions,
       assignments,
       standardHistory,
       insuredTypes,
-      dependents,
+      dependents: dependents.filter((x) => isValidDependent(toDependent(x))).map((x) => ({ ...toDependent(x), id: x['id'] as string })),
+      brokenDependents: dependents.filter((x) => !isValidDependent(toDependent(x))).map((x) => ({ id: x['id'] as string, text: brokenDependentText(x) })),
       payrollAssignments,
       absences,
       eligibility: d['eligibility'] ?? null,
@@ -928,12 +940,16 @@ export class EmployeeRepository {
       name: d['name'] ?? '',
       birthDate: d['birthDate'],
       qualifications,
-      leaves,
+      // 壊れた休業のデータは計算に使わない（計算が止まったり、免除を誤ったりしないように）
+      leaves: leaves.filter(isValidLeave),
+      brokenLeaves: leaves.filter((l) => !isValidLeave(l)).length,
       exemptions,
       assignments,
       standardHistory,
       insuredTypes,
-      dependents,
+      // 壊れた被扶養者のデータも計算に使わない
+      dependents: dependents.filter(isValidDependent),
+      brokenDependents: dependents.filter((x) => !isValidDependent(x)).length,
       payrollAssignments,
       eligibility: d['eligibility'] ?? null,
       fixedWageChanges,
@@ -957,13 +973,21 @@ function toPayrollAssignment(d: DocumentData): PayrollAssignment {
 }
 
 function toDependent(d: DocumentData): Dependent {
+  const ex = d['careExemptions'] ?? [];
   return {
     name: d['name'] ?? '',
     birthDate: d['birthDate'],
     certifiedDate: d['certifiedDate'],
     removedDate: d['removedDate'] ?? null,
-    careExemptions: ((d['careExemptions'] ?? []) as DocumentData[]).map((x) => ({ startDate: x['startDate'], endDate: x['endDate'] ?? null })),
+    // 配列でない（壊れた）ときはそのまま渡し、isValidDependent で壊れたデータとして分ける
+    careExemptions: Array.isArray(ex) ? ex.map((x: DocumentData) => ({ startDate: x?.['startDate'], endDate: x?.['endDate'] ?? null })) : ex,
   };
+}
+
+/** 壊れた被扶養者のデータを、担当者が見て分かる文にする */
+function brokenDependentText(d: DocumentData): string {
+  const v = (x: unknown) => (x === null || x === undefined || x === '' ? '（なし）' : String(x));
+  return `氏名：${v(d['name'])}・生年月日：${v(d['birthDate'])}・扶養に入った日：${v(d['certifiedDate'])}・外れた日：${v(d['removedDate'])}`;
 }
 
 function toInsuredType(d: DocumentData): InsuredTypeHistory {
@@ -986,6 +1010,13 @@ function toLeave(d: DocumentData): Leave {
     endDate: d['endDate'] ?? null,
     workedDays: d['workedDays'] ?? null,
   };
+}
+
+/** 壊れた休業のデータを、担当者が見て分かる文にする */
+function brokenLeaveText(d: DocumentData): string {
+  const v = (x: unknown) => (x === null || x === undefined || x === '' ? '（なし）' : String(x));
+  const type = d['type'] === 'maternity' ? '産前産後休業' : d['type'] === 'childcare' ? '育児休業' : `種類：${v(d['type'])}`;
+  return `${type}・開始日：${v(d['startDate'])}・終了日：${v(d['endDate'])}・就業日数：${v(d['workedDays'])}`;
 }
 
 function toAbsence(d: DocumentData): Absence {

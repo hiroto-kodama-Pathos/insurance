@@ -3,7 +3,7 @@
 // 列の対応づけ（csvMappings.employee・standard・bonus）でCSVの列を合わせ、取り込む前にプレビューで登録する内容とエラー行を確かめる。
 import { BonusType, isRemunerationBonus } from './bonus-type';
 import { parseDateLoose, parseNumberLoose } from './csv';
-import { checkDependent, Dependent } from './dependent';
+import { checkDependent, checkRemoval, Dependent } from './dependent';
 import { parseStandardLoose, parseYearMonthLoose } from './decision-import';
 import { Qualification } from './eligibility';
 import { GradeRow, gradeTableAt, noGradeTableMessage } from './grade-suggest';
@@ -250,6 +250,8 @@ export type DependentImportEmployee = {
   id: string;
   employeeNumber: string;
   name: string;
+  /** 本人の生年月日（本人を被扶養者にする誤りを止める） */
+  birthDate?: string;
   assignments: Assignment[];
   qualifications: Qualification[];
   dependents?: Dependent[];
@@ -264,6 +266,8 @@ export function buildDependentImport(
   m: ColumnMapping,
   employees: DependentImportEmployee[],
   scope: string,
+  /** 今日（'YYYY-MM-DD'）。渡すと、未来の生年月日・1年以上先の日付も止める（詳細の追加と同じ） */
+  today?: string,
 ): ImportRow<DependentToImport>[] {
   const cell = cellReader(rows[0] ?? [], m);
   const seen = new Set<string>();
@@ -287,10 +291,17 @@ export function buildDependentImport(
     const birthDate = date('birthDate', '被扶養者の生年月日', true);
     const certifiedDate = date('certifiedDate', '扶養に入った日', true);
     const removedDate = date('removedDate', '扶養から外れた日', false);
-    const fields = checkDependent({ name, birthDate: birthDate ?? '', certifiedDate: certifiedDate ?? '' });
+    // 詳細の追加と同じチェック（75歳以上・未来の生年月日・1年以上先・本人と同じ人）。日付を読み取れない誤りは上で出しているので重ねない
+    const fields = checkDependent({ name, birthDate: birthDate ?? '', certifiedDate: certifiedDate ?? '' }, today, {
+      self: emp?.birthDate ? { name: emp.name, birthDate: emp.birthDate } : undefined,
+    });
     if (fields.name) errors.push(fields.name);
-    if (birthDate && certifiedDate && fields.certifiedDate) errors.push(fields.certifiedDate);
-    if (certifiedDate && removedDate && removedDate <= certifiedDate) errors.push('扶養から外れた日は、扶養に入った日より後の日にしてください');
+    if (birthDate && isValidDate(birthDate) && fields.birthDate) errors.push(fields.birthDate);
+    if (birthDate && certifiedDate && isValidDate(certifiedDate) && fields.certifiedDate) errors.push(fields.certifiedDate);
+    if (birthDate && certifiedDate && removedDate && isValidDate(removedDate)) {
+      const r = checkRemoval({ name, birthDate, certifiedDate, removedDate: null }, removedDate, today);
+      if (r.removedDate) errors.push(r.removedDate);
+    }
     if (emp && certifiedDate && !emp.qualifications.some((q) => q.acquiredDate <= certifiedDate && (q.lostDate === null || q.lostDate > certifiedDate)))
       errors.push(`扶養に入った日（${dateLabel(certifiedDate)}）に、本人の社会保険の資格がありません`);
     if (emp && name && birthDate) {
