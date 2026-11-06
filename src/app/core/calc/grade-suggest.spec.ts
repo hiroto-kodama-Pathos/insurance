@@ -71,9 +71,13 @@ describe('標準報酬月額が等級の額かのチェック', () => {
     expect(standardGradeError(grades, '2026-10', 'pension', 58_000)).toContain('8.8万円（1等級）');
   });
 
-  it('その月の等級表がなければ確かめない。適用開始月で表を選ぶ', () => {
-    expect(standardGradeError([], '2026-10', 'health', 299_000)).toBeNull();
-    expect(standardGradeError(grades, '2019-10', 'health', 299_000)).toBeNull();
+  it('その月に使える等級表がない（マスタの不足・読み込めなかった）ときは、確かめずに通さず、登録できない文を返す。適用開始月で表を選ぶ', () => {
+    // 等級表を読み込めなかった（空）：等級の額でも通さない
+    expect(standardGradeError([], '2026-10', 'health', 300_000)).toContain('2026年10月に使える等級表が登録されていないため、登録できません');
+    // 等級表より前の月（等級表は2020年9月から）
+    expect(standardGradeError(grades, '2019-10', 'health', 300_000)).toContain('2019年10月に使える等級表が登録されていない');
+    // null は確かめない（等級表を使わない呼び出し）
+    expect(standardGradeError(null, '2026-10', 'health', 299_000)).toBeNull();
     expect(gradeTableAt(grades, '2026-10').length).toBe(50);
   });
 });

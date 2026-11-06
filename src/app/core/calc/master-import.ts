@@ -6,7 +6,7 @@ import { parseDateLoose, parseNumberLoose } from './csv';
 import { checkDependent, Dependent } from './dependent';
 import { parseStandardLoose, parseYearMonthLoose } from './decision-import';
 import { Qualification } from './eligibility';
-import { GradeRow, gradeTableAt } from './grade-suggest';
+import { GradeRow, gradeTableAt, noGradeTableMessage } from './grade-suggest';
 import { INSURED_TYPE_LABEL, InsuredType } from './insured-type';
 import { isValidDate } from './new-employee';
 import { Assignment } from './office';
@@ -365,6 +365,8 @@ export function buildStandardImport(
     const table = validFrom ? gradesAt(grades, validFrom) : [];
     const health = parseStandardLoose(cell(r, 'healthStandard'));
     const pensionRaw = parseStandardLoose(cell(r, 'pensionStandard'));
+    // その月に使える等級表がなければ、等級の額か確かめられないので取り込まない（2026-11-06）
+    if (validFrom && table.length === 0) errors.push(noGradeTableMessage(validFrom));
     if (health === null || Number.isNaN(health)) errors.push('健康保険の標準報酬月額を読み取れません');
     else if (table.length > 0 && !table.some((g) => g.standardAmount === health))
       errors.push(`健康保険の標準報酬月額 ${yen(health)}円は等級表にありません`);

@@ -5,6 +5,7 @@ import { CompanySettings, DEFAULT_SETTINGS } from '../../core/calc/settings';
 import { MasterRepository } from '../../core/repository/master-repository';
 import { RateRecord, SettingsRepository } from '../../core/repository/settings-repository';
 import { Settings } from './settings';
+import { ClosingRepository } from '../../core/repository/closing-repository';
 import { EmployeeRepository } from '../../core/repository/employee-repository';
 import { Confirm } from '../../core/ui/confirm';
 
@@ -36,6 +37,8 @@ describe('Settings', () => {
   let confirmAnswer: boolean;
   let bonusTypeUsed: Set<string>;
   let assignments: { officeId: string; groupId: string | null }[];
+  /** 確定済みの月（事業所ID → 月の並び） */
+  let closed: Record<string, string[]>;
   // 支払区分・賞与の種類（削除のテストだけ登録あり。ほかのテストは未登録の会社）
   let groups: unknown[];
   let types: unknown[];
@@ -45,6 +48,7 @@ describe('Settings', () => {
     confirmAnswer = true;
     bonusTypeUsed = new Set();
     assignments = [];
+    closed = {};
     groups = [];
     types = [];
     const record = (name: string) => async (...args: unknown[]) => {
@@ -65,9 +69,11 @@ describe('Settings', () => {
             ],
           },
         },
+        { provide: ClosingRepository, useValue: { closedMonthsOf: async (id: string) => closed[id] ?? [] } },
         {
           provide: EmployeeRepository,
           useValue: {
+            clearCache: () => undefined,
             loadAll: async () =>
               assignments.map((a, i) => ({
                 id: `e${i}`, employeeNumber: `${i}`, name: '', birthDate: '1990-01-01',
@@ -252,6 +258,82 @@ describe('Settings', () => {
     ]);
   });
 
+  describe('使用中の適用事業所の保険者・都道府県', () => {
+    const editOffice = async (name: string) => {
+      const row = [...el().querySelectorAll('table.offices tbody tr')].find((r) => r.textContent!.includes(name))!;
+      ([...row.querySelectorAll('button')].find((b) => b.textContent!.trim() === '変更') as HTMLButtonElement).click();
+      fixture.detectChanges();
+      // 使われているかを確かめ終わるのを待つ
+      await new Promise((r) => setTimeout(r));
+      await fixture.whenStable();
+      fixture.detectChanges();
+    };
+    const sel = (name: string) => el().querySelector(`select[name=${name}]`) as HTMLSelectElement;
+
+    it('従業員が所属した事業所は、保険者・都道府県を変えられない（事業所名は変えられる）', async () => {
+      assignments = [{ officeId: 'honsha', groupId: null }];
+      await editOffice('本社');
+      expect(sel('officeInsurer').disabled).toBe(true);
+      expect(sel('officePrefecture').disabled).toBe(true);
+      expect(el().querySelector('.office-lock')!.textContent).toContain('使用中（従業員1人が所属（過去の所属を含む））');
+      type('事業所名', '東京本社');
+      await submit(form());
+      expect(calls[0][0]).toBe('saveOffice');
+      expect(calls[0][2]).toMatchObject({ name: '東京本社', prefecture: '東京都', insurerId: 'kyokai' });
+    });
+
+    it('画面の制限を越えて保険者・都道府県を変えて保存しようとしても、保存の前に確かめて止める', async () => {
+      closed = { honsha: ['2026-10'] };
+      await editOffice('本社');
+      const c = fixture.componentInstance as unknown as { setOffice(k: string, v: string): void };
+      c.setOffice('prefecture', '大阪府');
+      await submit(form());
+      expect(calls).toEqual([]);
+      expect(el().textContent).toContain('この事業所は使用中（確定済みの月1か月）なので、保険者・都道府県は変えられません');
+    });
+
+    it('使われていない事業所（追加を間違えたなど）は、保険者・都道府県も直せる', async () => {
+      await editOffice('大阪支店');
+      expect(sel('officeInsurer').disabled).toBe(false);
+      expect(el().querySelector('.office-lock')).toBeNull();
+      type('都道府県', '兵庫県');
+      await submit(form());
+      expect(calls[0][2]).toMatchObject({ prefecture: '兵庫県' });
+    });
+  });
+
+  it('追加・変更のフォーム：入力を変えたあとの「やめる」・別のフォームを開くときは確かめ、「キャンセル」なら入力を残す', async () => {
+    const c = fixture.componentInstance as unknown as { mode(): { kind: string } | null; officeForm(): { name: string } };
+    button('適用事業所を追加').click();
+    fixture.detectChanges();
+    // 変えていなければ、確かめずに閉じる
+    confirmAnswer = false;
+    button('やめる').click();
+    await fixture.whenStable();
+    expect(c.mode()).toBeNull();
+
+    button('適用事業所を追加').click();
+    fixture.detectChanges();
+    await fixture.whenStable(); // 開いたときの値を覚えるのを待つ
+    type('事業所名', '名古屋営業所');
+    expect(unsaved()).toBe(1);
+    // 「キャンセル」：閉じずに入力を残す
+    button('やめる').click();
+    await fixture.whenStable();
+    expect(c.mode()?.kind).toBe('office');
+    expect(c.officeForm().name).toBe('名古屋営業所');
+    // 別のフォーム（支払区分を追加）を開こうとしても確かめる
+    button('支払区分を追加')?.click();
+    await fixture.whenStable();
+    expect(c.mode()?.kind).toBe('office');
+    // 「破棄して閉じる」なら閉じる
+    confirmAnswer = true;
+    button('やめる').click();
+    await fixture.whenStable();
+    expect(c.mode()).toBeNull();
+    expect(unsaved()).toBe(0);
+  });
+
   it('健康保険組合を追加するときに、料率も一緒に登録する（健康保険は必須、空欄の保険は知らせる）', async () => {
     button('健康保険組合を追加').click();
     fixture.detectChanges();
@@ -333,6 +415,25 @@ describe('Settings', () => {
       expect(notice()).toBe('賞与の種類「夏季賞与」は使用中なので、削除できません（この種類の賞与が登録されています）。');
       await del('table.offices', '大阪支店');
       expect(notice()).toContain('適用事業所「大阪支店」は使用中なので、削除できません');
+      expect(deletes()).toEqual([]);
+    });
+
+    it('組合健保の料率の削除：確認に、影響する期間と、削除したあとの計算を出す', async () => {
+      const ask = vi.spyOn(TestBed.inject(Confirm), 'ask').mockResolvedValue(false);
+      const row = [...el().querySelectorAll('h3 + .table-wrap table tbody tr')].find((r) => r.textContent!.includes('2026年3月'))!;
+      ([...row.querySelectorAll('button')].find((b) => b.textContent!.trim() === '削除') as HTMLButtonElement).click();
+      await new Promise((r) => setTimeout(r));
+      await fixture.whenStable();
+      const msg = ask.mock.calls[0][0].message;
+      expect(msg).toContain('影響する期間：2026年3月分から今後ずっと。');
+      expect(msg).toContain('この組合を保険者にしている適用事業所はないので、保険料の計算は変わりません');
+      expect(deletes()).toEqual([]);
+    });
+
+    it('所属した従業員がいなくても、確定済みの月がある事業所は削除しない（確定の記録が指しているため）', async () => {
+      closed = { osaka: ['2026-09', '2026-10'] };
+      await del('table.offices', '大阪支店');
+      expect(notice()).toBe('適用事業所「大阪支店」は使用中なので、削除できません（確定済みの月（2か月）の結果に使われています）。');
       expect(deletes()).toEqual([]);
     });
 

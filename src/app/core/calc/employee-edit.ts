@@ -112,9 +112,9 @@ export type StandardInput = {
 
 /**
  * 標準報酬月額の履歴の追加・訂正・異動
- * @param grades 等級表（額が適用開始月の等級の額かを確かめる。空なら確かめない）
+ * @param grades 等級表（額が適用開始月の等級の額かを確かめる。その月の表がなければ登録できない。null なら確かめない）
  */
-export function checkStandard(existingMonths: string[], input: StandardInput, grades: GradeRow[] = []): Errors {
+export function checkStandard(existingMonths: string[], input: StandardInput, grades: GradeRow[] | null = null): Errors {
   const errors: Errors = {};
   if (!isValidMonth(input.validFrom)) errors['validFrom'] = '適用開始月を正しく入力してください';
   else if (existingMonths.includes(input.validFrom))

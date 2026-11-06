@@ -2,7 +2,7 @@
 // 画面（コンポーネント）が HasUnsavedChanges を持っていれば、ルートの canDeactivate でこの確認を出す。
 import { inject, signal } from '@angular/core';
 import { CanDeactivateFn } from '@angular/router';
-import { Confirm } from './confirm';
+import { Confirm, ConfirmRequest } from './confirm';
 
 export interface HasUnsavedChanges {
   /** 保存していない入力の件数（0 なら確認しない） */
@@ -20,6 +20,38 @@ export const unsavedChangesGuard: CanDeactivateFn<HasUnsavedChanges> = (componen
     danger: true,
   });
 };
+
+/** フォームを閉じる（「やめる」・別のフォームを開く・月を変える）前の確認 */
+export const DISCARD_REQUEST: ConfirmRequest = {
+  title: '保存していない入力があります',
+  message: '入力した内容は保存されていません。破棄して閉じますか。',
+  ok: '破棄して閉じる',
+  cancel: '入力に戻る',
+  danger: true,
+};
+
+/**
+ * フォームを閉じる前に、変えた入力を捨ててよいかを確かめる（設計書 3.0）。
+ * 入力を変えていなければ確かめずに true。画面を移るとき（unsavedChangesGuard）だけでなく、
+ * 「やめる」や別のフォームを開くときにも、同じ基準（開いたときの値から変えたか）で確かめる
+ */
+export async function confirmDiscard(confirm: Confirm, changed: boolean): Promise<boolean> {
+  return !changed || confirm.ask(DISCARD_REQUEST);
+}
+
+/**
+ * 入力を変えていなければすぐ（同期で）action を行い、変えていれば破棄してよいかを確かめてから行う。
+ * 開く・閉じるボタンは、確かめる必要がなければ押したその場でフォームが変わるようにする
+ */
+export function afterDiscardCheck(confirm: Confirm, changed: boolean, action: () => void): void | Promise<void> {
+  if (!changed) {
+    action();
+    return;
+  }
+  return confirm.ask(DISCARD_REQUEST).then((ok) => {
+    if (ok) action();
+  });
+}
 
 /**
  * フォームを開いたときの入力を覚えておき、そのあと変えたかを見る（保存していない入力の確認に使う）

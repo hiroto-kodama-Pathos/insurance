@@ -14,7 +14,7 @@
 
     <div class="filters">
       <label>保険料の月
-        <input type="month" name="yearMonth" [value]="yearMonth()" (change)="setMonth($any($event.target).value)" />
+        <input type="month" name="yearMonth" [value]="yearMonth()" (change)="setMonth($any($event.target).value, $any($event.target))" />
       </label>
     </div>
     @if (error()) {

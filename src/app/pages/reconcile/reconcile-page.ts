@@ -5,7 +5,7 @@ import { RouterLink } from '@angular/router';
 import { Confirm } from '../../core/ui/confirm';
 import { NoticeMessage } from '../../core/ui/notice-message';
 import { Component, computed, HostListener, inject, OnInit, signal } from '@angular/core';
-import { FormSnapshot, HasUnsavedChanges } from '../../core/ui/unsaved-guard';
+import { afterDiscardCheck, confirmDiscard, FormSnapshot, HasUnsavedChanges } from '../../core/ui/unsaved-guard';
 import { Auth } from '../../core/auth/auth';
 import { BonusRecord, calcEmployeeBonuses, fiscalYearOf } from '../../core/calc/bonus-premium';
 import { bonusAsMonthResult, mergeBonusesWithClosings, mergeWithClosings, OfficeClosing } from '../../core/calc/closing';
@@ -263,10 +263,15 @@ export class ReconcilePage implements OnInit, HasUnsavedChanges {
     this.deductions.set(deductions);
   }
 
-  protected async setMonth(value: string): Promise<void> {
+  protected async setMonth(value: string, input?: HTMLInputElement): Promise<void> {
     if (!/^\d{4}-\d{2}$/.test(value)) return;
+    // 納付書・控除額の入力を変えたまま月を変えると、入力が消える
+    if (!(await confirmDiscard(this.confirm, this.unsavedCount() > 0))) {
+      if (input) input.value = this.yearMonth(); // 選んだ月を元に戻す
+      return;
+    }
     this.yearMonth.set(value);
-    this.cancelEdit();
+    this.resetEdit();
     this.preview.set(null);
     this.notice.set(null);
     await this.loadMonth();
@@ -278,7 +283,10 @@ export class ReconcilePage implements OnInit, HasUnsavedChanges {
   protected readonly noticeDraft = signal<Record<string, string>>({});
   protected readonly draftError = signal<string | null>(null);
 
-  protected editNotice(officeId: string): void {
+  protected editNotice(officeId: string): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.unsavedCount() > 0, () => this.editNoticeNow(officeId));
+  }
+  private editNoticeNow(officeId: string): void {
     const cur = this.notices().get(officeId);
     this.editingEmployee.set(null);
     this.editingOffice.set(officeId);
@@ -325,7 +333,7 @@ export class ReconcilePage implements OnInit, HasUnsavedChanges {
     await this.save(async () => {
       await this.reconcileRepo.saveNotice(this.yearMonth(), officeId, lines);
       this.notices.update((m) => new Map(m).set(officeId, lines));
-      this.cancelEdit();
+      this.resetEdit();
       this.notice.set('納付書の金額を保存しました');
     });
   }
@@ -348,7 +356,10 @@ export class ReconcilePage implements OnInit, HasUnsavedChanges {
 
   protected readonly editingEmployee = signal<string | null>(null);
 
-  protected editDeduction(employeeId: string): void {
+  protected editDeduction(employeeId: string): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.unsavedCount() > 0, () => this.editDeductionNow(employeeId));
+  }
+  private editDeductionNow(employeeId: string): void {
     const cur = this.deductions().get(employeeId);
     this.editingOffice.set(null);
     this.editingEmployee.set(employeeId);
@@ -368,7 +379,7 @@ export class ReconcilePage implements OnInit, HasUnsavedChanges {
     await this.save(async () => {
       await this.reconcileRepo.saveDeductions(this.yearMonth(), [{ employeeId, officeId: this.officeOf(employeeId), amounts }]);
       this.deductions.update((m) => new Map(m).set(employeeId, amounts));
-      this.cancelEdit();
+      this.resetEdit();
       this.notice.set('給与の控除額を保存しました');
     });
   }
@@ -392,7 +403,13 @@ export class ReconcilePage implements OnInit, HasUnsavedChanges {
     return this.deductionRows().find((r) => r.employeeId === employeeId)?.officeId ?? '';
   }
 
-  protected cancelEdit(): void {
+  /** 「やめる」：金額を変えていれば、破棄してよいかを確かめてから閉じる */
+  protected cancelEdit(): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.unsavedCount() > 0, () => this.resetEdit());
+  }
+
+  /** 納付書・控除額の入力を閉じる（確かめずに。保存のあと・月を変えたときに使う） */
+  private resetEdit(): void {
     this.editingOffice.set(null);
     this.editingEmployee.set(null);
     this.draftError.set(null);

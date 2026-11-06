@@ -40,6 +40,8 @@ describe('RevisionList', () => {
           provide: EmployeeRepository,
           useValue: {
             loadAll: async () => [employee],
+            // 本物は、登録と変更の記録を同じ書き込みで残す
+            withLog: async (_id: string, _text: string, action: () => Promise<unknown>) => { await action(); return true; },
             addStandard: async (_id: string, input: { validFrom: string; healthStandard: number; pensionStandard: number }, rem: number) => {
               added.push({ ...input, remuneration: rem });
               employee = { ...employee, standardHistory: [...employee.standardHistory, input] };

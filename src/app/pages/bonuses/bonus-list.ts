@@ -12,7 +12,7 @@ import { bonusExemptingLeave } from '../../core/calc/bonus-premium';
 import { FilingRepository } from '../../core/repository/filing-repository';
 import { isValidDate } from '../../core/calc/new-employee';
 import { Component, computed, HostListener, inject, OnInit, signal, ElementRef } from '@angular/core';
-import { HasUnsavedChanges } from '../../core/ui/unsaved-guard';
+import { afterDiscardCheck, FormSnapshot, HasUnsavedChanges } from '../../core/ui/unsaved-guard';
 import { BonusErrors, BonusInput, bonusReportAmounts, validateBonus } from '../../core/calc/bonus-input';
 import { isPensionAge } from '../../core/calc/age';
 import { BonusType, fourthBonusWarning, isRemunerationBonus } from '../../core/calc/bonus-type';
@@ -102,11 +102,16 @@ export class BonusList implements OnInit, HasUnsavedChanges {
 
   // 登録フォーム
   protected readonly form = signal<BonusInput>({ employeeId: '', paidDate: '', amount: null, inKindAmount: null, bonusTypeId: '' });
+  /** 「直す」で開いたときの入力（直したかどうかを見る） */
+  private readonly editSnapshot = new FormSnapshot(() => this.form());
   /**
-   * 画面を移る前の確認に使う（unsavedChangesGuard）。従業員・支給額・現物のどれかを入れていれば1件
-   * 支給日・賞与の種類は、続けて登録しやすいよう登録のあとも残すので、数えない
+   * 画面を移る前・「やめる」の確認に使う（unsavedChangesGuard）。保存していない入力があれば1件
+   * - 直している賞与：開いたときの値から変えたときだけ（開いただけ・何も変えていなければ数えない）
+   * - 新しく登録する賞与：従業員・支給額・現物のどれかを入れていれば。支給日・賞与の種類は、続けて登録しやすいよう
+   *   登録のあとも残すので、数えない
    */
   unsavedCount(): number {
+    if (this.editingId() !== null) return this.editSnapshot.changed() ? 1 : 0;
     const f = this.form();
     return f.employeeId !== '' || f.amount !== null || f.inKindAmount !== null ? 1 : 0;
   }
@@ -147,17 +152,28 @@ export class BonusList implements OnInit, HasUnsavedChanges {
   private editingBonus: { yearMonth: string; officeId: string; totalAmount: number | null } | null = null;
 
   /** 一覧の賞与を、登録のフォームに入れて直す */
-  protected startEdit(row: BonusRow): void {
+  protected startEdit(row: BonusRow): void | Promise<void> {
+    // 入力中の登録・ほかの賞与の直しがあれば、置き換える前に確かめる
+    return afterDiscardCheck(this.confirm, this.unsavedCount() > 0, () => this.startEditNow(row));
+  }
+  private startEditNow(row: BonusRow): void {
     const b = row.result.bonus;
     this.editingId.set(b.id);
     this.editingBonus = { yearMonth: b.paidDate.slice(0, 7), officeId: row.result.officeId ?? '', totalAmount: b.totalAmount ?? null };
     this.employeeQuery.set('');
     this.errors.set({});
     this.form.set({ employeeId: b.employeeId, paidDate: b.paidDate, amount: b.amount, inKindAmount: b.inKindAmount ?? null, bonusTypeId: b.bonusTypeId ?? '' });
+    this.editSnapshot.takeNow();
     focusFormSoon('app-bonus-list');
   }
 
-  protected cancelEdit(): void {
+  /** 「やめる」：直した入力があれば、破棄してよいかを確かめてから、登録のフォームに戻す */
+  protected cancelEdit(): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.unsavedCount() > 0, () => this.resetEdit());
+  }
+
+  /** 直すのをやめて、登録のフォームを空に戻す（支給日は続けて登録しやすいよう残す） */
+  private resetEdit(): void {
     this.editingId.set(null);
     this.editingBonus = null;
     this.errors.set({});
@@ -446,7 +462,7 @@ export class BonusList implements OnInit, HasUnsavedChanges {
         await this.loadBonuses(true);
         const name = this.employees().find((e) => e.id === f.employeeId)?.name ?? '';
         this.notice.set(`${name}さんの賞与を直しました（${dateLabel(f.paidDate)}支給・${f.amount!.toLocaleString('ja-JP')}円）。賞与支払届を届け出たあとなら、訂正の届出も確かめてください。`);
-        this.cancelEdit();
+        this.resetEdit();
         return;
       }
       await this.bonusRepo.add(

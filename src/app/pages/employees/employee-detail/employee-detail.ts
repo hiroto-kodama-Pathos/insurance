@@ -44,7 +44,7 @@ import {
   ExemptionType,
 } from '../../../core/calc/exemption';
 import { Component, computed, HostListener, inject, OnInit, signal } from '@angular/core';
-import { FormSnapshot, HasUnsavedChanges } from '../../../core/ui/unsaved-guard';
+import { afterDiscardCheck, FormSnapshot, HasUnsavedChanges } from '../../../core/ui/unsaved-guard';
 import { ActivatedRoute, Router, RouterLink } from '@angular/router';
 import { Auth } from '../../../core/auth/auth';
 import { MaintenanceRepository } from '../../../core/repository/maintenance-repository';
@@ -68,7 +68,7 @@ import {
 import { calcEmployeeMonth, EmployeeMonthResult, findEffective, Masters } from '../../../core/calc/employee-month';
 import { GradeRow, standardGradeError, suggestStandards } from '../../../core/calc/grade-suggest';
 import { senToDisplayYen } from '../../../core/calc/premium-calculator';
-import { ChangeLog, EmployeeDetail as Detail, EmployeeRepository } from '../../../core/repository/employee-repository';
+import { ChangeLog, EmployeeDetail as Detail, EmployeeNumberTakenError, EmployeeRepository } from '../../../core/repository/employee-repository';
 import { MasterRepository } from '../../../core/repository/master-repository';
 import { NgTemplateOutlet } from '@angular/common';
 import { SettingsRepository } from '../../../core/repository/settings-repository';
@@ -170,6 +170,9 @@ function addMonths(ym: string, n: number): string {
 
 /** 金額の欄を読む（全角でもよい） */
 const toAmount = (value: string): number | null => parseNumberInput(value);
+
+/** 変更は保存できたが、変更の記録だけを残せなかったときに知らせに添える文 */
+const LOG_FAILED = '（ただし、変更の記録を残せませんでした。「変更の記録」の欄には出ないので、誰がいつ何を変えたかを別に控えてください）';
 
 @Component({
   imports: [RouterLink, NgTemplateOutlet, NoticeMessage, YearMonthPipe, DateLabelPipe],
@@ -371,9 +374,9 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     if (!d) return;
     this.saving.set(true);
     try {
-      await this.repo.setRefundStatus(d.id, qualificationId, status);
-      this.notice.set(`還付の状態を「${REFUND_LABEL[status]}」にしました。`);
-      await this.logChange(`同月得喪の還付の状態を「${REFUND_LABEL[status]}」にしました。`);
+      const text = `同月得喪の還付の状態を「${REFUND_LABEL[status]}」にしました。`;
+      const logged = await this.repo.withLog(d.id, text, () => this.repo.setRefundStatus(d.id, qualificationId, status));
+      this.notice.set(`還付の状態を「${REFUND_LABEL[status]}」にしました。${logged ? '' : LOG_FAILED}`);
       await this.reload();
     } catch (e) {
       console.error(e);
@@ -468,9 +471,12 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       if (detail) {
         try {
           this.changeLogs.set(await this.repo.loadChangeLogs(detail.id));
+          this.changeLogsFailed.set(false);
         } catch (e) {
+          // 読み込めなかったときは「記録はありません」と出さず、読み込めなかったことを出す（記録がないように見えないように）
           console.error(e);
           this.changeLogs.set([]);
+          this.changeLogsFailed.set(true);
         }
       }
       this.grades.set(grades);
@@ -528,9 +534,12 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   private readonly confirmId = signal<string | null>(null);
   protected readonly confirmTarget = computed(() => this.detail()?.standardHistory.find((s) => s.id === this.confirmId()) ?? null);
 
-  protected openConfirm(id: string): void {
+  protected openConfirm(id: string): void | Promise<void> {
+    return this.guard(() => this.openConfirmNow(id));
+  }
+  private openConfirmNow(id: string): void {
     this.confirmId.set(id);
-    this.open('confirmStandard');
+    this.openNow('confirmStandard');
     const t = this.confirmTarget();
     if (t) this.standardForm.set({ validFrom: t.validFrom, reason: 'revision', healthStandard: t.healthStandard, pensionStandard: t.pensionStandard });
   }
@@ -555,7 +564,21 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   }
 
   // ---- 入力 ----
-  protected open(mode: Exclude<Mode, null>): void {
+  /**
+   * 開いているフォームを閉じてよいか（入力を変えていれば、破棄してよいかを確かめる。設計書 3.0）。
+   * 「やめる」と、別のフォームを開くとき（開くと今の入力が置き換わる）に使う
+   */
+  private guard(action: () => void): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.unsavedCount() > 0, action);
+  }
+
+  /** フォームを開く（入力中のフォームがあれば、先に確かめる） */
+  protected open(mode: Exclude<Mode, null>): void | Promise<void> {
+    return this.guard(() => this.openNow(mode));
+  }
+
+  /** フォームを開く（確かめずに。確かめたあとや、保存のすぐあとに使う） */
+  private openNow(mode: Exclude<Mode, null>): void {
     this.errors.set({});
     this.editingId.set(null);
     this.notice.set(null);
@@ -620,23 +643,32 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     return out && out.date <= today() ? out : null;
   }
 
-  protected openDependentRemove(id: string): void {
-    this.open('dependentRemove');
+  protected openDependentRemove(id: string): void | Promise<void> {
+    return this.guard(() => this.openDependentRemoveNow(id));
+  }
+  private openDependentRemoveNow(id: string): void {
+    this.openNow('dependentRemove');
     this.editingDependentId.set(id);
   }
 
   /** 被扶養者の介護保険の適用除外を足す */
-  protected openDependentExemption(id: string): void {
-    this.open('dependentExemption');
+  protected openDependentExemption(id: string): void | Promise<void> {
+    return this.guard(() => this.openDependentExemptionNow(id));
+  }
+  private openDependentExemptionNow(id: string): void {
+    this.openNow('dependentExemption');
     this.editingDependentId.set(id);
     this.depExemptionForm.set({ startDate: '', endDate: '' });
   }
 
   /** 該当中の期間に、非該当年月日を入れる */
-  protected openDependentExemptionEnd(id: string, index: number): void {
+  protected openDependentExemptionEnd(id: string, index: number): void | Promise<void> {
+    return this.guard(() => this.openDependentExemptionEndNow(id, index));
+  }
+  private openDependentExemptionEndNow(id: string, index: number): void {
     const x = this.detail()?.dependents.find((d) => d.id === id)?.careExemptions?.[index];
     if (!x) return;
-    this.open('dependentExemptionEnd');
+    this.openNow('dependentExemptionEnd');
     this.editingDependentId.set(id);
     this.editingDepExemptionIndex.set(index);
     this.depExemptionForm.set({ startDate: x.startDate, endDate: '' });
@@ -655,10 +687,13 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   }
 
   /** 適用除外の非該当年月日を入れる */
-  protected openExemptionEnd(id: string): void {
+  protected openExemptionEnd(id: string): void | Promise<void> {
+    return this.guard(() => this.openExemptionEndNow(id));
+  }
+  private openExemptionEndNow(id: string): void {
     const x = this.detail()?.exemptions.find((e) => e.id === id);
     if (!x) return;
-    this.open('exemptionEnd');
+    this.openNow('exemptionEnd');
     this.editingExemptionId.set(id);
     this.exemptionForm.set({ type: x.type, startDate: x.startDate, endDate: x.endDate ?? '' });
   }
@@ -667,8 +702,9 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     this.exemptionForm.update((f) => ({ ...f, [key]: value }));
   }
 
-  protected cancel(): void {
-    this.mode.set(null);
+  /** 「やめる」：入力を変えていれば、破棄してよいかを確かめてから閉じる */
+  protected cancel(): void | Promise<void> {
+    return this.guard(() => this.mode.set(null));
   }
 
   // ---- 加入対象の判定の情報の更新（契約が変わったとき。設計書 2.24・3.1） ----
@@ -692,10 +728,13 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   }
 
   /** 契約が変わったときに、加入対象の判定の情報を入れ直す（今の値を入れて開く） */
-  protected async openEligibility(): Promise<void> {
+  protected openEligibility(): void | Promise<void> {
+    return this.guard(() => void this.openEligibilityNow());
+  }
+  private async openEligibilityNow(): Promise<void> {
     const d = this.detail();
     if (!d) return;
-    this.openEdit('eligibility');
+    if (!this.openEditNow('eligibility')) return;
     const el = d.eligibility;
     this.eligForm.set(el ? {
       employmentType: el.employmentType, weeklyHours: el.weeklyHours, monthlyDays: el.monthlyDays,
@@ -727,10 +766,13 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   }
 
   /** 登録した履歴を直す入力を開く（今の値を入れておく） */
-  protected openEdit(kind: EditKind, id: string | null = null): void {
+  protected openEdit(kind: EditKind, id: string | null = null): void | Promise<void> {
+    return this.guard(() => void this.openEditNow(kind, id));
+  }
+  private openEditNow(kind: EditKind, id: string | null = null): boolean {
     const d = this.detail();
-    if (!d) return;
-    this.open(kind);
+    if (!d) return false;
+    this.openNow(kind);
     this.editingId.set(id);
     if (kind === 'birthDate') this.date.set(d.birthDate);
     if (kind === 'qualificationEdit') {
@@ -786,19 +828,25 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     }
     // 開いた時点の値を「変更なし」とする（やめる・画面を移るときの確認に使う）
     this.snapshot.take();
+    return true;
   }
 
   // ---- 変更の記録（設計書 3.1） ----
   protected readonly changeLogs = signal<ChangeLog[]>([]);
 
-  /** 変更の記録を残す。残せなくても、保存した内容はそのまま（知らせを出さず、コンソールに出す） */
-  private async logChange(text: string): Promise<void> {
+  /** 変更の記録を読み込めなかった（「記録はありません」と区別して、読み込み直せるようにする） */
+  protected readonly changeLogsFailed = signal(false);
+
+  /** 変更の記録だけを読み込み直す */
+  protected async reloadChangeLogs(): Promise<void> {
     const d = this.detail();
     if (!d) return;
     try {
-      await this.repo.addChangeLog(d.id, text);
+      this.changeLogs.set(await this.repo.loadChangeLogs(d.id));
+      this.changeLogsFailed.set(false);
     } catch (e) {
-      console.error('変更の記録を残せませんでした', e);
+      console.error(e);
+      this.changeLogsFailed.set(true);
     }
   }
 
@@ -902,7 +950,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     if (!ok) return;
     this.saving.set(true);
     try {
-      switch (kind) {
+      const remove = async () => { switch (kind) {
         case 'qualification': await this.repo.deleteQualification(d.id, id); break;
         case 'standard': await this.repo.deleteStandard(d.id, id); break;
         case 'dependent': await this.repo.deleteDependent(d.id, id); break;
@@ -912,10 +960,11 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
         case 'leave': await this.repo.deleteLeave(d.id, id); break;
         case 'absence': await this.repo.deleteAbsence(d.id, id); break;
         case 'exemption': await this.repo.deleteExemption(d.id, id); break;
-      }
+      } };
+      // 削除と、その変更の記録を同じ書き込みで残す
+      const logged = await this.repo.withLog(d.id, `${t.label}を削除`, remove);
       this.mode.set(null);
-      this.notice.set(`${t.label}を削除しました。`);
-      await this.logChange(`${t.label}を削除`);
+      this.notice.set(`${t.label}を削除しました。${logged ? '' : LOG_FAILED}`);
       await this.reload();
     } catch (e) {
       console.error(e);
@@ -1130,7 +1179,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const others = this.otherNumbers();
       const r = checkNumberChange(before, this.numberForm(), others ?? []);
       errors = others === null ? { employeeNumber: 'ほかの従業員の社員番号を読み込んでいます。少し待ってから、もう一度保存してください' } : r.errors;
-      action = () => this.repo.updateEmployeeNumber(d.id, r.number);
+      action = () => this.repo.updateEmployeeNumber(d.id, r.number, before);
       message = `社員番号を「${before}」から「${r.number}」に変えました。給与ソフトのCSVを取り込むときは、新しい社員番号で照らし合わせます。`;
     } else if (mode === 'dependent') {
       const f = this.dependentForm();
@@ -1220,17 +1269,21 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     const before = this.beforeLabel(mode);
     this.saving.set(true);
     try {
-      await action();
+      // 登録・訂正と、その変更の記録（直す前の値つき）を同じ書き込みで残す
+      const logged = await this.repo.withLog(d.id, before ? `${message}（直す前：${before}）` : message, action);
       const again = this.continueAfterSave() && mode === 'dependent';
       this.continueAfterSave.set(false);
       this.mode.set(null);
-      if (again) this.open('dependent');
-      this.notice.set(again ? `${message} 続けて次の人を入れてください。` : message);
-      await this.logChange(before ? `${message}（直す前：${before}）` : message);
+      if (again) this.openNow('dependent');
+      this.notice.set((again ? `${message} 続けて次の人を入れてください。` : message) + (logged ? '' : LOG_FAILED));
       await this.reload();
     } catch (e) {
       console.error(e);
-      this.errors.set({ form: '保存できませんでした。権限と通信を確かめてください。' });
+      this.errors.set(
+        e instanceof EmployeeNumberTakenError
+          ? { employeeNumber: 'この社員番号はほかの従業員が使っています（ほかの担当者が先に登録したか、担当外の事業所の人が使っています）' }
+          : { form: '保存できませんでした。権限と通信を確かめてください。' },
+      );
     } finally {
       this.saving.set(false);
     }

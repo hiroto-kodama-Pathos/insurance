@@ -97,3 +97,11 @@ describe('決定通知書の取り込み：等級の額', () => {
     expect(p[1].status).toBe('new');
   });
 });
+
+describe('決定通知書の取り込み：その月の等級表がないとき', () => {
+  it('等級表がなければ、その行はエラー（同じ文を2回出さない）', () => {
+    const p = buildDecisionPreview(csv(['0001,,,2026-11,300,300']), DECISION_TEMPLATE_MAPPING, employees, [], []);
+    expect(p[0].status).toBe('error');
+    expect(p[0].errors.filter((e) => e.includes('使える等級表が登録されていない'))).toHaveLength(1);
+  });
+});

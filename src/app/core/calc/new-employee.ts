@@ -192,9 +192,9 @@ function isPositiveInt(v: number | null): v is number {
  * @param input 入力
  * @param existingNumbers 登録済みの社員番号
  * @param today 今日 'YYYY-MM-DD'（生年月日が今日より後でないかを確かめる）
- * @param grades 等級表（標準報酬月額が等級の額かを、資格取得月の表で確かめる。空なら確かめない）
+ * @param grades 等級表（標準報酬月額が等級の額かを、資格取得月の表で確かめる。その月の表がなければ登録できない。null なら確かめない）
  */
-export function validateNewEmployee(input: NewEmployeeInput, existingNumbers: string[], today?: string, grades: GradeRow[] = []): NewEmployeeErrors {
+export function validateNewEmployee(input: NewEmployeeInput, existingNumbers: string[], today?: string, grades: GradeRow[] | null = null): NewEmployeeErrors {
   const e: NewEmployeeErrors = {};
   const num = input.employeeNumber.trim();
   if (!num) e.employeeNumber = '社員番号を入力してください';

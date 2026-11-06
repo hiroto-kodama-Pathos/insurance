@@ -131,8 +131,8 @@ export function buildDecisionPreview(
   m: DecisionMapping,
   employees: DecisionEmployee[],
   expectations: DecisionExpectation[],
-  /** 等級表（額が適用年月の等級の額かを確かめる。空なら確かめない） */
-  grades: GradeRow[] = [],
+  /** 等級表（額が適用年月の等級の額かを確かめる。その月の表がなければエラー。null なら確かめない） */
+  grades: GradeRow[] | null = null,
 ): DecisionRow[] {
   const [headers, ...body] = rows;
   const cell = (r: string[], name: string) => (name === '' || headers.indexOf(name) < 0 ? undefined : r[headers.indexOf(name)]);
@@ -165,7 +165,7 @@ export function buildDecisionPreview(
       const gh = standardGradeError(grades, validFrom, 'health', health!);
       if (gh) errors.push(gh);
       const gp = pensionRaw === null ? null : standardGradeError(grades, validFrom, 'pension', pensionRaw);
-      if (gp) errors.push(gp);
+      if (gp && gp !== gh) errors.push(gp);
     }
 
     const label = emp ? `${emp.employeeNumber} ${emp.name}` : number || name;

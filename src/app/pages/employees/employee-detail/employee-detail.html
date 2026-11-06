@@ -407,6 +407,12 @@
     <section class="card" id="card-log">
       <header><h2>変更の記録</h2></header>
       <p class="help">この人の情報を、誰が・いつ・何を登録・変更・削除したか（新しい順に100件）。直した・削除したときは、直す前の値も残します。記録は書き換え・削除できません。</p>
+      @if (changeLogsFailed()) {
+        <p class="error log-failed" role="alert">
+          変更の記録を読み込めませんでした（記録が消えたのではありません）。通信を確かめて、読み込み直してください。
+          <button type="button" class="secondary" (click)="reloadChangeLogs()">読み込み直す</button>
+        </p>
+      } @else {
       <div class="table-wrap">
         <table class="list change-logs">
           <thead><tr><th>日時</th><th>担当者</th><th>内容</th></tr></thead>
@@ -419,6 +425,7 @@
           </tbody>
         </table>
       </div>
+      }
     </section>
 
     @if (isAdmin()) {

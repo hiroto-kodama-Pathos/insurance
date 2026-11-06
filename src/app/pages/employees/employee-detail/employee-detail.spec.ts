@@ -6,7 +6,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { Masters } from '../../../core/calc/employee-month';
 import { buildKyokaiGrades } from '../../../core/calc/grade-suggest';
-import { EmployeeDetail as Detail, EmployeeRepository } from '../../../core/repository/employee-repository';
+import { EmployeeNumberTakenError, EmployeeDetail as Detail, EmployeeRepository } from '../../../core/repository/employee-repository';
 import { MasterRepository } from '../../../core/repository/master-repository';
 import { SettingsRepository } from '../../../core/repository/settings-repository';
 import { DEFAULT_SETTINGS } from '../../../core/calc/settings';
@@ -57,12 +57,17 @@ describe('EmployeeDetail', () => {
   let fixture: ComponentFixture<EmployeeDetail>;
   let calls: unknown[][];
   let logs: string[];
+  /** 変更の記録を残せない・読み込めない（記録の失敗を画面に出すか） */
+  let logWriteFails: boolean;
+  let logLoadFails: boolean;
   /** yamada() の一部を差し替えて読み込ませる（reload() で画面を作り直す） */
   let detailOverride: Record<string, unknown> = {};
 
   beforeEach(async () => {
     calls = [];
     logs = [];
+    logWriteFails = false;
+    logLoadFails = false;
     detailOverride = {};
     const record = (name: string) => async (...args: unknown[]) => {
       calls.push([name, ...args]);
@@ -86,7 +91,11 @@ describe('EmployeeDetail', () => {
               { id: 'e1', employeeNumber: '0001' },
               { id: 'e2', employeeNumber: '0002' },
             ],
-            updateEmployeeNumber: record('updateEmployeeNumber'),
+            // 担当外の事業所の人が使っている番号（画面の一覧には出ない）は、保存のときに止まる
+            updateEmployeeNumber: async (...args: unknown[]) => {
+              if (args[1] === '0099') throw new EmployeeNumberTakenError(['0099']);
+              await record('updateEmployeeNumber')(...args);
+            },
             closeQualification: record('closeQualification'),
             addQualification: record('addQualification'),
             addTransfer: record('addTransfer'),
@@ -112,7 +121,17 @@ describe('EmployeeDetail', () => {
             addChangeLog: async (_id: string, text: string) => {
               logs.push(text);
             },
-            loadChangeLogs: async () => [{ id: 'g1', at: new Date(2026, 10, 5, 9, 3), by: 'tanto@example.com', text: '新規登録（資格取得日 2024年4月1日）' }],
+            // 本物は、変更と記録を同じ書き込みで残す。記録を残せなかったら false
+            withLog: async (_id: string, text: string, action: () => Promise<unknown>) => {
+              await action();
+              if (logWriteFails) return false;
+              logs.push(text);
+              return true;
+            },
+            loadChangeLogs: async () => {
+              if (logLoadFails) throw new Error('unavailable');
+              return [{ id: 'g1', at: new Date(2026, 10, 5, 9, 3), by: 'tanto@example.com', text: '新規登録（資格取得日 2024年4月1日）' }];
+            },
             updateQualification: record('updateQualification'),
             deleteQualification: record('deleteQualification'),
             updateStandard: record('updateStandard'),
@@ -168,15 +187,34 @@ describe('EmployeeDetail', () => {
   type Unsaved = { unsavedCount(): number };
   const unsaved = () => (fixture.componentInstance as unknown as Unsaved).unsavedCount();
 
-  it('開いたフォームで入力を変えたまま画面を移ろうとしたら確かめる（開いただけ・やめたあとは確かめない）', async () => {
-    const c = fixture.componentInstance as unknown as { open(m: string): void; cancel(): void; nameForm: { set(v: string): void } };
+  it('開いたフォームで入力を変えたまま画面を移ろうとしたら確かめる。「やめる」・別のフォームを開くときも、破棄してよいかを確かめる', async () => {
+    const c = fixture.componentInstance as unknown as {
+      open(m: string): void | Promise<void>; cancel(): void | Promise<void>; nameForm: { set(v: string): void }; mode(): unknown;
+    };
+    const ask = vi.spyOn(TestBed.inject(Confirm), 'ask');
     expect(unsaved()).toBe(0);
     c.open('name');
     await fixture.whenStable();
     expect(unsaved()).toBe(0); // 今の氏名が入っているだけ
+    // 変えていなければ、確かめずに閉じる
+    c.cancel();
+    expect(c.mode()).toBeNull();
+    expect(ask).not.toHaveBeenCalled();
+    c.open('name');
+    await fixture.whenStable();
     c.nameForm.set('山田 花子');
     expect(unsaved()).toBe(1);
-    c.cancel();
+    // 「やめる」：「キャンセル」なら閉じずに入力を残す
+    ask.mockResolvedValueOnce(false);
+    await c.cancel();
+    expect(c.mode()).toBe('name');
+    expect(unsaved()).toBe(1);
+    // 別のフォームを開こうとしても確かめる。「破棄して閉じる」なら開く
+    ask.mockResolvedValueOnce(true);
+    await c.open('leave');
+    expect(ask.mock.calls.at(-1)?.[0].ok).toBe('破棄して閉じる');
+    expect(c.mode()).toBe('leave');
+    await fixture.whenStable();
     expect(unsaved()).toBe(0);
   });
 
@@ -442,9 +480,14 @@ describe('EmployeeDetail', () => {
     await submit();
     expect(calls).toEqual([]);
     expect(el().textContent).toContain('この社員番号はほかの従業員が使っています');
+    // 画面の一覧にはないが、保存のときに使われていると分かった番号
+    input('input[name=newEmployeeNumber]', '0099');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('この社員番号はほかの従業員が使っています（ほかの担当者が先に登録したか、担当外の事業所の人が使っています）');
     input('input[name=newEmployeeNumber]', 'Ａ－００１');
     await submit();
-    expect(calls).toEqual([['updateEmployeeNumber', 'e1', 'A-001']]);
+    expect(calls).toEqual([['updateEmployeeNumber', 'e1', 'A-001', '0001']]);
     expect(el().textContent).toContain('社員番号を「0001」から「A-001」に変えました。');
   });
 
@@ -543,6 +586,8 @@ describe('EmployeeDetail', () => {
   async function answer(ok: boolean) {
     await fixture.whenStable();
     TestBed.inject(Confirm).answer(ok);
+    // 確認のあとの保存（変更と記録の書き込み）が終わるのを待つ
+    await new Promise((r) => setTimeout(r));
     await fixture.whenStable();
     fixture.detectChanges();
   }
@@ -746,6 +791,28 @@ describe('EmployeeDetail', () => {
     rowButton('table.dependents', '山田 花子', '削除').click();
     await answer(true);
     expect(logs[1]).toBe('被扶養者の山田 花子さん（生年月日 1982年3月3日・扶養に入った日 2024年4月1日）を削除');
+  });
+
+  it('変更の記録を残せなかったときは、保存したことと一緒に知らせる（黙って記録が欠けないように）', async () => {
+    logWriteFails = true;
+    rowButton('table.dependents', '山田 花子', '削除').click();
+    await answer(true);
+    expect(el().textContent).toContain('を削除しました。（ただし、変更の記録を残せませんでした。');
+    expect(logs).toEqual([]);
+  });
+
+  it('変更の記録を読み込めなかったときは「記録はありません」ではなく、読み込めなかったことを出し、読み込み直せる', async () => {
+    logLoadFails = true;
+    await (fixture.componentInstance as unknown as { reloadChangeLogs(): Promise<void> }).reloadChangeLogs();
+    fixture.detectChanges();
+    const card = el().querySelector('#card-log')!;
+    expect(card.textContent).toContain('変更の記録を読み込めませんでした（記録が消えたのではありません）');
+    expect(card.textContent).not.toContain('記録はありません');
+    logLoadFails = false;
+    ([...card.querySelectorAll('button')].find((b) => b.textContent?.includes('読み込み直す')) as HTMLButtonElement).click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(card.querySelector('table.change-logs tbody tr')!.textContent).toContain('tanto@example.com');
   });
 
   it('被扶養者は「保存して続けて追加」で、保存したあとも入力を開いたままにできる', async () => {

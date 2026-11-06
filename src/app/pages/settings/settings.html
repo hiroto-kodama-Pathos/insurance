@@ -223,7 +223,7 @@
         </label>
         <span class="err">{{ errors()['name'] }}</span>
         <label>加入する保険者
-          <select [value]="officeForm().insurerId" (change)="setOffice('insurerId', $any($event.target).value)">
+          <select name="officeInsurer" [disabled]="officeLocked()" [value]="officeForm().insurerId" (change)="setOffice('insurerId', $any($event.target).value)">
             <option value="">選んでください</option>
             @for (i of insurers(); track i.id) {
               <option [value]="i.id" [selected]="i.id === (officeForm().insurerId)">{{ i.name }}</option>
@@ -232,7 +232,7 @@
         </label>
         <span class="err">{{ errors()['insurerId'] }}</span>
         <label>都道府県{{ isKyokai(officeForm().insurerId) ? '' : '（任意）' }}
-          <select [value]="officeForm().prefecture" (change)="setOffice('prefecture', $any($event.target).value)">
+          <select name="officePrefecture" [disabled]="officeLocked()" [value]="officeForm().prefecture" (change)="setOffice('prefecture', $any($event.target).value)">
             <option value="">選んでください</option>
             @for (p of prefectures; track p) {
               <option [value]="p" [selected]="p === (officeForm().prefecture)">{{ p }}</option>
@@ -240,6 +240,7 @@
           </select>
         </label>
         <span class="err">{{ errors()['prefecture'] }}</span>
+        @if (officeLockNote()) { <p class="office-lock">{{ officeLockNote() }}</p> }
         <p class="help">協会けんぽの健康保険料率は、事業所の都道府県で決まります。保険者や所在地が変わったときは、変更ではなく新しい事業所として追加し、従業員を異動させてください（過去の月の計算が変わらないようにするため）。</p>
         <label class="check">
           <input type="checkbox" [checked]="officeForm().isDefault" (change)="setOffice('isDefault', $any($event.target).checked)" />

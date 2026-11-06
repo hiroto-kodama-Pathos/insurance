@@ -114,14 +114,25 @@ describe('ReconcilePage', () => {
   type Unsaved = { unsavedCount(): number };
   const unsaved = () => (fixture.componentInstance as unknown as Unsaved).unsavedCount();
 
-  it('納付書の金額を変えたまま画面を移ろうとしたら確かめる（開いただけ・やめたあとは確かめない）', async () => {
+  it('納付書の金額を変えたまま画面を移ろうとしたら確かめる。「やめる」・別の事業所の入力を開くときも、破棄してよいかを確かめる', async () => {
     await setup();
-    const c = fixture.componentInstance as unknown as { editNotice(id: string): void; setDraft(k: string, v: string): void; cancelEdit(): void };
+    const c = fixture.componentInstance as unknown as {
+      editNotice(id: string): void | Promise<void>; setDraft(k: string, v: string): void; cancelEdit(): void | Promise<void>; editingOffice(): string | null;
+    };
+    asked.length = 0;
     c.editNotice('honsha');
     expect(unsaved()).toBe(0);
+    // 変えていなければ、確かめずに閉じる
+    await c.cancelEdit();
+    expect(asked).toHaveLength(0);
+    expect(c.editingOffice()).toBeNull();
+    c.editNotice('honsha');
     c.setDraft('pension', '123456');
     expect(unsaved()).toBe(1);
-    c.cancelEdit();
+    // 別の事業所の入力を開こうとすると確かめる（「破棄して閉じる」なら開く）
+    await c.editNotice('osaka');
+    expect(asked.map((a) => a.ok)).toEqual(['破棄して閉じる']);
+    expect(c.editingOffice()).toBe('osaka');
     expect(unsaved()).toBe(0);
   });
 

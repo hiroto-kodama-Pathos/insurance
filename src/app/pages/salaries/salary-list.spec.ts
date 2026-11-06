@@ -9,7 +9,7 @@ import { ManualWageChange, SalaryRecord } from '../../core/calc/salary';
 import { ClosingRepository } from '../../core/repository/closing-repository';
 import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
 import { MasterRepository } from '../../core/repository/master-repository';
-import { salaryDocId, SalaryRepository } from '../../core/repository/salary-repository';
+import { salaryDocId, SalaryExistsError, SalaryRepository } from '../../core/repository/salary-repository';
 import { SalaryList } from './salary-list';
 import { SettingsRepository } from '../../core/repository/settings-repository';
 import { legacyGroup } from '../../core/calc/payroll-group';
@@ -64,6 +64,7 @@ describe('SalaryList', () => {
               { ...person('e2', '0002', '佐藤 花子'), payrollAssignments: [{ validFrom: '2026-10-01', payrollGroupId: 'same' }] },
               { ...person('e3', '0003', '未加入 パート'), qualifications: [], standardHistory: [] },
             ],
+            withLog: async (_id: string, _text: string, action: () => Promise<unknown>) => { await action(); return true; },
             setFixedWageChange: async (_id: string, c: ManualWageChange) => {
               manual = [...manual, c];
             },
@@ -94,6 +95,12 @@ describe('SalaryList', () => {
             },
             remove: async (id: string) => {
               store = store.filter((x) => x.id !== id);
+            },
+            // 本物と同じく、新しい支払日に給与があれば上書きせずに止め、支払日を変えたら前の給与を消す
+            put: async (before: { id: string } | null, s: Omit<SalaryRecord, 'id'>) => {
+              const id = salaryDocId(s.employeeId, s.paidDate);
+              if (before?.id !== id && store.some((x) => x.id === id)) throw new SalaryExistsError(s.paidDate);
+              store = [...store.filter((x) => x.id !== id && x.id !== before?.id), { ...s, id }];
             },
           },
         },
@@ -293,6 +300,150 @@ describe('SalaryList', () => {
     (tr.querySelector('button') as HTMLButtonElement).click();
     await settle();
     expect(store.find((s) => s.employeeId === 'e3')?.workingHours).toBe(86.5);
+  });
+
+  it('「変動として登録」の入力欄：内容を書いたまま画面を移る・「やめる」と確かめる（書いていなければ確かめない）', async () => {
+    const button = (tr: HTMLElement, text: string) => [...tr.querySelectorAll('button')].find((b) => b.textContent!.includes(text)) as HTMLButtonElement;
+    const unsaved = () => (fixture.componentInstance as unknown as { unsavedCount(): number }).unsavedCount();
+    asked.length = 0;
+    button(row('佐藤 花子'), '変動として登録').click();
+    await settle();
+    expect(unsaved()).toBe(0);
+    button(el().querySelector('tr.manual-form') as HTMLElement, 'やめる').click();
+    await settle();
+    expect(asked).toHaveLength(0);
+    expect(el().querySelector('tr.manual-form')).toBeNull();
+
+    button(row('佐藤 花子'), '変動として登録').click();
+    await settle();
+    const note = el().querySelector('tr.manual-form input[name=manualNote]') as HTMLInputElement;
+    note.value = '所定労働時間の延長';
+    note.dispatchEvent(new Event('input'));
+    expect(unsaved()).toBe(1); // 画面を移るときの確認の対象
+    button(el().querySelector('tr.manual-form') as HTMLElement, 'やめる').click();
+    await settle();
+    expect(asked.map((a) => a.ok)).toEqual(['破棄して閉じる']);
+    expect(el().querySelector('tr.manual-form')).toBeNull();
+    expect(unsaved()).toBe(0);
+  });
+
+  describe('同じ月に複数回払った給与', () => {
+    const button = (root: Element, text: string) => [...root.querySelectorAll('button')].find((b) => b.textContent!.includes(text)) as HTMLButtonElement;
+    const panel = () => el().querySelector('tr.payments-panel') as HTMLElement;
+    const fill = (name: string, value: string) => {
+      const i = panel().querySelector(`input[name="${name}"]`) as HTMLInputElement;
+      i.value = value;
+      i.dispatchEvent(new Event('input'));
+    };
+    const payments = () => store.filter((s) => s.employeeId === 'e1' && s.paidDate.startsWith('2026-10')).map((s) => [s.paidDate, s.fixedWages]).sort();
+
+    beforeEach(async () => {
+      store = [...store, sal('e1', '2026-10-15', 200_000)];
+      fixture.componentRef.instance['yearMonth'].set('2026-10');
+      await (fixture.componentInstance as unknown as { loadMonth(): Promise<void> }).loadMonth();
+      await settle();
+      asked.length = 0;
+    });
+
+    it('2回目の支払いを追加すると、行に回数を出し、支払日ごとの一覧に並ぶ', async () => {
+      button(row('山田 太郎'), '支払いの一覧・追加（1回）').click();
+      await settle();
+      button(panel(), '支払いを追加（同じ月の2回目）').click();
+      await settle();
+      fill('paymentPaidDate', '2026-10-31');
+      fill('payment-fixedWages', '50000');
+      fill('payment-paymentBaseDays', '16');
+      button(panel(), '保存').click();
+      await settle();
+      expect(payments()).toEqual([['2026-10-15', 200_000], ['2026-10-31', 50_000]]);
+      expect(row('山田 太郎').textContent).toContain('この月は2回払い（合算。この行は1回目）');
+      expect(panel().querySelectorAll('table.payments tbody tr')).toHaveLength(2);
+      expect(el().textContent).toContain('2026年10月の支払いは2回で、随時改定・定時決定では合算します');
+    });
+
+    it('2回目だけを直す・削除できる（1回目はそのまま）', async () => {
+      store = [...store, sal('e1', '2026-10-31', 50_000)];
+      await (fixture.componentInstance as unknown as { loadMonth(): Promise<void> }).loadMonth();
+      await settle();
+      button(row('山田 太郎'), '支払いの一覧・追加（2回）').click();
+      await settle();
+      const second = () => panel().querySelectorAll('table.payments tbody tr')[1] as HTMLElement;
+      button(second(), '直す').click();
+      await settle();
+      fill('payment-fixedWages', '55000');
+      button(panel(), '保存').click();
+      await settle();
+      expect(payments()).toEqual([['2026-10-15', 200_000], ['2026-10-31', 55_000]]);
+      button(second(), '削除').click();
+      await settle();
+      expect(asked.at(-1)?.message).toContain('同じ月のほかの支払い（1回）は残ります');
+      expect(payments()).toEqual([['2026-10-15', 200_000]]);
+    });
+
+    it('支払日を、ほかの支払いと同じ日に変えようとすると、上書きせずにエラー（一覧の行・支払日ごとの欄のどちらも）', async () => {
+      store = [...store, sal('e1', '2026-10-31', 50_000)];
+      await (fixture.componentInstance as unknown as { loadMonth(): Promise<void> }).loadMonth();
+      await settle();
+      // 一覧の行（1回目）の支払日を、2回目と同じ日に
+      type(row('山田 太郎'), 'fixedWages', '210000');
+      const date = row('山田 太郎').querySelector('input[type=date]') as HTMLInputElement;
+      date.value = '2026-10-31';
+      date.dispatchEvent(new Event('input'));
+      button(row('山田 太郎'), '保存').click();
+      await settle();
+      expect(row('山田 太郎').textContent).toContain('2026年10月31日の支払いはすでに登録されています');
+      expect(payments()).toEqual([['2026-10-15', 200_000], ['2026-10-31', 50_000]]);
+      button(row('山田 太郎'), '入力を戻す').click();
+      await settle();
+      // 支払日ごとの欄で、2回目の支払日を1回目と同じ日に
+      button(row('山田 太郎'), '支払いの一覧・追加').click();
+      await settle();
+      button(panel().querySelectorAll('table.payments tbody tr')[1] as HTMLElement, '直す').click();
+      await settle();
+      fill('paymentPaidDate', '2026-10-15');
+      button(panel(), '保存').click();
+      await settle();
+      expect(panel().textContent).toContain('2026年10月15日の支払いはすでに登録されています');
+      expect(payments()).toEqual([['2026-10-15', 200_000], ['2026-10-31', 50_000]]);
+    });
+
+    it('支払日の変更は、前の支払日の給与と入れ替える（2件にならない）。ほかの担当者が先に登録していたら止める', async () => {
+      button(row('山田 太郎'), '支払いの一覧・追加').click();
+      await settle();
+      button(panel().querySelector('table.payments tbody tr') as HTMLElement, '直す').click();
+      await settle();
+      fill('paymentPaidDate', '2026-10-20');
+      button(panel(), '保存').click();
+      await settle();
+      expect(payments()).toEqual([['2026-10-20', 200_000]]);
+      // 画面に出ていない給与（ほかの担当者が登録した）と同じ支払日を追加しようとすると、上書きしない
+      store = [...store, sal('e1', '2026-10-31', 70_000)];
+      button(panel(), '支払いを追加').click();
+      await settle();
+      fill('paymentPaidDate', '2026-10-31');
+      fill('payment-fixedWages', '50000');
+      fill('payment-paymentBaseDays', '16');
+      button(panel(), '保存').click();
+      await settle();
+      expect(panel().textContent).toContain('ほかの担当者が登録した可能性があります');
+      expect(payments()).toEqual([['2026-10-20', 200_000], ['2026-10-31', 70_000]]);
+    });
+
+    it('支払いの入力欄を書きかけで「やめる」と確かめ、画面を移るときの確認にも数える', async () => {
+      const unsaved = () => (fixture.componentInstance as unknown as { unsavedCount(): number }).unsavedCount();
+      button(row('山田 太郎'), '支払いの一覧・追加').click();
+      await settle();
+      button(panel(), '支払いを追加').click();
+      await settle();
+      expect(unsaved()).toBe(0);
+      fill('payment-fixedWages', '50000');
+      expect(unsaved()).toBe(1);
+      button(panel(), 'やめる').click();
+      await settle();
+      expect(asked.map((a) => a.ok)).toEqual(['破棄して閉じる']);
+      expect(panel().querySelector('form')).toBeNull();
+      expect(unsaved()).toBe(0);
+    });
   });
 
   it('額から分からない変動を「固定的賃金の変動として登録」し、取り消せる', async () => {

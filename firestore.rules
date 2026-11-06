@@ -344,10 +344,25 @@ service cloud.firestore {
       // それ以外は担当者も読み書きできる
       function isMasterCollection(c) {
         return c in ['insurers', 'insurerRates', 'pensionRates', 'grades', 'gradeThresholds', 'offices', 'companySettings', 'closings', 'bonuses', 'salaries', 'payrollGroups', 'eligibilityRules', 'bonusTypes', 'reconciliations', 'payrollDeductions', 'purgeLogs',
-          'employees', 'filings', 'revisionCandidates', 'adjustments'];
+          'employees', 'filings', 'revisionCandidates', 'adjustments', 'employeeNumbers'];
       }
       match /{collection}/{document=**} {
         allow read, write: if isSiUser() && !isMasterCollection(collection);
+      }
+
+      // 社員番号ごとの記録（ドキュメントIDが社員番号）。社員番号を、保存の時点でも重ならないようにする（設計書 4章）
+      // - 作る：書き込んだあとの従業員がその社員番号であるときだけ（従業員の登録・社員番号の変更と同じ書き込みで作る）
+      // - 上書きしない（update を許さない）：同じ番号の記録がすでにあれば、従業員の登録ごと失敗させて、重なりを作らせない
+      // - 消す：その従業員がいなくなったか、社員番号を変えたときだけ（変更と同じ書き込みで、前の番号の記録を消す）
+      // - 読む：担当範囲に関係なく、番号が使われているかを確かめられる（中身は従業員IDだけ）
+      match /employeeNumbers/{number} {
+        allow read: if isSiUser();
+        allow create: if isSiUser()
+          && request.resource.data.keys().hasOnly(['employeeId'])
+          && getAfter(employeePath(request.resource.data.employeeId)).data.employeeNumber == number;
+        allow delete: if isSiUser()
+          && (!existsAfter(employeePath(resource.data.employeeId))
+            || getAfter(employeePath(resource.data.employeeId)).data.employeeNumber != number);
       }
 
       // システム共通マスタ：読むだけ。書き込みは運営者の Admin SDK スクリプトだけ（ルールを通らない）
@@ -531,7 +546,8 @@ service cloud.firestore {
             || (d.get('excludedAmount', 0) is int && d.get('excludedAmount', 0) >= 0 && d.get('excludedAmount', 0) <= d.fixedWages + d.nonFixedWages));
       }
       match /salaries/{salaryId} {
-        allow read: if isSiUser() && inScope(resource.data.officeId);
+        // まだない給与も読める（追加・支払日の変更で、同じ支払日の給与がないことをトランザクションで確かめるため。ないものは何も分からない）
+        allow read: if isSiUser() && (resource == null || inScope(resource.data.officeId));
         allow create: if isSiUser() && validSalary(request.resource.data) && inScope(request.resource.data.officeId)
           && salaryId == request.resource.data.employeeId + '_' + request.resource.data.paidDate
           && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId));

@@ -48,7 +48,7 @@
       <h2 id="confirm-title">{{ c.title }}</h2>
       <p id="confirm-message">{{ c.message }}</p>
       <div class="actions">
-        <button #confirmCancel type="button" class="secondary confirm-cancel" (click)="confirm.answer(false)">やめる</button>
+        <button #confirmCancel type="button" class="secondary confirm-cancel" (click)="confirm.answer(false)">{{ c.cancel ?? 'やめる' }}</button>
         <button #confirmOk type="button" class="confirm-ok" [class.danger]="c.danger" [class.solid]="c.danger" (click)="confirm.answer(true)">{{ c.ok }}</button>
       </div>
     </div>

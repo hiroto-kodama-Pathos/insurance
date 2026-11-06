@@ -3,7 +3,7 @@
 import { focusFormSoon } from '../../core/ui/form-focus';
 import { NoticeMessage } from '../../core/ui/notice-message';
 import { Component, computed, HostListener, inject, OnInit, signal } from '@angular/core';
-import { FormSnapshot, HasUnsavedChanges } from '../../core/ui/unsaved-guard';
+import { afterDiscardCheck, FormSnapshot, HasUnsavedChanges } from '../../core/ui/unsaved-guard';
 import { RouterLink } from '@angular/router';
 import type { Insurer, PensionRate } from '../../core/calc/rate';
 import { Office } from '../../core/calc/office';
@@ -36,7 +36,8 @@ import { YearMonthPipe } from '../../core/ui/year-month.pipe';
 import { yearMonthLabel } from '../../core/calc/year-month';
 import { EmployeeRepository } from '../../core/repository/employee-repository';
 import { Confirm } from '../../core/ui/confirm';
-import { insurerUsage, inUseMessage, officeUsage, payrollGroupUsage } from '../../core/calc/master-usage';
+import { insurerUsage, inUseMessage, officeChangeError, officeInUse, OfficeUse, officeUsage, officeUseLabel, payrollGroupUsage, rateDeleteImpact, rateDeleteMessage } from '../../core/calc/master-usage';
+import { ClosingRepository } from '../../core/repository/closing-repository';
 
 type Mode =
   | null
@@ -74,6 +75,7 @@ export class Settings implements OnInit, HasUnsavedChanges {
   private readonly masterRepo = inject(MasterRepository);
   private readonly employeeRepo = inject(EmployeeRepository);
   private readonly confirm = inject(Confirm);
+  private readonly closingRepo = inject(ClosingRepository);
 
   protected readonly prefectures = PREFECTURES;
   protected readonly rateTypeLabels = RATE_TYPE_LABELS;
@@ -189,7 +191,10 @@ export class Settings implements OnInit, HasUnsavedChanges {
   }
 
   // ---- 給与の支払区分 ----
-  protected openPayrollGroup(g: PayrollGroup | null): void {
+  protected openPayrollGroup(g: PayrollGroup | null): void | Promise<void> {
+    return this.guard(() => this.openPayrollGroupNow(g));
+  }
+  private openPayrollGroupNow(g: PayrollGroup | null): void {
     this.groupForm.set(g ? { name: g.name, cutoffDay: g.cutoffDay, paidIn: g.paidIn, deductionTiming: g.deductionTiming, payDay: g.payDay, isDefault: g.isDefault ?? false } : { ...EMPTY_GROUP, isDefault: this.payrollGroups().length === 0 });
     this.openMode({ kind: 'payrollGroup', id: g?.id ?? null });
   }
@@ -212,7 +217,10 @@ export class Settings implements OnInit, HasUnsavedChanges {
     await this.run(() => this.repo.savePayrollGroup(id, input, this.payrollGroups()), `支払区分「${f.name.trim()}」を保存しました。`);
   }
 
-  protected openBonusType(t: BonusType | null): void {
+  protected openBonusType(t: BonusType | null): void | Promise<void> {
+    return this.guard(() => this.openBonusTypeNow(t));
+  }
+  private openBonusTypeNow(t: BonusType | null): void {
     const thisYm = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()).slice(0, 7);
     this.bonusTypeForm.set(t ? { name: t.name, isRemuneration: t.isRemuneration, validFrom: t.validFrom } : { name: '', isRemuneration: false, validFrom: thisYm });
     this.openMode({ kind: 'bonusType', id: t?.id ?? null });
@@ -268,13 +276,65 @@ export class Settings implements OnInit, HasUnsavedChanges {
   }
 
   // ---- フォームを開く ----
-  protected openOffice(o: Office | null): void {
+  protected openOffice(o: Office | null): void | Promise<void> {
+    return this.guard(() => this.openOfficeNow(o));
+  }
+  private openOfficeNow(o: Office | null): void {
     this.officeForm.set(
       o ? { name: o.name, prefecture: o.prefecture, insurerId: o.insurerId, isDefault: o.isDefault ?? false } : EMPTY_OFFICE,
     );
     this.openMode({ kind: 'office', id: o?.id ?? null });
+    // 変更のときは、使われているかを確かめ終わるまで、保険者・都道府県を変えられないようにしておく
+    this.officeUse.set(null);
+    this.officeUseState.set(o ? 'loading' : 'ready');
+    if (o) {
+      this.loadOfficeUse(o.id)
+        .then((u) => {
+          if (this.mode()?.kind === 'office' && this.mode()?.id === o.id) {
+            this.officeUse.set(u);
+            this.officeUseState.set('ready');
+          }
+        })
+        .catch((e) => {
+          console.error(e);
+          this.officeUseState.set('failed');
+        });
+    }
   }
-  protected openKumiai(k: Insurer | null): void {
+
+  // ---- 使用中の適用事業所（設計書 3.10） ----
+  /** 変更している事業所の使われ方（追加のときと、確かめている途中は null） */
+  protected readonly officeUse = signal<OfficeUse | null>(null);
+  /** 使われているかの確かめ：loading（確かめている）・ready・failed（確かめられなかった。変えられないようにする） */
+  protected readonly officeUseState = signal<'loading' | 'ready' | 'failed'>('ready');
+  /** 保険者・都道府県を変えられない（使用中・確かめている途中・確かめられなかった） */
+  protected readonly officeLocked = computed(() => {
+    const m = this.mode();
+    if (m?.kind !== 'office' || !m.id) return false;
+    const state = this.officeUseState();
+    if (state !== 'ready') return true;
+    const u = this.officeUse();
+    return !!u && officeInUse(u);
+  });
+  /** 変えられない理由（入力欄の下に出す） */
+  protected readonly officeLockNote = computed(() => {
+    if (!this.officeLocked()) return '';
+    const state = this.officeUseState();
+    if (state === 'loading') return '使われているかを確かめています…';
+    if (state === 'failed') return '使われているかを確かめられなかったため、保険者・都道府県は変えられません（事業所名・初期値は変えられます）。通信を確かめて、開き直してください。';
+    return `使用中（${officeUseLabel(this.officeUse()!)}）なので、保険者・都道府県は変えられません。保険者や所在地が変わったときは、新しい適用事業所を追加し、従業員の詳細で異動を登録してください（過去の月は、この事業所の保険者・料率のまま計算します）。事業所名・新規登録の初期値は変えられます。`;
+  });
+
+  /** その事業所の使われ方を、最新の従業員の一覧と確定の記録で数える（使い回している一覧は使わない） */
+  private async loadOfficeUse(officeId: string): Promise<OfficeUse> {
+    this.employeeRepo.clearCache();
+    const [employees, closed] = await Promise.all([this.employeeRepo.loadAll(), this.closingRepo.closedMonthsOf(officeId)]);
+    return { employees: officeUsage(employees, officeId), closedMonths: closed.length };
+  }
+  protected openKumiai(k: Insurer | null): void | Promise<void> {
+    return this.guard(() => this.openKumiaiNow(k));
+  }
+  private openKumiaiNow(k: Insurer | null): void {
     this.kumiaiForm.set(k ? { name: k.name, specialInsuredEnabled: k.specialInsuredEnabled ?? false } : EMPTY_KUMIAI);
     // 追加のときは、料率の適用開始月に今月を入れておく
     const thisYm = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()).slice(0, 7);
@@ -282,7 +342,10 @@ export class Settings implements OnInit, HasUnsavedChanges {
     this.openMode({ kind: 'kumiai', id: k?.id ?? null });
   }
   /** 料率の追加（insurerId を指定）または変更（rate を指定） */
-  protected openRate(insurerId: string, r: RateRecord | null): void {
+  protected openRate(insurerId: string, r: RateRecord | null): void | Promise<void> {
+    return this.guard(() => this.openRateNow(insurerId, r));
+  }
+  private openRateNow(insurerId: string, r: RateRecord | null): void {
     this.rateForm.set(
       r
         ? {
@@ -304,8 +367,17 @@ export class Settings implements OnInit, HasUnsavedChanges {
     this.mode.set(m);
     this.formSnapshot.take();
   }
-  protected cancel(): void {
-    this.mode.set(null);
+  /**
+   * 開いている追加・変更のフォームを閉じてよいか（入力を変えていれば、破棄してよいかを確かめる。設計書 3.0）。
+   * 「やめる」と、別のフォームを開くとき（開くと今の入力が置き換わる）に使う。会社の設定のフォームは閉じないので含めない
+   */
+  private guard(action: () => void): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.mode() !== null && this.formSnapshot.changed(), action);
+  }
+
+  /** 「やめる」：入力を変えていれば、破棄してよいかを確かめてから閉じる */
+  protected cancel(): void | Promise<void> {
+    return this.guard(() => this.mode.set(null));
   }
 
   /** 会社の設定（読み込んだとき・保存したときの値と比べる） */
@@ -349,6 +421,27 @@ export class Settings implements OnInit, HasUnsavedChanges {
     const errors = checkOffice(f, this.insurers(), others);
     this.errors.set(errors);
     if (Object.keys(errors).length > 0) return;
+    // 使われている事業所の保険者・都道府県は変えない。保存の直前に、最新の所属・確定の記録で確かめ直す
+    const before = m.id ? this.offices().find((o) => o.id === m.id) : null;
+    if (before && (before.insurerId !== f.insurerId || before.prefecture !== f.prefecture)) {
+      this.saving.set(true);
+      try {
+        const use = await this.loadOfficeUse(before.id);
+        this.officeUse.set(use);
+        this.officeUseState.set('ready');
+        const msg = officeChangeError(before, f, use);
+        if (msg) {
+          this.errors.set({ form: msg });
+          return;
+        }
+      } catch (e) {
+        console.error(e);
+        this.errors.set({ form: '使われているかを確かめられなかったため、保存していません。通信を確かめてください。' });
+        return;
+      } finally {
+        this.saving.set(false);
+      }
+    }
     await this.run(() => this.repo.saveOffice(m.id, f, this.offices()), `${f.name.trim()}を保存しました。`);
   }
 
@@ -409,17 +502,28 @@ export class Settings implements OnInit, HasUnsavedChanges {
   }
 
   protected deleteOffice(o: Office): Promise<void> {
-    return this.deleteMaster('適用事業所', o.name, async () => ({
-      isDefault: o.isDefault === true,
-      employees: officeUsage(await this.employeeRepo.loadAll(), o.id),
-    }), () => this.repo.deleteOffice(o.id));
+    return this.deleteMaster('適用事業所', o.name, async () => {
+      const use = await this.loadOfficeUse(o.id);
+      return { isDefault: o.isDefault === true, employees: use.employees, closedMonths: use.closedMonths };
+    }, () => this.repo.deleteOffice(o.id));
   }
 
   /** 誤って追加した組合健保の料率の行を削除する（その月にほかの料率がなければ、計算は「未登録」になる） */
   protected deleteRate(r: RateRecord): Promise<void> {
     const name = `${this.rateTypeLabels[r.rateType]}・${yearMonthLabel(r.validFrom)}から ${this.toPercent(r.rate)}%`;
-    return this.deleteMaster('料率', name, async () => ({ isDefault: false }), () => this.repo.deleteRate(r.id),
-      '確定済みの月の金額は変わりません。この行で計算していた月は、ほかに有効な料率がなければ「料率が未登録」になります。');
+    // 削除の確認に、影響する期間・事業所・削除したあとの計算・確定済みの月を出す（どの月の計算に効くかが分かるように）
+    const note = async () => {
+      const users = this.offices().filter((o) => o.insurerId === r.insurerId);
+      this.employeeRepo.clearCache();
+      const [employees, closedLists] = await Promise.all([
+        this.employeeRepo.loadAll(),
+        Promise.all(users.map((o) => this.closingRepo.closedMonthsOf(o.id))),
+      ]);
+      const closedByOffice = Object.fromEntries(users.map((o, k) => [o.id, closedLists[k]]));
+      const selecting = insurerUsage([], employees, r.insurerId).employees;
+      return rateDeleteMessage(rateDeleteImpact(r, this.rates(), this.offices(), selecting, closedByOffice), (v) => this.toPercent(v));
+    };
+    return this.deleteMaster('料率', name, async () => ({ isDefault: false }), () => this.repo.deleteRate(r.id), note);
   }
 
   /** 健康保険組合を削除する（適用事業所の保険者・二以上事業所勤務の選んだ保険者になっていないときだけ。料率もまとめて消す） */
@@ -435,14 +539,16 @@ export class Settings implements OnInit, HasUnsavedChanges {
   private async deleteMaster(
     label: string,
     name: string,
-    usage: () => Promise<{ isDefault: boolean; employees?: number; bonuses?: boolean; offices?: number }>,
+    usage: () => Promise<{ isDefault: boolean; employees?: number; bonuses?: boolean; offices?: number; closedMonths?: number }>,
     remove: () => Promise<void>,
-    note = '',
+    note: string | (() => Promise<string>) = '',
   ): Promise<void> {
+    let noteText = typeof note === 'string' ? note : '';
     this.notice.set(null);
     this.saving.set(true);
     try {
       const inUse = inUseMessage(label, name, await usage());
+      if (typeof note !== 'string') noteText = await note();
       if (inUse) {
         this.notice.set(inUse);
         return;
@@ -456,7 +562,7 @@ export class Settings implements OnInit, HasUnsavedChanges {
     }
     const ok = await this.confirm.ask({
       title: `${label}を削除`,
-      message: `${label}「${name}」を削除します。元に戻せません。${note}`,
+      message: `${label}「${name}」を削除します。元に戻せません。${noteText}`,
       ok: '削除する',
       danger: true,
     });

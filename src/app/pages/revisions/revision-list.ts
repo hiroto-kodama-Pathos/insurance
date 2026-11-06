@@ -197,7 +197,9 @@ export class RevisionList implements OnInit {
   protected async register(row: Row, provisional = false): Promise<void> {
     this.saving.set(true);
     try {
-      await this.employeeRepo.addStandard(
+      // 登録と、その変更の記録を同じ書き込みで残す（設計書 3.1）
+      const text = `${row.type === 'leaveEnd' ? '休業終了時改定' : '随時改定'}の候補から標準報酬月額を${provisional ? '通知書待ちとして' : ''}登録（${yearMonthLabel(row.expectedFrom)}から 健保 ${this.yen(row.expectedHealth)}円／厚年 ${this.yen(row.expectedPension)}円）`;
+      const logged = await this.employeeRepo.withLog(row.employeeId, text, () => this.employeeRepo.addStandard(
         row.employeeId,
         {
           validFrom: row.expectedFrom,
@@ -207,17 +209,11 @@ export class RevisionList implements OnInit {
           provisional,
         },
         row.average,
-      );
-      // 変更の記録（残せなくても、登録はそのまま。設計書 3.1）
-      try {
-        await this.employeeRepo.addChangeLog(row.employeeId,
-          `${row.type === 'leaveEnd' ? '休業終了時改定' : '随時改定'}の候補から標準報酬月額を${provisional ? '通知書待ちとして' : ''}登録（${yearMonthLabel(row.expectedFrom)}から 健保 ${this.yen(row.expectedHealth)}円／厚年 ${this.yen(row.expectedPension)}円）`);
-      } catch (e) {
-        console.error('変更の記録を残せませんでした', e);
-      }
+      ));
       this.employees.set(await this.employeeRepo.loadAll());
       this.notice.set(
-        `${row.employee.name}さんの${yearMonthLabel(row.expectedFrom)}分からの標準報酬月額を${provisional ? '通知書待ちとして' : ''}登録しました（健保 ${this.yen(row.expectedHealth)}円／厚年 ${this.yen(row.expectedPension)}円）。`,
+        `${row.employee.name}さんの${yearMonthLabel(row.expectedFrom)}分からの標準報酬月額を${provisional ? '通知書待ちとして' : ''}登録しました（健保 ${this.yen(row.expectedHealth)}円／厚年 ${this.yen(row.expectedPension)}円）。` +
+          (logged ? '' : '（ただし、変更の記録を残せませんでした。誰がいつ登録したかを別に控えてください）'),
       );
     } catch (e) {
       console.error(e);

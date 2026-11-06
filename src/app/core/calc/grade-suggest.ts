@@ -1,6 +1,7 @@
 // 報酬月額から標準報酬月額を提案する（設計書 2.6・3.1）
 // 等級は、組合健保の会社でも協会けんぽの保険料額表で判定する。
 import { isPensionAge } from './age';
+import { yearMonthLabel } from './year-month';
 import type { GradeThreshold } from './revision';
 
 /** 協会けんぽの保険料額表の1行（健康保険の等級ごと） */
@@ -126,15 +127,23 @@ export function gradeTableAt(grades: GradeRow[], yearMonth: string): GradeRow[] 
   return from ? grades.filter((g) => g.validFrom === from) : [];
 }
 
+/** その月に使える等級表がないときの文（等級を確かめられないので、登録させない） */
+export function noGradeTableMessage(yearMonth: string): string {
+  return `${yearMonthLabel(yearMonth)}に使える等級表が登録されていないため、登録できません（等級の額か確かめられないため）。等級表は運営者が登録します。管理者に確かめてください。導入時の登録なら、適用開始月を手元の決定通知書の月にしてください`;
+}
+
 /**
  * 標準報酬月額が、その月の等級表の額か（設計書 2.6）。等級の額でなければ、近い等級を添えたエラーの文を返す
  * 健康保険は50等級、厚生年金は32等級（等級の範囲が狭い）で、どの保険者でも同じ（健康保険法40条・厚生年金保険法20条）。
- * 組合健保の会社・70歳以上の人の相当額も同じ等級の額を使う。等級表がない月は確かめない（null）
+ * 組合健保の会社・70歳以上の人の相当額も同じ等級の額を使う。
+ * その月に使える等級表がない（マスタの不足・読み込めなかった）ときも、確かめずに通さず、登録できない文を返す（2026-11-06）
+ * @param grades 等級表。null は「確かめない」（等級表を使わない呼び出し・テスト用）
  * @param kind 'health'（健康保険）・'pension'（厚生年金）
  */
-export function standardGradeError(grades: GradeRow[], yearMonth: string, kind: 'health' | 'pension', amount: number): string | null {
+export function standardGradeError(grades: GradeRow[] | null, yearMonth: string, kind: 'health' | 'pension', amount: number): string | null {
+  if (grades === null) return null;
   const table = gradeTableAt(grades, yearMonth).filter((g) => kind === 'health' || g.pensionGrade !== null);
-  if (table.length === 0) return null;
+  if (table.length === 0) return noGradeTableMessage(yearMonth);
   if (table.some((g) => g.standardAmount === amount)) return null;
   const label = kind === 'health' ? '健康保険' : '厚生年金';
   const sorted = [...table].sort((a, b) => a.standardAmount - b.standardAmount);

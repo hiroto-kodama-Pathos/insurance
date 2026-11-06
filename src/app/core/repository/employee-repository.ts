@@ -16,7 +16,6 @@ import {
   getDocs,
   query,
   serverTimestamp,
-  updateDoc,
   writeBatch,
 } from 'firebase/firestore';
 import { monthOf } from '../calc/date';
@@ -81,6 +80,21 @@ export const EMPLOYEE_LOAD_CONCURRENCY = 20;
 /** 従業員の一覧を使い回す時間（5分） */
 export const EMPLOYEE_CACHE_MS = 5 * 60 * 1000;
 
+/**
+ * 社員番号がすでに使われている（ほかの担当者が同時に登録した・担当外の事業所の人が使っている）。
+ * numbers は使われていた社員番号
+ */
+export class EmployeeNumberTakenError extends Error {
+  constructor(readonly numbers: string[]) {
+    super(`employee number taken: ${numbers.join(',')}`);
+  }
+}
+
+/** 社員番号ごとの記録（employeeNumbers/{社員番号}）。社員番号を、保存の時点でも重ならないようにする（設計書 4章） */
+function numberDoc(employeeNumber: string) {
+  return siDoc('employeeNumbers', employeeNumber);
+}
+
 @Service()
 export class EmployeeRepository {
   private readonly auth = inject(Auth);
@@ -126,6 +140,51 @@ export class EmployeeRepository {
     batch.set(doc(employeeSubCol(employeeId, 'changeLogs')), { at: serverTimestamp(), by: this.auth.user()?.email ?? '', text });
   }
 
+  /** withLog で渡された、次の書き込みに入れる変更の記録 */
+  private pendingLog: { employeeId: string; text: string } | null = null;
+
+  /**
+   * 書き込みを始める。withLog の中なら、確定（commit）するときに変更の記録を同じ書き込みに入れる
+   * （訂正・削除は成功したのに記録だけ残らない、ということが起きないように。設計書 3.1）
+   */
+  private newBatch(): ReturnType<typeof writeBatch> {
+    const batch = writeBatch(db);
+    const commit = batch.commit.bind(batch);
+    batch.commit = async () => {
+      const log = this.pendingLog;
+      if (log) {
+        this.logIn(batch, log.employeeId, log.text);
+        this.pendingLog = null;
+      }
+      return commit();
+    };
+    return batch;
+  }
+
+  /**
+   * 変更と、その変更の記録を同じ書き込みで残す（従業員の詳細での登録・訂正・削除。設計書 3.1）。
+   * action の中の最初の書き込みに記録を入れる。記録を入れる書き込みがなかったとき（この従業員の書き込みでない操作）は、
+   * 変更のあとに記録だけを書き、残せなかったら false を返す（画面で、記録を残せなかったことを知らせる）
+   */
+  async withLog(employeeId: string, text: string, action: () => Promise<unknown>): Promise<boolean> {
+    this.pendingLog = { employeeId, text };
+    try {
+      await action();
+    } catch (e) {
+      this.pendingLog = null;
+      throw e;
+    }
+    if (this.pendingLog === null) return true;
+    this.pendingLog = null;
+    try {
+      await this.addChangeLog(employeeId, text);
+      return true;
+    } catch (e) {
+      console.error('変更の記録を残せませんでした', e);
+      return false;
+    }
+  }
+
   /** 書き込みの前と後に、使い回している一覧を捨てる（書き込み中に読んだ古い一覧も残さない） */
   private async write<T>(action: () => Promise<T>): Promise<T> {
     this.cache.clear();
@@ -148,8 +207,13 @@ export class EmployeeRepository {
    */
   async create(input: NewEmployeeInput, today: string): Promise<string> {
     return this.write(async () => {
+      const number = input.employeeNumber.trim();
+      // 画面の一覧（担当範囲の人だけ・少し前に読んだもの）では分からない重なりを、社員番号ごとの記録で確かめる
+      if ((await getDoc(numberDoc(number))).exists()) throw new EmployeeNumberTakenError([number]);
       const ref = doc(siCol('employees'));
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
+      // 同じ書き込みで社員番号の記録を作る。ほかの担当者が先に同じ番号で登録していれば、ルール（上書き禁止）で書き込み全体が失敗する
+      batch.set(numberDoc(number), { employeeId: ref.id });
       batch.set(ref, {
         employeeNumber: input.employeeNumber.trim(),
         name: input.name.trim(),
@@ -226,9 +290,41 @@ export class EmployeeRepository {
               `${input.dependents?.length ? `・被扶養者${input.dependents.length}人` : ''}）`
           : `新規登録（未加入・入社日 ${dateLabel(input.acquiredDate)}）`,
       );
-      await batch.commit();
+      await this.commitNumbered(batch, [number]);
       return ref.id;
     });
+  }
+
+  /**
+   * 社員番号の記録を含む書き込みを確定する。失敗したときに、その番号がほかの人に使われていれば EmployeeNumberTakenError にする
+   * （同時に登録したときは、あとの書き込みがルールで拒否されるため）
+   */
+  private async commitNumbered(batch: ReturnType<typeof writeBatch>, numbers: string[]): Promise<void> {
+    try {
+      await batch.commit();
+    } catch (e) {
+      const taken: string[] = [];
+      for (const n of numbers) if ((await getDoc(numberDoc(n)).catch(() => null))?.exists()) taken.push(n);
+      if (taken.length > 0) throw new EmployeeNumberTakenError(taken);
+      throw e;
+    }
+  }
+
+  /**
+   * 社員番号の記録がない従業員（この仕組みより前に登録した人）の記録を作る（全担当の管理者が一覧を開いたとき）。
+   * すでにある記録・同じ社員番号の人が2人以上いる番号（前から重なっている）は作らない。作れた件数を返す
+   */
+  async fillNumberRecords(employees: { id: string; employeeNumber: string }[]): Promise<number> {
+    const have = new Set((await getDocs(siCol('employeeNumbers'))).docs.map((d) => d.id));
+    const count = new Map<string, number>();
+    for (const e of employees) count.set(e.employeeNumber, (count.get(e.employeeNumber) ?? 0) + 1);
+    const missing = employees.filter((e) => e.employeeNumber && !have.has(e.employeeNumber) && count.get(e.employeeNumber) === 1);
+    for (let i = 0; i < missing.length; i += 400) {
+      const batch = this.newBatch();
+      for (const e of missing.slice(i, i + 400)) batch.set(numberDoc(e.employeeNumber), { employeeId: e.id });
+      await batch.commit();
+    }
+    return missing.length;
   }
 
   /**
@@ -237,10 +333,16 @@ export class EmployeeRepository {
    */
   async importEmployees(list: EmployeeToImport[]): Promise<void> {
     return this.write(async () => {
+      // 取り込む前に、社員番号の記録と重なる番号がないかを確かめる（あれば何も登録しない）
+      const have = new Set((await getDocs(siCol('employeeNumbers'))).docs.map((d) => d.id));
+      const taken = list.map((x) => x.employeeNumber).filter((n) => have.has(n));
+      if (taken.length > 0) throw new EmployeeNumberTakenError(taken);
       for (let i = 0; i < list.length; i += 50) {
-        const batch = writeBatch(db);
-        for (const x of list.slice(i, i + 50)) {
+        const batch = this.newBatch();
+        const chunk = list.slice(i, i + 50);
+        for (const x of chunk) {
           const ref = doc(siCol('employees'));
+          batch.set(numberDoc(x.employeeNumber), { employeeId: ref.id });
           batch.set(ref, {
             employeeNumber: x.employeeNumber, name: x.name, birthDate: x.birthDate, officeIds: [x.officeId],
             eligibility: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp(),
@@ -253,7 +355,7 @@ export class EmployeeRepository {
           }
           this.logIn(batch, ref.id, `CSVで登録（${x.acquiredDate ? `資格取得日 ${dateLabel(x.acquiredDate)}` : '未加入'}）`);
         }
-        await batch.commit();
+        await this.commitNumbered(batch, chunk.map((x) => x.employeeNumber));
       }
     });
   }
@@ -263,7 +365,7 @@ export class EmployeeRepository {
     return this.write(async () => {
       // 1回の書き込みは500件まで（被扶養者・変更の記録・従業員の更新日時で、1件につき最大3つ）
       for (let i = 0; i < list.length; i += 150) {
-        const batch = writeBatch(db);
+        const batch = this.newBatch();
         const touched = new Set<string>();
         for (const { employeeId, ...d } of list.slice(i, i + 150)) {
           batch.set(doc(employeeSubCol(employeeId, 'dependents')), d);
@@ -322,7 +424,7 @@ export class EmployeeRepository {
   /** 支払区分を変える（変わった日から） */
   async addPayrollAssignment(employeeId: string, input: PayrollAssignment) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'payrollAssignments')), input);
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
       await batch.commit();
@@ -332,7 +434,7 @@ export class EmployeeRepository {
   /** 固定的賃金の変動として登録する（同じ月は1件。ドキュメントIDは変動月） */
   async setFixedWageChange(employeeId: string, change: ManualWageChange) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'fixedWageChanges'), change.yearMonth), change);
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
       await batch.commit();
@@ -342,7 +444,7 @@ export class EmployeeRepository {
   /** 登録した固定的賃金の変動を取り消す */
   async removeFixedWageChange(employeeId: string, yearMonth: string) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.delete(doc(employeeSubCol(employeeId, 'fixedWageChanges'), yearMonth));
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
       await batch.commit();
@@ -352,7 +454,7 @@ export class EmployeeRepository {
   /** 被保険者区分を変える（変わった日から） */
   async addInsuredType(employeeId: string, input: InsuredTypeHistory) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'insuredTypes')), input);
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
       await batch.commit();
@@ -368,7 +470,7 @@ export class EmployeeRepository {
     dependentIds: string[] = [],
   ) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.update(doc(employeeSubCol(employeeId, 'qualifications'), qualificationId), { lostDate, lostReason });
       // 資格を失った日に、扶養中の被扶養者も扶養から外れる
       for (const id of dependentIds) batch.update(doc(employeeSubCol(employeeId, 'dependents'), id), { removedDate: lostDate });
@@ -380,7 +482,7 @@ export class EmployeeRepository {
   /** 氏名を変える（結婚などで変わったとき・登録の誤りを直すとき）。確定済みの月の記録は、確定したときの氏名のまま */
   async updateName(employeeId: string, name: string) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.update(siDoc('employees', employeeId), { name: name.trim(), updatedAt: serverTimestamp() });
       await batch.commit();
     });
@@ -391,18 +493,23 @@ export class EmployeeRepository {
    * 給与・賞与などの記録は従業員ID（社員番号ではない）で結びついているので、書き換えは従業員の文書だけで済む。
    * 確定済みの月の記録は、確定したときの社員番号のまま
    */
-  async updateEmployeeNumber(employeeId: string, employeeNumber: string) {
+  async updateEmployeeNumber(employeeId: string, employeeNumber: string, before: string) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      if ((await getDoc(numberDoc(employeeNumber))).exists()) throw new EmployeeNumberTakenError([employeeNumber]);
+      const batch = this.newBatch();
       batch.update(siDoc('employees', employeeId), { employeeNumber, updatedAt: serverTimestamp() });
-      await batch.commit();
+      // 新しい番号の記録を作り、前の番号の記録（この人のもの）を消す。同じ書き込みにして、番号が宙に浮かないようにする
+      batch.set(numberDoc(employeeNumber), { employeeId });
+      const old = await getDoc(numberDoc(before));
+      if (old.exists() && old.data()['employeeId'] === employeeId) batch.delete(numberDoc(before));
+      await this.commitNumbered(batch, [employeeNumber]);
     });
   }
 
   /** 被扶養者を足す */
   async addDependent(employeeId: string, input: DependentInput) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'dependents')), {
         name: input.name.trim(),
         birthDate: input.birthDate,
@@ -417,7 +524,7 @@ export class EmployeeRepository {
   /** 被扶養者の介護保険の適用除外の期間を、まとめて書き換える（追加・非該当年月日の登録） */
   async setDependentCareExemptions(employeeId: string, dependentId: string, careExemptions: DependentCareExemption[]) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.update(doc(employeeSubCol(employeeId, 'dependents'), dependentId), { careExemptions });
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
       await batch.commit();
@@ -427,7 +534,7 @@ export class EmployeeRepository {
   /** 被扶養者を扶養から外す */
   async removeDependent(employeeId: string, dependentId: string, removedDate: string) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.update(doc(employeeSubCol(employeeId, 'dependents'), dependentId), { removedDate });
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
       await batch.commit();
@@ -437,7 +544,7 @@ export class EmployeeRepository {
   /** 同月得喪の、厚生年金保険料の還付の状態を変える */
   async setRefundStatus(employeeId: string, qualificationId: string, refundStatus: 'pending' | 'returned' | 'none') {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.update(doc(employeeSubCol(employeeId, 'qualifications'), qualificationId), { refundStatus });
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
       await batch.commit();
@@ -447,7 +554,7 @@ export class EmployeeRepository {
   /** 再加入（新しい資格の期間を足す） */
   async addQualification(employeeId: string, acquiredDate: string) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'qualifications')), { acquiredDate, lostDate: null, lostReason: null });
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
       await batch.commit();
@@ -462,7 +569,7 @@ export class EmployeeRepository {
     standard: { healthStandard: number; pensionStandard: number },
   ) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'assignments')), { validFrom: transferDate, officeId });
       batch.set(doc(employeeSubCol(employeeId, 'standardRemunerations')), {
         validFrom: monthOf(transferDate),
@@ -479,7 +586,7 @@ export class EmployeeRepository {
   /** 標準報酬月額を足す。資格取得時決定で内訳を入れたときは、内訳も参考として保存する */
   async addStandard(employeeId: string, input: StandardInput, remuneration: number | null, breakdown: RemunerationBreakdown | null = null) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'standardRemunerations')), {
         ...input,
         provisional: input.provisional === true,
@@ -494,7 +601,7 @@ export class EmployeeRepository {
   /** 通知書待ちの履歴を、通知書の値で直して確定する（通知書待ちを外す） */
   async confirmStandard(employeeId: string, standardId: string, healthStandard: number, pensionStandard: number) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.update(doc(employeeSubCol(employeeId, 'standardRemunerations'), standardId), { healthStandard, pensionStandard, provisional: false });
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
       await batch.commit();
@@ -509,7 +616,7 @@ export class EmployeeRepository {
     return this.write(async () => {
       // 1回の書き込みは500件まで（標準報酬月額・変更の記録・従業員の更新日時で、1件につき3つ）
       for (let i = 0; i < items.length; i += 150) {
-        const batch = writeBatch(db);
+        const batch = this.newBatch();
         for (const x of items.slice(i, i + 150)) {
           this.logIn(
             batch,
@@ -536,7 +643,7 @@ export class EmployeeRepository {
   /** 適用除外を足す（日付は届出に書く該当年月日・非該当年月日） */
   async addExemption(employeeId: string, input: { type: Exemption['type']; startDate: string; endDate: string }) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'exemptions')), {
         type: input.type,
         startDate: input.startDate,
@@ -569,7 +676,7 @@ export class EmployeeRepository {
   /** 休業を足す */
   async addLeave(employeeId: string, input: LeaveInput) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'leaves')), {
         type: input.type,
         startDate: input.startDate,
@@ -594,7 +701,7 @@ export class EmployeeRepository {
   /** 休職を足す（設計書 2.26） */
   async addAbsence(employeeId: string, input: AbsenceInput) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'absences')), {
         reason: input.reason,
         startDate: input.startDate,
@@ -608,12 +715,14 @@ export class EmployeeRepository {
   /** 休職の期間を変える（延長・復職） */
   async updateAbsence(employeeId: string, absenceId: string, input: AbsenceInput) {
     return this.write(async () => {
-      await updateDoc(doc(employeeSubCol(employeeId, 'absences'), absenceId), {
+      const batch = this.newBatch();
+      batch.update(doc(employeeSubCol(employeeId, 'absences'), absenceId), {
         reason: input.reason,
         startDate: input.startDate,
         endDate: input.endDate === '' ? null : input.endDate,
       });
-      await this.touch(employeeId);
+      batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
+      await batch.commit();
     });
   }
 
@@ -630,7 +739,7 @@ export class EmployeeRepository {
   async addChangeLogs(list: { employeeId: string; text: string }[]): Promise<void> {
     const by = this.auth.user()?.email ?? '';
     for (let i = 0; i < list.length; i += 400) {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       for (const x of list.slice(i, i + 400)) batch.set(doc(employeeSubCol(x.employeeId, 'changeLogs')), { at: serverTimestamp(), by, text: x.text });
       await batch.commit();
     }
@@ -651,7 +760,7 @@ export class EmployeeRepository {
   /** 履歴の1件を書き換える（従業員の更新日時も合わせて変える） */
   private async setSub(employeeId: string, sub: string, id: string, data: DocumentData, employee: DocumentData = {}) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.update(doc(employeeSubCol(employeeId, sub), id), data);
       batch.update(siDoc('employees', employeeId), { ...employee, updatedAt: serverTimestamp() });
       await batch.commit();
@@ -661,7 +770,7 @@ export class EmployeeRepository {
   /** 履歴の1件を消す */
   private async deleteSub(employeeId: string, sub: string, id: string, employee: DocumentData = {}) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.delete(doc(employeeSubCol(employeeId, sub), id));
       batch.update(siDoc('employees', employeeId), { ...employee, updatedAt: serverTimestamp() });
       await batch.commit();
@@ -671,14 +780,18 @@ export class EmployeeRepository {
   /** 加入対象の判定の情報を更新する（契約が変わったとき・入社時の入力の誤り）。候補は担当者が確かめて、加入・喪失・区分の変更を別に登録する */
   async updateEligibility(employeeId: string, eligibility: StoredEligibility) {
     return this.write(async () => {
-      await updateDoc(siDoc('employees', employeeId), { eligibility, updatedAt: serverTimestamp() });
+      const batch = this.newBatch();
+      batch.update(siDoc('employees', employeeId), { eligibility, updatedAt: serverTimestamp() });
+      await batch.commit();
     });
   }
 
   /** 生年月日を直す（登録の誤り）。年齢による切り替え（40・65・70・75歳）は、直した日から計算し直す */
   async updateBirthDate(employeeId: string, birthDate: string) {
     return this.write(async () => {
-      await updateDoc(siDoc('employees', employeeId), { birthDate, updatedAt: serverTimestamp() });
+      const batch = this.newBatch();
+      batch.update(siDoc('employees', employeeId), { birthDate, updatedAt: serverTimestamp() });
+      await batch.commit();
     });
   }
 
@@ -693,7 +806,7 @@ export class EmployeeRepository {
     dependentMoves: { id: string; removedDate: string | null }[] = [],
   ) {
     return this.write(async () => {
-      const batch = writeBatch(db);
+      const batch = this.newBatch();
       batch.update(doc(employeeSubCol(employeeId, 'qualifications'), qualificationId), input);
       for (const m of dependentMoves) batch.update(doc(employeeSubCol(employeeId, 'dependents'), m.id), { removedDate: m.removedDate });
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
@@ -729,7 +842,7 @@ export class EmployeeRepository {
   async deleteStandards(list: { employeeId: string; standardId: string; log: string }[]): Promise<void> {
     return this.write(async () => {
       for (let i = 0; i < list.length; i += 150) {
-        const batch = writeBatch(db);
+        const batch = this.newBatch();
         for (const x of list.slice(i, i + 150)) {
           batch.delete(doc(employeeSubCol(x.employeeId, 'standardRemunerations'), x.standardId));
           this.logIn(batch, x.employeeId, x.log);
@@ -793,10 +906,6 @@ export class EmployeeRepository {
   /** 休業を消す（誤って登録したもの） */
   async deleteLeave(employeeId: string, leaveId: string) {
     return this.deleteSub(employeeId, 'leaves', leaveId);
-  }
-
-  private async touch(employeeId: string) {
-    await updateDoc(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
   }
 
   private async loadOne(id: string, d: DocumentData): Promise<EmployeeRecord> {

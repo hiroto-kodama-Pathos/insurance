@@ -31,7 +31,7 @@ async function loadClosings(): Promise<ClosingDoc[]> {
     });
 }
 
-/** 1人分の個人データを消す（従業員・サブコレクション・給与・賞与・控除額・届出済み・差額の精算・改定の候補の状態） */
+/** 1人分の個人データを消す（従業員・サブコレクション・給与・賞与・控除額・届出済み・差額の精算・改定の候補の状態・社員番号の記録） */
 async function deleteEmployeeData(employeeId: string): Promise<void> {
   const db = getFirestore();
   const writer = db.bulkWriter();
@@ -42,6 +42,13 @@ async function deleteEmployeeData(employeeId: string): Promise<void> {
   for (const name of BY_ID_PREFIX) {
     const snap = await db.collection(`${SI}/${name}`).orderBy("__name__").startAt(`${employeeId}_`).endAt(`${employeeId}_`).get();
     for (const d of snap.docs) writer.delete(d.ref);
+  }
+  // 社員番号の記録（employeeNumbers/{社員番号}）も消し、その番号をほかの人に使えるようにする（この人を指しているときだけ）
+  const emp = await db.doc(`${SI}/employees/${employeeId}`).get();
+  const number = emp.get("employeeNumber");
+  if (typeof number === "string" && number) {
+    const rec = await db.doc(`${SI}/employeeNumbers/${number}`).get();
+    if (rec.exists && rec.get("employeeId") === employeeId) writer.delete(rec.ref);
   }
   await writer.close();
   await db.recursiveDelete(db.doc(`${SI}/employees/${employeeId}`));

@@ -6,7 +6,7 @@ import { scopeWhere } from './scope';
 import { deleteField, doc, getDocs, query, serverTimestamp, Timestamp, writeBatch } from 'firebase/firestore';
 import { OfficeClosing } from '../calc/closing';
 import { db } from '../firebase';
-import { closingOfficesCol, siDoc } from '../firestore-paths';
+import { closingOfficesCol, siCol, siDoc } from '../firestore-paths';
 
 @Service()
 export class ClosingRepository {
@@ -39,6 +39,15 @@ export class ClosingRepository {
       return `${Math.floor(t / 12)}-${String((t % 12) + 1).padStart(2, '0')}`;
     });
     return (await Promise.all(list.map((ym) => this.loadMonth(ym)))).flat();
+  }
+
+  /**
+   * その適用事業所を確定したことがある月（'YYYY-MM' の並び）。適用事業所の削除・保険者と都道府県の変更の前に、
+   * 過去の確定の記録がその事業所を指していないかを確かめる（設計書 3.10）。親の closings/{yearMonth} の offices だけを読む
+   */
+  async closedMonthsOf(officeId: string): Promise<string[]> {
+    const snap = await getDocs(siCol('closings'));
+    return snap.docs.filter((d) => officeId in (d.data()['offices'] ?? {})).map((d) => d.id).sort();
   }
 
   /** 確定する。結果の保存と、親への確定日時の記録を1回の書き込みで行う */

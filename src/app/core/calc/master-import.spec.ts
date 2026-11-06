@@ -95,6 +95,12 @@ describe('標準報酬月額のCSV', () => {
   const head = ['社員番号', '適用年月', '健康保険の標準報酬月額', '厚生年金の標準報酬月額'];
   const run = (rows: string[][], scope = 'all') => buildStandardImport([head, ...rows], templateMapping('standard'), employees, grades, scope);
 
+  it('適用年月に使える等級表がなければ（等級表より前の月など）、その行は取り込まない', () => {
+    const [row] = run([['0001', '2019-04', '300000', '300000']]);
+    expect(row.status).toBe('error');
+    expect(row.errors.join()).toContain('2019年4月に使える等級表が登録されていないため、登録できません');
+  });
+
   it('厚生年金の欄が空なら、健康保険の額を厚生年金の等級の範囲に収める', () => {
     expect(pensionFromHealth(1_390_000, grades)).toBe(650_000);
     expect(pensionFromHealth(58_000, grades)).toBe(88_000);

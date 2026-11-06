@@ -19,7 +19,7 @@ import { DEFAULT_SETTINGS } from '../../../core/calc/settings';
 import { SettingsRepository } from '../../../core/repository/settings-repository';
 import { INSURED_TYPE_LABEL, InsuredType } from '../../../core/calc/insured-type';
 import { Component, computed, HostListener, inject, OnInit, signal, ElementRef } from '@angular/core';
-import { FormSnapshot, HasUnsavedChanges } from '../../../core/ui/unsaved-guard';
+import { afterDiscardCheck, FormSnapshot, HasUnsavedChanges } from '../../../core/ui/unsaved-guard';
 import { RouterLink } from '@angular/router';
 import { monthOf } from '../../../core/calc/date';
 import { isInsuredInMonth } from '../../../core/calc/eligibility';
@@ -31,7 +31,7 @@ import { canOnboard, childLaborNotice, defaultOnboardingFrom, hoursOptional, isV
 import { defaultOfficeId, findOffice, Office } from '../../../core/calc/office';
 import { Auth } from '../../../core/auth/auth';
 import { scopedOffice } from '../../../core/repository/scope';
-import { EmployeeRecord, EmployeeRepository } from '../../../core/repository/employee-repository';
+import { EmployeeNumberTakenError, EmployeeRecord, EmployeeRepository } from '../../../core/repository/employee-repository';
 import { MasterRepository } from '../../../core/repository/master-repository';
 import { matchesPerson } from '../../../core/calc/person-search';
 import { parseNumberInput, toHalfWidth } from '../../../core/calc/half-width';
@@ -267,6 +267,13 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
 
   async ngOnInit(): Promise<void> {
     await this.reload();
+    // 社員番号の記録がない従業員（この仕組みより前に登録した人）の記録を作る。全員を見られる管理者が開いたときだけ。
+    // 作れなくても一覧はそのまま使える（新しく登録する人の重なりは、記録で確かめる）
+    const u = this.auth.user();
+    if (u?.siRole === 'admin' && u.siScope === 'all' && this.employees().length > 0)
+      void Promise.resolve()
+        .then(() => this.employeeRepo.fillNumberRecords(this.employees()))
+        .catch((e) => console.error('社員番号の記録を作れませんでした', e));
   }
 
   private emptyForm(): NewEmployeeInput {
@@ -362,7 +369,11 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
   /** 登録したばかりの人（知らせの下に、詳細を開くリンクを出す。被扶養者・休業などの続きを入れやすいように） */
   protected readonly created = signal<{ id: string; name: string } | null>(null);
 
-  protected openForm(): void {
+  protected openForm(): void | Promise<void> {
+    // 入力中のフォームを開き直すと、入力が消える
+    return afterDiscardCheck(this.confirm, this.unsavedCount() > 0, () => this.openFormNow());
+  }
+  private openFormNow(): void {
     this.created.set(null);
     focusFormSoon('app-employee-list');
     this.form.set(this.emptyForm());
@@ -375,8 +386,9 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
     this.showForm.set(true);
   }
 
-  protected closeForm(): void {
-    this.showForm.set(false);
+  /** 「やめる」：入力を変えていれば、破棄してよいかを確かめてから閉じる */
+  protected closeForm(): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.unsavedCount() > 0, () => this.showForm.set(false));
   }
 
   protected setPayrollGroup(value: string): void {
@@ -534,7 +546,8 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
       await this.reload();
     } catch (e) {
       console.error(e);
-      this.formError.set('登録できませんでした。権限と通信を確かめてください。');
+      if (e instanceof EmployeeNumberTakenError) this.errors.set({ ...this.errors(), employeeNumber: 'この社員番号はすでに登録されています（ほかの担当者が先に登録したか、担当外の事業所の人が使っています）' });
+      else this.formError.set('登録できませんでした。権限と通信を確かめてください。');
     } finally {
       this.saving.set(false);
     }

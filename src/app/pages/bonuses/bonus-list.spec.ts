@@ -288,6 +288,31 @@ describe('BonusList', () => {
     expect(el().textContent).toContain('この月は確定済みです');
   });
 
+  it('賞与を直す：開いただけなら保存していない入力として数えず、変えたあとの「やめる」は確かめる', async () => {
+    const fix = [...el().querySelectorAll('button')].find((b) => b.textContent?.trim() === '直す') as HTMLButtonElement;
+    fix.click();
+    await settle();
+    expect(unsaved()).toBe(0); // 今の値が入っているだけ（画面を移っても確かめない）
+    asked.length = 0;
+    const cancel = () => ([...el().querySelectorAll('form button')].find((b) => b.textContent?.trim() === 'やめる') as HTMLButtonElement).click();
+    cancel();
+    await settle();
+    expect(asked).toHaveLength(0);
+    expect(el().querySelector('form h2')!.textContent).toContain('賞与を登録');
+
+    fix.click();
+    await settle();
+    const amount = el().querySelector('input[name=amount]') as HTMLInputElement;
+    amount.value = '654321';
+    amount.dispatchEvent(new Event('input'));
+    expect(unsaved()).toBe(1);
+    cancel();
+    await settle();
+    expect(asked.map((a) => a.ok)).toEqual(['破棄して閉じる']);
+    expect(el().querySelector('form h2')!.textContent).toContain('賞与を登録');
+    expect(store[0].amount).toBe(500_000); // 保存していない
+  });
+
   it('登録した賞与を直せる（登録の欄に今の値が入り、従業員は変えられない）', async () => {
     const fix = [...el().querySelectorAll('button')].find((b) => b.textContent?.trim() === '直す') as HTMLButtonElement;
     fix.click();

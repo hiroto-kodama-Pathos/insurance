@@ -29,14 +29,14 @@ import {
 import { ClosingRepository } from '../../core/repository/closing-repository';
 import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
 import { MasterRepository } from '../../core/repository/master-repository';
-import { SalaryRepository } from '../../core/repository/salary-repository';
+import { SalaryExistsError, SalaryRepository } from '../../core/repository/salary-repository';
 import { SettingsRepository } from '../../core/repository/settings-repository';
 import { cutoffOf, legacyGroup, PayrollGroup, payDateOf, payrollGroupAt } from '../../core/calc/payroll-group';
 import { DEFAULT_SETTINGS } from '../../core/calc/settings';
 import { parseNumberInput } from '../../core/calc/half-width';
-import { HasUnsavedChanges } from '../../core/ui/unsaved-guard';
+import { afterDiscardCheck, FormSnapshot, HasUnsavedChanges } from '../../core/ui/unsaved-guard';
 import type { PayrollCutoff } from '../../core/calc/insured-type';
-import { YearMonthPipe } from '../../core/ui/year-month.pipe';
+import { DateLabelPipe, YearMonthPipe } from '../../core/ui/year-month.pipe';
 import { dateLabel, yearMonthLabel } from '../../core/calc/year-month';
 
 function currentMonth(): string {
@@ -53,10 +53,12 @@ function sameDraft(a: Draft, b: Draft): boolean {
 
 export type SalaryRow = {
   employee: EmployeeRecord;
-  /** この月に登録済みの給与（最初の1件を編集する） */
+  /** この月に登録済みの給与（支払日の早い1件。一覧の行で入力・直す） */
   existing: SalaryRecord | null;
-  /** この月のほかの支払い（月2回払いなど。合算して判定する） */
+  /** この月のほかの支払い（月2回払いなど。合算して判定する）の件数 */
   others: number;
+  /** この月の支払いすべて（支払日順）。「支払日ごと」の一覧で、1件ずつ直す・削除する */
+  payments: SalaryRecord[];
   /** 前月の固定的賃金（遡及差額を除く） */
   previousFixed: number | null;
   change: FixedWageChange | null;
@@ -77,7 +79,7 @@ export type SalaryRow = {
 };
 
 @Component({
-  imports: [RouterLink, NoticeMessage, YearMonthPipe],
+  imports: [RouterLink, NoticeMessage, YearMonthPipe, DateLabelPipe],
   selector: 'app-salary-list',
   styleUrl: './salary-list.scss',
   templateUrl: './salary-list.html',
@@ -118,9 +120,12 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
   protected isUnsaved(id: string): boolean {
     return this.unsavedIds().includes(id);
   }
-  /** 画面を移る前の確認に使う（unsavedChangesGuard） */
+  /**
+   * 画面を移る前・支払月を変える前の確認に使う（unsavedChangesGuard）。保存していない給与の行の数に、
+   * 「変動として登録」の入力欄で内容を変えていれば1を足す（随時改定の判定に関わる入力なので、同じく確かめる）
+   */
   unsavedCount(): number {
-    return this.unsavedIds().length;
+    return this.unsavedIds().length + (this.manualChanged() ? 1 : 0) + (this.paymentChanged() ? 1 : 0);
   }
   /** ブラウザのタブを閉じる・再読み込みするときも確かめる */
   @HostListener('window:beforeunload', ['$event'])
@@ -157,6 +162,7 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
           employee: e,
           existing: thisMonth[0] ?? null,
           others: Math.max(0, thisMonth.length - 1),
+          payments: thisMonth,
           previousFixed: prev ? prev.fixed : null,
           change,
           officeId,
@@ -345,6 +351,10 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
       }
     }
     this.yearMonth.set(value);
+    // 「変動として登録」・支払日ごとの一覧は表示している月のものなので、月を変えたら閉じる（別の月に登録してしまわないように）
+    this.manualFor.set(null);
+    this.paymentsFor.set(null);
+    this.paymentEdit.set(null);
     this.notice.set(null);
     void this.loadMonth();
   }
@@ -379,6 +389,9 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     const errors: SalaryErrors & { form?: string } = validateSalary(input);
     if (!errors.paidDate && !input.paidDate.startsWith(this.yearMonth()))
       errors.paidDate = `支払日は${yearMonthLabel(this.yearMonth())}の日付にしてください（随時改定は支払月で数えます）`;
+    // ほかの支払い（同じ月の2回目以降）と同じ支払日にすると、その給与を上書きしてしまう
+    if (!errors.paidDate && row.payments.some((s) => s.id !== row.existing?.id && s.paidDate === input.paidDate))
+      errors.paidDate = `${dateLabel(input.paidDate)}の支払いはすでに登録されています（直すときは「支払いの一覧・追加」から）`;
     if (!row.officeId) errors.form = 'この月に所属している適用事業所がありません';
     if (row.closed) errors.form = 'この月は確定済みです。月次保険料一覧で確定を解除してから入力してください';
     this.errors.update((e) => ({ ...e, [id]: errors }));
@@ -389,7 +402,9 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
   private async persist(row: SalaryRow, input: SalaryInput): Promise<boolean> {
     const id = row.employee.id;
     try {
-      await this.salaryRepo.save(
+      // 支払日を直したときは、新しい支払日の登録と前の支払日の削除を1回の書き込みで行う（同じ支払日の給与があれば止める）
+      await this.salaryRepo.put(
+        row.existing,
         {
           employeeId: id,
           paidDate: input.paidDate,
@@ -405,12 +420,15 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
         },
         row.officeId!,
       );
-      // 支払日を直したときは、前の支払日の給与を消す（同じ月に2件にならないように）
-      if (row.existing && row.existing.paidDate !== input.paidDate) await this.salaryRepo.remove(row.existing.id);
       return true;
     } catch (e) {
       console.error(e);
-      this.errors.update((x) => ({ ...x, [id]: { form: '保存できませんでした。権限と通信を確かめてください。' } }));
+      this.errors.update((x) => ({
+        ...x,
+        [id]: e instanceof SalaryExistsError
+          ? { paidDate: `${dateLabel(e.paidDate)}の支払いはすでに登録されています（ほかの担当者が登録した可能性があります。画面を読み込み直して確かめてください）` }
+          : { form: '保存できませんでした。権限と通信を確かめてください。' },
+      }));
       return false;
     }
   }
@@ -473,7 +491,8 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     if (!row.existing) return;
     const ok = await this.confirm.ask({
       title: '給与を削除しますか',
-      message: `${row.employee.name}さんの給与（${dateLabel(row.existing.paidDate)}支払）を削除します。元に戻せません。`,
+      message: `${row.employee.name}さんの給与（${dateLabel(row.existing.paidDate)}支払）を削除します。元に戻せません。` +
+        (row.others > 0 ? `同じ月のほかの支払い（${row.others}回）は残ります。` : ''),
       ok: '削除する',
       danger: true,
     });
@@ -491,29 +510,199 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     }
   }
 
+  // ---- 同じ月の支払いを1件ずつ（月2回払い・臨時の支払い。設計書 3.6） ----
+  /** 支払日ごとの一覧を開いている人 */
+  protected readonly paymentsFor = signal<string | null>(null);
+  /** 支払いの入力欄（追加・直す）。salaryId が null なら追加。閉じているときは null */
+  protected readonly paymentEdit = signal<{ employeeId: string; salaryId: string | null } | null>(null);
+  protected readonly paymentDraft = signal<Draft>(this.emptyDraft(''));
+  protected readonly paymentErrors = signal<SalaryErrors & { form?: string }>({});
+  /** 支払いの入力欄を開いたときの値（変えたかを見る） */
+  private readonly paymentSnapshot = new FormSnapshot(() => this.paymentDraft());
+  private paymentChanged(): boolean {
+    return this.paymentEdit() !== null && this.paymentSnapshot.changed();
+  }
+  /** 支払いの入力欄に出す項目（算定から除く額は、一覧の行で入れる） */
+  protected readonly paymentKeys: (keyof SalaryInput)[] = ['fixedWages', 'nonFixedWages', 'paymentBaseDays', 'retroactiveDiff', 'inKindWages', 'workingHours', 'hourlyRate'];
+  protected readonly paymentLabels: Record<string, string> = {
+    fixedWages: '固定的賃金', nonFixedWages: '非固定的賃金', paymentBaseDays: '支払基礎日数', retroactiveDiff: 'うち遡及差額',
+    inKindWages: 'うち現物給与', workingHours: '労働時間', hourlyRate: '時給単価',
+  };
+
+  private emptyDraft(paidDate: string): Draft {
+    return { paidDate, fixedWages: '', nonFixedWages: '', paymentBaseDays: '', retroactiveDiff: '', inKindWages: '', workingHours: '', hourlyRate: '', excludedAmount: '' };
+  }
+
+  /** 「支払日ごと」：その人のこの月の支払いの一覧を開く・閉じる */
+  protected togglePayments(row: SalaryRow): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.paymentChanged(), () => {
+      this.paymentEdit.set(null);
+      this.paymentsFor.set(this.paymentsFor() === row.employee.id ? null : row.employee.id);
+    });
+  }
+
+  /**
+   * 一覧の行（1回目の支払い）に保存していない入力があるときは、支払日ごとの一覧では直さない
+   * （1回目が変わると、一覧の行の入力が古い値のまま残ってしまうため）
+   */
+  private blockedByRow(row: SalaryRow): boolean {
+    if (!this.isUnsaved(row.employee.id)) return false;
+    this.paymentErrors.set({ form: '上の行に保存していない入力があります。先に保存するか「入力を戻す」を押してください。' });
+    return true;
+  }
+
+  /** 「支払いを追加」：同じ月の2回目以降の支払いを入れる欄を開く */
+  protected openPaymentAdd(row: SalaryRow): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.paymentChanged(), () => {
+      this.paymentErrors.set({});
+      if (this.blockedByRow(row)) return;
+      this.paymentsFor.set(row.employee.id);
+      this.paymentEdit.set({ employeeId: row.employee.id, salaryId: null });
+      this.paymentDraft.set(this.emptyDraft(''));
+      this.paymentSnapshot.takeNow();
+    });
+  }
+
+  /** 支払日ごとの一覧の「直す」 */
+  protected openPaymentEdit(row: SalaryRow, s: SalaryRecord): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.paymentChanged(), () => {
+      this.paymentErrors.set({});
+      if (this.blockedByRow(row)) return;
+      const str = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v));
+      this.paymentEdit.set({ employeeId: row.employee.id, salaryId: s.id });
+      this.paymentDraft.set({
+        paidDate: s.paidDate, fixedWages: str(s.fixedWages), nonFixedWages: str(s.nonFixedWages), paymentBaseDays: str(s.paymentBaseDays),
+        retroactiveDiff: str(s.retroactiveDiff), inKindWages: str(s.inKindWages), workingHours: str(s.workingHours), hourlyRate: str(s.hourlyRate),
+        excludedAmount: str(s.excludedAmount),
+      });
+      this.paymentSnapshot.takeNow();
+    });
+  }
+
+  /** 支払いの入力欄の「やめる」 */
+  protected closePaymentForm(): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.paymentChanged(), () => {
+      this.paymentEdit.set(null);
+      this.paymentErrors.set({});
+    });
+  }
+
+  protected setPaymentDraft(key: keyof SalaryInput, value: string): void {
+    this.paymentDraft.update((d) => ({ ...d, [key]: value }));
+  }
+
+  /** 支払いの入力欄の保存（追加・直す） */
+  protected async savePayment(row: SalaryRow): Promise<void> {
+    const edit = this.paymentEdit();
+    if (!edit) return;
+    if (this.blockedByRow(row)) return;
+    const input = this.toInput(this.paymentDraft());
+    const errors: SalaryErrors & { form?: string } = validateSalary(input);
+    const ym = this.yearMonth();
+    if (!errors.paidDate && !input.paidDate.startsWith(ym))
+      errors.paidDate = `支払日は${yearMonthLabel(ym)}の日付にしてください（随時改定は支払月で数えます）`;
+    if (!errors.paidDate && row.payments.some((s) => s.id !== edit.salaryId && s.paidDate === input.paidDate))
+      errors.paidDate = `${dateLabel(input.paidDate)}の支払いはすでに登録されています（その行の「直す」で直してください）`;
+    if (!row.officeId) errors.form = 'この月に所属している適用事業所がありません';
+    if (row.closed) errors.form = 'この月は確定済みです。月次保険料一覧で確定を解除してから入力してください';
+    this.paymentErrors.set(errors);
+    if (Object.keys(errors).length > 0) return;
+    const before = row.payments.find((s) => s.id === edit.salaryId) ?? null;
+    this.saving.set(row.employee.id);
+    try {
+      await this.salaryRepo.put(
+        before,
+        {
+          employeeId: row.employee.id,
+          paidDate: input.paidDate,
+          fixedWages: input.fixedWages!,
+          nonFixedWages: input.nonFixedWages ?? 0,
+          paymentBaseDays: input.paymentBaseDays!,
+          retroactiveDiff: input.retroactiveDiff || null,
+          inKindWages: input.inKindWages || null,
+          workingHours: input.workingHours ?? null,
+          hourlyRate: input.hourlyRate ?? null,
+          // 算定から除く額は一覧の行で入れるので、直すときは今の値を残す
+          excludedAmount: before?.excludedAmount ?? null,
+        },
+        row.officeId!,
+      );
+      this.paymentEdit.set(null);
+      await this.loadMonth(true);
+      this.notice.set(
+        before
+          ? `${row.employee.name}さんの給与（${dateLabel(input.paidDate)}支払）を直しました。`
+          : `${row.employee.name}さんの給与（${dateLabel(input.paidDate)}支払）を追加しました。${yearMonthLabel(ym)}の支払いは${row.payments.length + 1}回で、随時改定・定時決定では合算します。`,
+      );
+    } catch (e) {
+      console.error(e);
+      this.paymentErrors.set(
+        e instanceof SalaryExistsError
+          ? { paidDate: `${dateLabel(e.paidDate)}の支払いはすでに登録されています（ほかの担当者が登録した可能性があります。画面を読み込み直して確かめてください）` }
+          : { form: '保存できませんでした。権限と通信を確かめてください。' },
+      );
+    } finally {
+      this.saving.set(null);
+    }
+  }
+
+  /** 支払日ごとの一覧の「削除」 */
+  protected async removePayment(row: SalaryRow, s: SalaryRecord): Promise<void> {
+    this.paymentErrors.set({});
+    if (this.blockedByRow(row)) return;
+    const ok = await this.confirm.ask({
+      title: '給与を削除しますか',
+      message: `${row.employee.name}さんの給与（${dateLabel(s.paidDate)}支払・固定的賃金 ${this.yen(s.fixedWages)}円）を削除します。元に戻せません。` +
+        (row.payments.length > 1 ? `同じ月のほかの支払い（${row.payments.length - 1}回）は残ります。` : ''),
+      ok: '削除する',
+      danger: true,
+    });
+    if (!ok) return;
+    this.saving.set(row.employee.id);
+    try {
+      await this.salaryRepo.remove(s.id);
+      if (this.paymentEdit()?.salaryId === s.id) this.paymentEdit.set(null);
+      await this.loadMonth(true);
+      this.notice.set(`${row.employee.name}さんの給与（${dateLabel(s.paidDate)}支払）を削除しました。`);
+    } catch (e) {
+      console.error(e);
+      this.paymentErrors.set({ form: '削除できませんでした。権限と通信を確かめてください。' });
+    } finally {
+      this.saving.set(null);
+    }
+  }
+
+  protected paymentErr(key: keyof SalaryInput | 'form'): string {
+    return this.paymentErrors()[key] ?? '';
+  }
+
   // ---- 固定的賃金の変動として登録（設計書 2.13） ----
   /** 登録の入力欄を開いている人 */
   protected readonly manualFor = signal<string | null>(null);
   protected readonly manualForm = signal<{ direction: 'up' | 'down'; note: string }>({ direction: 'up', note: '' });
   protected readonly manualError = signal('');
 
-  protected openManual(row: SalaryRow): void {
+  /** 「変動として登録」の入力欄を開いたときの値（内容を変えたかを見る） */
+  private readonly manualSnapshot = new FormSnapshot(() => this.manualForm());
+  /** 「変動として登録」の入力欄を開いていて、内容を変えた */
+  private manualChanged(): boolean {
+    return this.manualFor() !== null && this.manualSnapshot.changed();
+  }
+
+  protected openManual(row: SalaryRow): void | Promise<void> {
+    // ほかの人の入力欄に書きかけがあれば、置き換える前に確かめる
+    return afterDiscardCheck(this.confirm, this.manualChanged(), () => this.openManualNow(row));
+  }
+  private openManualNow(row: SalaryRow): void {
     this.manualFor.set(row.employee.id);
     this.manualForm.set({ direction: 'up', note: '' });
+    this.manualSnapshot.takeNow();
     this.manualError.set('');
   }
 
-  /** 従業員の変更の記録を残す（残せなくても、保存した内容はそのまま。設計書 3.1） */
-  private async log(employeeId: string, text: string): Promise<void> {
-    try {
-      await this.employeeRepo.addChangeLog(employeeId, text);
-    } catch (e) {
-      console.error('変更の記録を残せませんでした', e);
-    }
-  }
-
-  protected closeManual(): void {
-    this.manualFor.set(null);
+  /** 「やめる」：内容を変えていれば、破棄してよいかを確かめてから閉じる */
+  protected closeManual(): void | Promise<void> {
+    return afterDiscardCheck(this.confirm, this.manualChanged(), () => this.manualFor.set(null));
   }
 
   protected setManual(key: 'direction' | 'note', value: string): void {
@@ -529,10 +718,11 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     }
     const ym = this.yearMonth();
     const message = `${row.employee.name}さんの${yearMonthLabel(ym)}を、固定的賃金の変動（${f.direction === 'up' ? '上がった' : '下がった'}）として登録しました。`;
-    await this.runManual(async () => {
-      await this.employeeRepo.setFixedWageChange(row.employee.id, { yearMonth: ym, direction: f.direction, note });
-      await this.log(row.employee.id, `${message}（内容：${note}）`);
-    }, message);
+    await this.runManual(
+      () => this.employeeRepo.withLog(row.employee.id, `${message}（内容：${note}）`, () =>
+        this.employeeRepo.setFixedWageChange(row.employee.id, { yearMonth: ym, direction: f.direction, note })),
+      message,
+    );
   }
 
   protected async removeManual(row: SalaryRow): Promise<void> {
@@ -545,19 +735,20 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     });
     if (!ok) return;
     const message = `${row.employee.name}さんの${yearMonthLabel(ym)}の、固定的賃金の変動の登録を取り消しました。`;
-    await this.runManual(async () => {
-      await this.employeeRepo.removeFixedWageChange(row.employee.id, ym);
-      await this.log(row.employee.id, message);
-    }, message);
+    await this.runManual(
+      () => this.employeeRepo.withLog(row.employee.id, message, () => this.employeeRepo.removeFixedWageChange(row.employee.id, ym)),
+      message,
+    );
   }
 
-  private async runManual(action: () => Promise<void>, message: string): Promise<void> {
+  /** 変動の登録・取り消しと、その変更の記録（同じ書き込み）。action は記録を残せたかを返す */
+  private async runManual(action: () => Promise<boolean>, message: string): Promise<void> {
     this.saving.set('manual');
     try {
-      await action();
+      const logged = await action();
       this.employees.set(await this.employeeRepo.loadAll());
       this.manualFor.set(null);
-      this.notice.set(message);
+      this.notice.set(message + (logged ? '' : '（ただし、変更の記録を残せませんでした。誰がいつ登録したかを別に控えてください）'));
     } catch (e) {
       console.error(e);
       this.manualError.set('保存できませんでした。権限と通信を確かめてください。');

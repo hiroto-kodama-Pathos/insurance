@@ -38,7 +38,7 @@ import { PayrollGroup } from '../../core/calc/payroll-group';
 import { monthRange } from '../../core/calc/period-total';
 import { BonusRepository } from '../../core/repository/bonus-repository';
 import { ClosingRepository } from '../../core/repository/closing-repository';
-import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
+import { EmployeeNumberTakenError, EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
 import { MasterRepository } from '../../core/repository/master-repository';
 import { SettingsRepository } from '../../core/repository/settings-repository';
 
@@ -233,7 +233,19 @@ export class MasterImportPage implements OnInit {
     const kind = this.kind();
     await this.run(async () => {
       const saves = <T>(list: ImportRow<T>[]) => list.flatMap((r) => (r.save ? [r.save] : []));
-      if (kind === 'employee') await this.employeeRepo.importEmployees(saves(this.employeePreview()));
+      if (kind === 'employee') {
+        try {
+          await this.employeeRepo.importEmployees(saves(this.employeePreview()));
+        } catch (e) {
+          if (!(e instanceof EmployeeNumberTakenError)) throw e;
+          // 画面の一覧（担当範囲の人だけ・少し前に読んだもの）では分からなかった重なり。何も登録していない
+          this.notice.set(
+            `社員番号 ${e.numbers.slice(0, 10).join('・')}${e.numbers.length > 10 ? ` ほか${e.numbers.length - 10}件` : ''} はすでに登録されているため、取り込んでいません` +
+              '（ほかの担当者が登録したか、担当外の事業所の人が使っています）。CSVからその行を除くか、社員番号を直してから取り込んでください。',
+          );
+          return;
+        }
+      }
       else if (kind === 'dependent') await this.employeeRepo.importDependents(saves(this.dependentPreview()));
       else if (kind === 'standard') await this.employeeRepo.saveDecisions(saves(this.standardPreview()));
       else await this.bonusRepo.importMany(saves(this.bonusPreview()));

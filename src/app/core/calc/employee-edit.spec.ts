@@ -119,3 +119,12 @@ describe('標準報酬月額の履歴：等級の額', () => {
     expect(checkStandard([], { ...input, healthStandard: 300_000 }, grades)).toEqual({});
   });
 });
+
+describe('標準報酬月額の履歴：その月の等級表がないとき', () => {
+  it('等級表がない月（等級表より前の月・読み込めなかった）は、等級の額でも登録できない', () => {
+    const grades = buildKyokaiGrades('2020-09');
+    const input = { validFrom: '2019-04', reason: 'regular' as const, healthStandard: 300_000, pensionStandard: 300_000 };
+    expect(checkStandard([], input, grades)['healthStandard']).toContain('使える等級表が登録されていないため、登録できません');
+    expect(checkStandard([], { ...input, validFrom: '2026-09' }, [])['pensionStandard']).toContain('使える等級表が登録されていない');
+  });
+});

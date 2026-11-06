@@ -47,6 +47,8 @@ describe('RegularList', () => {
           provide: EmployeeRepository,
           useValue: {
             loadAll: async () => employees,
+            // 本物は、登録と変更の記録を同じ書き込みで残す
+            withLog: async (_id: string, _text: string, action: () => Promise<unknown>) => { await action(); return true; },
             addStandard: async (id: string, input: { validFrom: string; healthStandard: number; pensionStandard: number }) => {
               added.push({ id, validFrom: input.validFrom, healthStandard: input.healthStandard });
               employees = employees.map((e) => (e.id === id ? { ...e, standardHistory: [...e.standardHistory, { ...input, id: `s-${id}` }] } : e));

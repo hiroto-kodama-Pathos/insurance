@@ -173,3 +173,9 @@ describe('導入時の登録（以前から在籍している人）', () => {
     expect(validateNewEmployee({ ...old, acquiredDate: '2026-11-01', onboarding: { validFrom: '2026-11' } }, [], '2026-11-06', grades).acquiredDate).toContain('今月に資格を取得した人');
   });
 });
+
+describe('新規登録：その月の等級表がないとき', () => {
+  it('等級表を読み込めなかった（空）ときは、等級の額でも登録できない', () => {
+    expect(validateNewEmployee(ok, [], undefined, []).healthStandard).toContain('使える等級表が登録されていないため、登録できません');
+  });
+});

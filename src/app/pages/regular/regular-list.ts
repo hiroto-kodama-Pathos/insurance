@@ -181,23 +181,20 @@ export class RegularList implements OnInit {
     if (list.length === 0) return;
     this.saving.set(true);
     let done = 0;
+    let unlogged = 0;
     try {
       for (const r of list) {
         const input = this.input(r);
-        await this.employeeRepo.addStandard(r.employeeId, input, r.average);
-        // 変更の記録（残せなくても、登録はそのまま。設計書 3.1）
-        try {
-          await this.employeeRepo.addChangeLog(r.employeeId,
-            `定時決定で${input.provisional ? '通知書待ちとして' : ''}標準報酬月額を登録（${this.year()}年9月から 健保 ${((input.healthStandard ?? 0) / 10_000).toLocaleString('ja-JP')}万円／厚年 ${((input.pensionStandard ?? 0) / 10_000).toLocaleString('ja-JP')}万円）`);
-        } catch (e) {
-          console.error('変更の記録を残せませんでした', e);
-        }
+        // 登録と、その変更の記録を同じ書き込みで残す（設計書 3.1）
+        const text = `定時決定で${input.provisional ? '通知書待ちとして' : ''}標準報酬月額を登録（${this.year()}年9月から 健保 ${((input.healthStandard ?? 0) / 10_000).toLocaleString('ja-JP')}万円／厚年 ${((input.pensionStandard ?? 0) / 10_000).toLocaleString('ja-JP')}万円）`;
+        if (!(await this.employeeRepo.withLog(r.employeeId, text, () => this.employeeRepo.addStandard(r.employeeId, input, r.average)))) unlogged++;
         done++;
       }
       this.notice.set(
-        list.length === 1
+        (list.length === 1
           ? `${list[0].employee.name}さんの${this.year()}年9月分からの標準報酬月額を登録しました。`
-          : `${done}人の${this.year()}年9月分からの標準報酬月額を登録しました。決定通知書と違う人は、従業員の詳細から直してください。`,
+          : `${done}人の${this.year()}年9月分からの標準報酬月額を登録しました。決定通知書と違う人は、従業員の詳細から直してください。`) +
+          (unlogged > 0 ? `（ただし、${unlogged}人分の変更の記録を残せませんでした。誰がいつ登録したかを別に控えてください）` : ''),
       );
     } catch (e) {
       console.error(e);

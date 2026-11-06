@@ -17,6 +17,7 @@
       <p class="help">
         給与計算が終わったら、その月に支払った給与を入れます。給与は随時改定の候補と定時決定の見込みを出すためだけに使い、保険料は変わりません（保険料は標準報酬月額で計算します）。
       </p>
+      <p class="help">同じ月に2回以上払った人（月2回払い・臨時の支払いなど）は、1回目を表の行に入れて保存し、「支払いの一覧・追加」から2回目以降を追加します。同じ月の支払いは、随時改定・定時決定では合算します。支払いごとに直す・削除もここからできます。</p>
       <p class="help">時給の人は時給単価も入れます。前月と時給単価が同じ月は、労働時間で額が変わっても「変動あり」にしません。<br />未加入の人（パート・アルバイトなど）は、この給与の計算期間に実際に働いた時間も入れます（加入の可能性は、働いた月で数えます）。2か月続けて週20時間以上になると、トップに「加入の可能性」が出ます。</p>
     </details>
     <p><a routerLink="/salaries/import">CSVで取り込む</a>（給与ソフトの出力をまとめて取り込めます）</p>
@@ -150,10 +151,16 @@
                   <span class="badge info">未加入</span>
                 }
                 @if (row.others > 0) {
-                  <span class="badge info">ほかに{{ row.others }}回の支払い（合算）</span>
+                  <span class="badge info" title="この行は支払日の早い1回目です。2回目以降は「支払いの一覧・追加」で直す・削除できます">この月は{{ row.payments.length }}回払い（合算。この行は1回目）</span>
                 }
               </td>
               <td class="actions">
+                @if (row.existing) {
+                  <button type="button" class="secondary" [attr.aria-expanded]="paymentsFor() === row.employee.id" [disabled]="saving() !== null"
+                    (click)="togglePayments(row)" title="この月の支払いを支払日ごとに見て、1件ずつ直す・削除する。月2回払いなど、2回目以降の支払いを追加する">
+                    支払いの一覧・追加（{{ row.payments.length }}回）
+                  </button>
+                }
                 @if (!row.closed) {
                   <button type="button" [disabled]="saving() !== null" (click)="save(row)">保存</button>
                   @if (isUnsaved(row.employee.id)) {
@@ -172,6 +179,60 @@
                 }
               </td>
             </tr>
+            @if (paymentsFor() === row.employee.id) {
+              <tr class="payments-panel">
+                <td colspan="13">
+                  <strong>{{ row.employee.name }}さんの{{ yearMonth() | ym }}の支払い（{{ row.payments.length }}回）</strong>
+                  <span class="help">月2回払いや臨時の支払いなど、同じ月に支払った給与は、随時改定・定時決定では支払月ごとに合算します。1件ずつ直す・削除できます。</span>
+                  <table class="list payments">
+                    <thead>
+                      <tr><th>支払日</th>@for (k of paymentKeys; track k) { <th>{{ paymentLabels[k] }}</th> }<th></th></tr>
+                    </thead>
+                    <tbody>
+                      @for (s of row.payments; track s.id; let i = $index) {
+                        <tr [class.editing]="paymentEdit()?.salaryId === s.id">
+                          <td>{{ s.paidDate | ymd }}@if (i === 0) {<span class="muted">（上の行）</span>}</td>
+                          @for (k of paymentKeys; track k) { <td class="num">{{ yen($any(s)[k]) }}</td> }
+                          <td class="row-actions">
+                            @if (!row.closed) {
+                              <button type="button" class="link" [disabled]="saving() !== null" (click)="openPaymentEdit(row, s)">直す</button>
+                              <button type="button" class="link danger-link" [disabled]="saving() !== null" (click)="removePayment(row, s)">削除</button>
+                            }
+                          </td>
+                        </tr>
+                      }
+                    </tbody>
+                  </table>
+                  @if (paymentErr('form') && !paymentEdit()) { <span class="err">{{ paymentErr('form') }}</span> }
+                  @if (row.closed) {
+                    <span class="help">この月は確定済みのため、直す・削除・追加はできません。</span>
+                  } @else if (paymentEdit(); as pe) {
+                    <form class="payment-form" (submit)="$event.preventDefault(); savePayment(row)">
+                      <strong>@if (pe.salaryId) {支払いを直す} @else {{{ yearMonth() | ym }}の支払いを追加（{{ row.payments.length + 1 }}回目）}</strong>
+                      <div class="row">
+                        <label>支払日
+                          <input type="date" name="paymentPaidDate" [value]="paymentDraft().paidDate" (input)="setPaymentDraft('paidDate', $any($event.target).value)" />
+                          <span class="err">{{ paymentErr('paidDate') }}</span>
+                        </label>
+                        @for (k of paymentKeys; track k) {
+                          <label>{{ paymentLabels[k] }}
+                            <input class="num-input" inputmode="numeric" [attr.name]="'payment-' + k" [value]="paymentDraft()[k]" (input)="setPaymentDraft(k, $any($event.target).value)" />
+                            <span class="err">{{ paymentErr(k) }}</span>
+                          </label>
+                        }
+                      </div>
+                      <span class="err">{{ paymentErr('form') }}</span>
+                      <div class="actions">
+                        <button type="submit" [disabled]="saving() !== null">保存</button>
+                        <button type="button" class="secondary" (click)="closePaymentForm()">やめる</button>
+                      </div>
+                    </form>
+                  } @else {
+                    <button type="button" [disabled]="saving() !== null" (click)="openPaymentAdd(row)">支払いを追加（同じ月の{{ row.payments.length + 1 }}回目）</button>
+                  }
+                </td>
+              </tr>
+            }
             @if (manualFor() === row.employee.id) {
               <tr class="manual-form">
                 <td colspan="13">

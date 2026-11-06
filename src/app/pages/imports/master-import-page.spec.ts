@@ -7,7 +7,7 @@ import { legacyGroup } from '../../core/calc/payroll-group';
 import { DEFAULT_SETTINGS } from '../../core/calc/settings';
 import { BonusRepository } from '../../core/repository/bonus-repository';
 import { ClosingRepository } from '../../core/repository/closing-repository';
-import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
+import { EmployeeNumberTakenError, EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
 import { MasterRepository } from '../../core/repository/master-repository';
 import { SettingsRepository } from '../../core/repository/settings-repository';
 import { MasterImportPage } from './master-import-page';
@@ -37,7 +37,11 @@ describe('MasterImportPage', () => {
           provide: EmployeeRepository,
           useValue: {
             loadAll: async () => employees,
-            importEmployees: async (list: unknown[]) => { calls.push(['importEmployees', list]); },
+            importEmployees: async (list: { employeeNumber: string }[]) => {
+              // 担当外の事業所の人・ほかの担当者が先に使った番号（画面の一覧にはない）
+              if (list.some((x) => x.employeeNumber === '0099')) throw new EmployeeNumberTakenError(['0099']);
+              calls.push(['importEmployees', list]);
+            },
             saveDecisions: async (list: unknown[]) => { calls.push(['saveDecisions', list]); },
             importDependents: async (list: unknown[]) => { calls.push(['importDependents', list]); },
           },
@@ -90,6 +94,15 @@ describe('MasterImportPage', () => {
     await fixture.whenStable();
     expect(calls[0][0]).toBe('importEmployees');
     expect((calls[0][1] as { employeeNumber: string }[]).map((x) => x.employeeNumber)).toEqual(['0101']);
+  });
+
+  it('従業員：保存のときに使われていると分かった社員番号があれば、何も登録せず、その番号を知らせる', async () => {
+    await load('社員番号,氏名,生年月日,適用事業所,入社日,資格取得日,被保険者区分,支払区分\r\n0101,青木 健,1985-04-01,本社,,2020-04-01,,\r\n0099,重複 番号,1985-04-01,本社,,2020-04-01,,\r\n');
+    importButton().click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('社員番号 0099 はすでに登録されているため、取り込んでいません');
   });
 
   it('エラー・確定済み・担当範囲外の行だけを表示できる（登録する件数は変わらない）', async () => {

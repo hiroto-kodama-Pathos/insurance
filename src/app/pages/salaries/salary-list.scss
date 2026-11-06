@@ -45,3 +45,25 @@ tr.manual-form td {
 // 状態の列：情報だけのバッジ（確定・入力済み・未加入など）は灰色にして、対応が要るもの（色つき）を目立たせる
 .badge.info { background: #eef1f5; color: var(--c-muted); }
 .status .err:not(:empty) { display: block; }
+
+// 同じ月の支払いの一覧（支払日ごとに直す・削除・追加）
+tr.payments-panel > td {
+  background: #f8fafc;
+  .help { display: block; }
+  table.payments { width: auto; margin: 6px 0; background: #fff; }
+  table.payments tr.editing { background: #eef4ff; }
+  // 外の表（左の2列を固定する sticky-cols）の指定を受け継がないようにする（支払日が折り返したり、列が重なったりしないように）
+  table.payments > thead { position: static; }
+  table.payments th, table.payments td {
+    position: static !important;
+    left: auto !important;
+    min-width: 0 !important;
+    max-width: none !important;
+    white-space: nowrap;
+    overflow: visible;
+  }
+  .payment-form { display: flex; flex-direction: column; gap: 6px; margin-top: 6px; }
+  .payment-form .row { display: flex; gap: 8px; align-items: start; flex-wrap: wrap; }
+  .payment-form label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+  .payment-form .actions { display: flex; gap: 8px; }
+}

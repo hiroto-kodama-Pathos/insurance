@@ -8,7 +8,7 @@ import { provideRouter } from '@angular/router';
 import { Masters } from '../../../core/calc/employee-month';
 import { buildKyokaiGrades } from '../../../core/calc/grade-suggest';
 import { NewEmployeeInput } from '../../../core/calc/new-employee';
-import { EmployeeRecord, EmployeeRepository } from '../../../core/repository/employee-repository';
+import { EmployeeNumberTakenError, EmployeeRecord, EmployeeRepository } from '../../../core/repository/employee-repository';
 import { MasterRepository } from '../../../core/repository/master-repository';
 import { SalaryRepository } from '../../../core/repository/salary-repository';
 import { EmployeeList } from './employee-list';
@@ -61,6 +61,8 @@ describe('EmployeeList', () => {
             ],
             create: async (input: NewEmployeeInput) => {
               if (failCreate) throw new Error('permission-denied');
+              // 担当外の事業所の人・ほかの担当者が先に使った番号（画面の一覧にはない）
+              if (input.employeeNumber === '0099') throw new EmployeeNumberTakenError(['0099']);
               created.push(input);
               return 'new-id';
             },
@@ -214,8 +216,18 @@ describe('EmployeeList', () => {
     expect(unsaved()).toBe(0);
     (fixture.componentInstance as unknown as { setText(k: string, v: string): void }).setText('name', '田中 次郎');
     expect(unsaved()).toBe(1);
-    [...el().querySelectorAll('form button')].find((b) => b.textContent!.trim() === 'やめる')!.dispatchEvent(new Event('click'));
+    // 「やめる」：入力を変えていれば確かめる。「キャンセル」なら入力を残し、「破棄して閉じる」なら閉じる
+    const ask = vi.spyOn(TestBed.inject(Confirm), 'ask').mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const cancel = () => [...el().querySelectorAll('form button')].find((b) => b.textContent!.trim() === 'やめる')!.dispatchEvent(new Event('click'));
+    cancel();
     await settle();
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask.mock.calls[0][0].message).toContain('入力した内容は保存されていません');
+    expect(el().querySelector('form')).not.toBeNull();
+    expect(unsaved()).toBe(1);
+    cancel();
+    await settle();
+    expect(el().querySelector('input[name=employeeNumber]')).toBeNull();
     expect(unsaved()).toBe(0);
   });
 
@@ -430,6 +442,23 @@ describe('EmployeeList', () => {
     expect(created.length).toBe(1);
     expect(created[0].insured).toBe(false);
     expect(created[0].eligibilityResult?.candidate).toBe('none');
+  });
+
+  it('画面の一覧にない人が使っている社員番号は、保存のときに分かれば社員番号の欄に知らせ、登録しない', async () => {
+    (el().querySelector('.page-header button') as HTMLButtonElement).click();
+    await settle();
+    const c = fixture.componentInstance as unknown as { setText(k: string, v: string): void; setInsured(v: boolean): void };
+    c.setText('employeeNumber', '0099');
+    c.setText('name', '重複 番号');
+    c.setText('birthDate', '1985-01-01');
+    c.setInsured(false);
+    await settle();
+    el().querySelector('form')!.dispatchEvent(new Event('submit'));
+    await settle();
+    expect(created.length).toBe(0);
+    const numberLabel = (el().querySelector('input[name=employeeNumber]') as HTMLElement).closest('label')!;
+    expect(numberLabel.textContent).toContain('この社員番号はすでに登録されています（ほかの担当者が先に登録したか、担当外の事業所の人が使っています）');
+    expect(el().querySelector('form .actions .err')?.textContent ?? '').not.toContain('登録できませんでした');
   });
 
   it('登録できなかったとき（通信・権限）は、社員番号の欄ではなく、登録のボタンの横に知らせる', async () => {
