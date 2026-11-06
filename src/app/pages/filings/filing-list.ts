@@ -7,7 +7,7 @@ import { Component, computed, inject, OnInit, signal, ElementRef } from '@angula
 import { RouterLink } from '@angular/router';
 import { DateLabelPipe } from '../../core/ui/year-month.pipe';
 import { Auth } from '../../core/auth/auth';
-import { addDays, Filing, FILING_KIND_LABEL, FilingKind, filingState, FilingState, findFilings } from '../../core/calc/filing';
+import { addDays, Filing, FILING_KIND_LABEL, FilingKind, filingName, filingState, FilingState, findFilings } from '../../core/calc/filing';
 import { GradeRow } from '../../core/calc/grade-suggest';
 import { Office } from '../../core/calc/office';
 import { cutoffResolver, legacyGroup, PayrollGroup } from '../../core/calc/payroll-group';
@@ -117,6 +117,7 @@ export class FilingList implements OnInit {
       const e = f.employeeId ? byId.get(f.employeeId) : null;
       return {
         ...f,
+        name: filingName(f, this.filedIds()),
         state: filingState(f, this.filedIds(), this.today()),
         employeeLabel: e ? `${e.employeeNumber} ${e.name}` : '（事業所）',
         officeName: this.offices().find((o) => o.id === f.officeId)?.name ?? '',

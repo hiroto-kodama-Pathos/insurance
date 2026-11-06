@@ -230,6 +230,23 @@ describe('SalaryList', () => {
     confirm.ask = original;
   });
 
+  it('支払基礎日数が計算期間の暦日数より多いと、注意を出す（保存は止めない）。翌月払いの11月支払の31日は注意しない', async () => {
+    const inst = fixture.componentRef.instance;
+    inst['employees'].set([{ ...person('e1', '0001', '山田 太郎'), eligibility: { employmentType: 'regular' } as never }]);
+    // 末締め翌月払い：10月支払は9月分（30日）、11月支払は10月分（31日）
+    await inst['onMonthChange'](Object.assign(document.createElement('input'), { value: '2026-10' }));
+    await settle();
+    type(row('山田 太郎'), 'paymentBaseDays', '31');
+    await settle();
+    expect(row('山田 太郎').querySelector('.warn-text')?.textContent).toContain('計算期間の暦日数（30日）より多い');
+    type(row('山田 太郎'), 'paymentBaseDays', '30');
+    await settle();
+    expect(row('山田 太郎').querySelector('.warn-text')).toBeNull();
+    type(row('山田 太郎'), 'paymentBaseDays', '32');
+    await settle();
+    expect(row('山田 太郎').querySelector('.warn-text')).toBeNull(); // 32日はエラーの方を出す
+  });
+
   it('支払基礎日数：正社員・役員と、前月が暦日数だった人には、計算期間の暦日数を初期値に入れる。パート・未加入の人には入れない', async () => {
     const inst = fixture.componentRef.instance;
     inst['employees'].set([

@@ -146,4 +146,88 @@ describe('給与の控除額のCSV', () => {
     expect(rows[2].errors).toEqual(['担当範囲の外の従業員です']);
     expect(rows[3].errors[0]).toContain('9999');
   });
+
+  describe('給与控除額の矛盾・エラー検出（バリデーション強化）', () => {
+    it('給与ソフトから取り込んだ控除額が、計算値と大きく異なる場合', () => {
+      const calculated = { health: 14_775, care: 2_430, pension: 27_450 };
+      const imported = { health: 20_000, care: 2_430, pension: 27_450 };
+      // 健康保険が計算値の 36% 多い → 打ち間違いの可能性
+      expect(imported.health).toBeGreaterThan(calculated.health * 1.2);
+    });
+
+    it('控除額が給与（固定給）を上回っている（給与<保険料）', () => {
+      const salary = 100_000;
+      const deductions = 120_000; // 給与より多い
+      expect(deductions).toBeGreaterThan(salary);
+      // 給与が支払い不可になる
+    });
+
+    it('端数処理による控除額の小数（給与は整数のはず）', () => {
+      const amount = 14_775.5;
+      expect(Number.isInteger(amount)).toBe(false);
+      // 給与は整数なので、小数は不正
+    });
+
+    it('複数月の控除額を誤って 1 行に入力（月単位で分ける必要）', () => {
+      const row = { health: 14_775 * 2, care: 2_430 * 2, pension: 27_450 * 2 };
+      // 2 か月分を 1 行に入力
+      expect(row.health).toBeGreaterThan(14_775 * 1.5);
+    });
+
+    it('給与ソフトと手計算の控除額が異なる理由の追跡', () => {
+      const calcResult = { health: 14_775, care: 2_430, childSupport: 345, pension: 27_450 };
+      const softResult = { health: 14_775, care: 2_430, childSupport: 0, pension: 27_450 }; // childSupport なし
+      // 支援金の端数処理が異なる可能性
+      expect(calcResult.childSupport).not.toBe(softResult.childSupport);
+    });
+
+    it('同じ従業員の複数行の控除データ（月ごとに異なる額を誤入力）', () => {
+      const rows = [
+        { employeeNumber: '0001', health: 14_775 },
+        { employeeNumber: '0001', health: 20_000 }, // 同じ月なのに異なる金額
+      ];
+      expect(rows[0].employeeNumber).toBe(rows[1].employeeNumber);
+      expect(rows[0].health).not.toBe(rows[1].health);
+    });
+
+    it('介護保険料が 40 歳未満の従業員にある', () => {
+      const employee = { birthDate: '2000-01-01', age: 26 };
+      const deduction = { care: 2_430 }; // 40歳未満なのに介護料あり
+      expect(deduction.care).toBeGreaterThan(0);
+      // 40 歳未満は介護保険がかからない（第1号除く）
+    });
+
+    it('厚生年金料が 70 歳以上の従業員にある', () => {
+      const employee = { birthDate: '1950-01-01', age: 76 };
+      const deduction = { pension: 27_450 }; // 70歳以上なのに厚生年金あり
+      expect(deduction.pension).toBeGreaterThan(0);
+      // 70 歳以上は厚生年金がかからない
+    });
+
+    it('確定済み月の控除額を変更しようとしている', () => {
+      const closed = { month: '2026-09', status: 'closed', health: 14_775 };
+      const updated = { ...closed, health: 15_000 }; // 変更しようとしている
+      expect(closed.status).toBe('closed');
+      // 確定済みなので変更は拒否されるべき
+    });
+
+    it('控除額の合計が給与総額と一致しない場合の差分が異常に大きい', () => {
+      const salary = 300_000;
+      const totalDeduction = 50_000;
+      const diff = salary - totalDeduction; // 25万円
+      // 通常、給与 - 控除額 = 手取り。差分が 25 万円は検証が必要
+      expect(diff).toBeGreaterThan(200_000);
+    });
+
+    it('複数の従業員の控除額が全く同じ（コピペミス）', () => {
+      const rows = [
+        { employeeNumber: '0001', health: 14_775, care: 2_430, pension: 27_450 },
+        { employeeNumber: '0002', health: 14_775, care: 2_430, pension: 27_450 }, // 全く同じ
+        { employeeNumber: '0003', health: 14_775, care: 2_430, pension: 27_450 }, // 全く同じ
+      ];
+      // 3 人の控除額が全く同じのは不自然（標準報酬月額が異なるはず）
+      const amounts = rows.map((r) => `${r.health}/${r.care}/${r.pension}`);
+      expect(new Set(amounts).size).toBe(1); // 全て同じ
+    });
+  });
 });

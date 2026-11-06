@@ -189,3 +189,43 @@ describe('1か月の期間の最後の日（民法143条）', () => {
     expect(oneMonthEnd('2026-12-31')).toBe('2027-01-30');
   });
 });
+
+describe('同じ月に2回以上支給した賞与（合算してから1,000円未満を切り捨て・上限・保険料の差額）', () => {
+  const sumEmp = (r: ReturnType<typeof calcEmployeeBonuses>[number]) =>
+    Number([r.premium!.health, r.premium!.care, r.premium!.childSupport, r.premium!.pension].reduce((t, x) => t + (x?.employeeYen ?? 0n), 0n));
+
+  it('500円を2回なら、合算した標準賞与額は1,000円（1回目0円・2回目1,000円）', () => {
+    const r = calcEmployeeBonuses(emp(), [b('a', '2026-12-10', 500), b('b', '2026-12-20', 500)], masters);
+    expect(r.map((x) => x.standardBonus)).toEqual([0, 1000]);
+    expect(r.map((x) => x.monthStandard)).toEqual([0, 1000]);
+    expect(r.map((x) => x.sameMonthIndex)).toEqual([1, 2]);
+    expect(r[1].base.pension).toBe(1000);
+  });
+
+  it('100万円を2回なら、厚生年金は合算で150万円まで（1回目100万円・2回目50万円）', () => {
+    const r = calcEmployeeBonuses(emp(), [b('a', '2026-12-10', 1_000_000), b('b', '2026-12-20', 1_000_000)], masters);
+    expect(r.map((x) => x.base.pension)).toEqual([1_000_000, 500_000]);
+    expect(r[1].capped.pension).toBe(true);
+    expect(r.map((x) => x.base.health)).toEqual([1_000_000, 1_000_000]);
+  });
+
+  it('健保の年度累計が572万9,000円の人に、同じ月に500円を2回：合算した1,000円で上限の残り1,000円まで', () => {
+    const r = calcEmployeeBonuses(emp(), [b('x', '2026-06-10', 5_729_000), b('a', '2026-12-10', 500), b('b', '2026-12-20', 500)], masters);
+    expect(r.map((x) => x.base.health)).toEqual([5_729_000, 0, 1000]);
+    expect(r[2].capped.health).toBe(false);
+  });
+
+  it('2回目に控除する保険料は、合算した額の保険料から1回目の保険料を引いた差額（合計は合算して1回で計算した額と同じ）', () => {
+    const two = calcEmployeeBonuses(emp(), [b('a', '2026-12-10', 500_900), b('b', '2026-12-20', 400_200)], masters);
+    const once = calcEmployeeBonuses(emp(), [b('c', '2026-12-10', 901_100)], masters);
+    expect(two.map((x) => x.monthStandard)).toEqual([500_000, 901_000]);
+    expect(sumEmp(two[0]) + sumEmp(two[1])).toBe(sumEmp(once[0]));
+    expect(two[0].premium!.pension!.employeeYen + two[1].premium!.pension!.employeeYen).toBe(once[0].premium!.pension!.employeeYen);
+  });
+
+  it('月が違えば合算しない', () => {
+    const r = calcEmployeeBonuses(emp(), [b('a', '2026-11-30', 500), b('b', '2026-12-01', 500)], masters);
+    expect(r.map((x) => x.standardBonus)).toEqual([0, 0]);
+    expect(r.map((x) => x.sameMonthIndex)).toEqual([1, 1]);
+  });
+});

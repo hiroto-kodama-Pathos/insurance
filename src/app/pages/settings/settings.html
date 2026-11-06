@@ -256,6 +256,10 @@
           <input type="month" name="bonusTypeFrom" [value]="bonusTypeForm().validFrom" (input)="setBonusType('validFrom', $any($event.target).value)" />
         </label>
         <span class="err">{{ errors()['validFrom'] }}</span>
+        <span class="err">{{ errors()['isRemuneration'] }}</span>
+        @if (mode()?.id) {
+          <p class="help">この種類の賞与が登録されているときは、年4回以上支給の設定と適用開始月は変えられません（名前は変えられます）。支給の回数が変わったときは、新しい種類を作ってください。</p>
+        }
         <p class="help">年4回以上支給かどうかは、この月以後に支給する賞与から当てます（登録済みの賞与は、登録したときの扱いのままです）。</p>
         <div class="actions">
           <button type="submit" [disabled]="saving()">保存</button>

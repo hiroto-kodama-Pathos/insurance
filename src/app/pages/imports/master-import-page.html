@@ -92,6 +92,7 @@
       } @else {
         <p class="counts">
           新しく登録 {{ counts().new }}件・登録済み {{ counts().same }}件・エラー {{ counts().error }}件
+          @if (counts().update > 0) { ・登録済みと違う {{ counts().update }}件 }
           @if (counts().closed > 0) { ・確定済み {{ counts().closed }}件 }
           @if (counts().outOfScope > 0) { ・担当範囲外 {{ counts().outOfScope }}件 }
           <label class="check">
@@ -115,6 +116,12 @@
             </tbody>
           </table>
         </div>
+        @if (counts().update > 0) {
+          <label class="check correct">
+            <input type="checkbox" name="correct" [checked]="correct()" (change)="correct.set($any($event.target).checked)" />
+            登録済みと違う{{ counts().update }}件を、CSVの内容で訂正する（賞与額・うち現物・種類。確定済みの月は訂正しません。支給日の誤りは賞与の画面で直してください）
+          </label>
+        }
         <div class="actions">
           <button type="button" class="primary" [disabled]="busy() || toSave().length === 0" (click)="importRows()">
             {{ toSave().length }}件を登録する

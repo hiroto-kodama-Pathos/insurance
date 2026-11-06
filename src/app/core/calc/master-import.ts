@@ -1,7 +1,9 @@
 // 従業員・標準報酬月額・賞与のCSVの取り込み（設計書 3.8）
 // 導入時に、今の従業員・標準報酬月額・その年度の賞与をまとめて登録する。
 // 列の対応づけ（csvMappings.employee・standard・bonus）でCSVの列を合わせ、取り込む前にプレビューで登録する内容とエラー行を確かめる。
+import { is75OrOlderOn } from './age';
 import { BonusType, isRemunerationBonus } from './bonus-type';
+import { validateBonus } from './bonus-input';
 import { parseDateLoose, parseNumberLoose } from './csv';
 import { checkDependent, checkRemoval, Dependent } from './dependent';
 import { parseStandardLoose, parseYearMonthLoose } from './decision-import';
@@ -98,10 +100,11 @@ export function missingImportColumns(kind: ImportKind, m: ColumnMapping, headers
   return missing;
 }
 
-export type ImportStatus = 'new' | 'same' | 'error' | 'closed' | 'outOfScope';
+export type ImportStatus = 'new' | 'update' | 'same' | 'error' | 'closed' | 'outOfScope';
 
 export const IMPORT_STATUS_LABEL: Record<ImportStatus, string> = {
   new: '新しく登録',
+  update: '登録済みと違う（訂正できる）',
   same: '登録済み（取り込まない）',
   error: 'エラー',
   closed: '確定済みのため取り込まない',
@@ -209,6 +212,8 @@ export function buildEmployeeImport(rows: string[][], m: ColumnMapping, ctx: Emp
     if (!hireDate && !acquiredDate && !errors.some((e) => e.includes('入社日') || e.includes('資格取得日')))
       errors.push('入社日か資格取得日を入れてください');
     if (birthDate && acquiredDate && acquiredDate < birthDate) errors.push('資格取得日が生年月日より前です');
+    else if (birthDate && acquiredDate && isValidDate(birthDate) && isValidDate(acquiredDate) && is75OrOlderOn(birthDate, acquiredDate))
+      errors.push('資格取得日に75歳以上の人は、健康保険・厚生年金の被保険者になりません（資格取得日を空にし、入社日だけを入れて未加入として取り込んでください）');
 
     const officeRaw = cell(r, 'office');
     const office = ctx.offices.find((o) => o.id === officeRaw || norm(o.name) === norm(officeRaw));
@@ -429,12 +434,14 @@ export type BonusToImport = {
   bonusTypeId: string | null;
   isRemuneration: boolean;
   officeId: string;
+  /** 登録済みの賞与を訂正する行だけ：その賞与のID */
+  existingId?: string | null;
 };
 
 export type BonusImportContext = {
   employees: { id: string; employeeNumber: string; name: string; assignments: Assignment[] }[];
-  /** 登録済みの賞与（同じ人・同じ支給日の二重登録を防ぐ） */
-  existing: { employeeId: string; paidDate: string }[];
+  /** 登録済みの賞与（同じ人・同じ支給日の二重登録を防ぐ。内容が違えば訂正の候補にする） */
+  existing: { id?: string; employeeId: string; paidDate: string; amount?: number; inKindAmount?: number | null; bonusTypeId?: string | null }[];
   types: BonusType[];
   /** 確定済みの「支給月|事業所ID」 */
   closed: Set<string>;
@@ -453,10 +460,15 @@ export function buildBonusImport(rows: string[][], m: ColumnMapping, ctx: BonusI
     const paidDate = parseDateLoose(rawDate);
     if (!paidDate || !isValidDate(paidDate)) errors.push(`支給日を読み取れません（${rawDate || '空欄'}）`);
     const amount = parseNumberLoose(cell(r, 'amount'));
-    if (amount === null || Number.isNaN(amount) || amount <= 0) errors.push('賞与額を読み取れません（1円以上）');
     const inKind = parseNumberLoose(cell(r, 'inKindAmount'));
-    if (Number.isNaN(inKind) || (inKind !== null && inKind < 0)) errors.push('うち現物を読み取れません');
-    else if (inKind !== null && amount !== null && !Number.isNaN(amount) && inKind > amount) errors.push('うち現物が賞与額より多いです');
+    if (Number.isNaN(amount)) errors.push('賞与額を読み取れません');
+    if (Number.isNaN(inKind)) errors.push('うち現物を読み取れません');
+    // 画面と同じチェック（1円以上・1億円未満・安全な整数・うち現物は賞与額以下）
+    if (!Number.isNaN(amount) && !Number.isNaN(inKind)) {
+      const v = validateBonus({ employeeId: 'x', paidDate: '2000-01-01', amount, inKindAmount: inKind });
+      if (v.amount) errors.push(v.amount);
+      if (v.inKindAmount) errors.push(v.inKindAmount);
+    }
     const typeRaw = cell(r, 'bonusType');
     const type = typeRaw ? ctx.types.find((t) => t.id === typeRaw || norm(t.name) === norm(typeRaw)) : null;
     if (typeRaw && !type) errors.push(`賞与の種類「${typeRaw}」が見つかりません`);
@@ -475,15 +487,26 @@ export function buildBonusImport(rows: string[][], m: ColumnMapping, ctx: BonusI
         : '';
     if (errors.length > 0 || !e || !paidDate || amount === null || !office)
       return { line, label, summary, status: 'error' as const, errors, save: null };
-    if (ctx.existing.some((b) => b.employeeId === e.id && b.paidDate === paidDate))
-      return { line, label, summary, status: 'same' as const, errors: ['同じ支給日の賞与が登録済みです（直すときは賞与の画面で）'], save: null };
     if (ctx.closed.has(`${paidDate.slice(0, 7)}|${office}`)) return { line, label, summary, status: 'closed' as const, errors: [], save: null };
     if (!inScope(ctx.scope, office)) return { line, label, summary, status: 'outOfScope' as const, errors: [], save: null };
     const isRemuneration = isRemunerationBonus(ctx.types, type?.id, paidDate);
-    return {
-      line, label, summary: isRemuneration ? `${summary}（報酬扱い）` : summary, status: 'new' as const, errors: [],
-      save: { employeeId: e.id, paidDate, amount, inKindAmount: inKind, bonusTypeId: type?.id ?? null, isRemuneration, officeId: office },
-    };
+    const save = { employeeId: e.id, paidDate, amount, inKindAmount: inKind, bonusTypeId: type?.id ?? null, isRemuneration, officeId: office };
+    const existing = ctx.existing.find((b) => b.employeeId === e.id && b.paidDate === paidDate);
+    if (existing) {
+      // 登録済みの賞与：内容が同じなら取り込まない。違えば、担当者が「訂正する」を選んだときだけ訂正する（設計書 3.8）
+      // 支給日の誤りは、支給日で照らし合わせるので、賞与の画面で直す
+      const diffs = [
+        existing.amount !== undefined && existing.amount !== amount ? `賞与額 ${yen(existing.amount)}円 → ${yen(amount)}円` : '',
+        (existing.inKindAmount ?? null) !== (inKind ?? null) ? `うち現物 ${yen(existing.inKindAmount ?? 0)}円 → ${yen(inKind ?? 0)}円` : '',
+        (existing.bonusTypeId ?? null) !== (type?.id ?? null)
+          ? `種類 ${ctx.types.find((t) => t.id === existing.bonusTypeId)?.name ?? 'なし'} → ${type?.name ?? 'なし'}`
+          : '',
+      ].filter((x) => x);
+      if (diffs.length === 0 || !existing.id)
+        return { line, label, summary, status: 'same' as const, errors: ['同じ支給日の賞与が登録済みです（同じ内容）'], save: null };
+      return { line, label, summary: diffs.join('・'), status: 'update' as const, errors: [], save: { ...save, existingId: existing.id } };
+    }
+    return { line, label, summary: isRemuneration ? `${summary}（報酬扱い）` : summary, status: 'new' as const, errors: [], save };
   });
 }
 

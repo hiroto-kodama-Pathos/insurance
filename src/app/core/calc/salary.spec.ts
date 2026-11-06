@@ -1,4 +1,4 @@
-import { detectFixedWageChanges, detectRetroactivePossibilities, payMonths, SalaryRecord, validateSalary } from './salary';
+import { detectFixedWageChanges, detectRetroactivePossibilities, baseDaysWarning, payMonths, SalaryRecord, validateSalary } from './salary';
 
 const s = (paidDate: string, fixed: number, nonFixed = 0, days = 30, retro: number | null = null): SalaryRecord => ({
   id: paidDate, employeeId: 'e1', paidDate, fixedWages: fixed, nonFixedWages: nonFixed,
@@ -77,5 +77,18 @@ describe('validateSalary', () => {
     expect(validateSalary({ ...ok, workingHours: null })).toEqual({});
     expect(validateSalary({ ...ok, workingHours: 745 }).workingHours).toBeDefined();
     expect(validateSalary({ ...ok, workingHours: 86.25 }).workingHours).toBeDefined();
+  });
+});
+
+describe('baseDaysWarning：支払基礎日数と計算期間の暦日数', () => {
+  it('計算期間の暦日数より多いときだけ注意する（支払月の日数とは比べない）', () => {
+    expect(baseDaysWarning(31, 31)).toBeNull(); // 翌月払いの11月支払分（10月分）
+    expect(baseDaysWarning(30, 30)).toBeNull();
+    expect(baseDaysWarning(31, 30)).toContain('計算期間の暦日数（30日）より多い');
+    expect(baseDaysWarning(29, 28)).toContain('（28日）');
+    expect(baseDaysWarning(29, 29)).toBeNull(); // 閏年の2月
+    expect(baseDaysWarning(31, null)).toBeNull(); // 締め日・支払月の変更月
+    expect(baseDaysWarning(null, 30)).toBeNull();
+    expect(baseDaysWarning(32, 30)).toBeNull(); // 32日はエラー（0〜31日）の方で伝える
   });
 });

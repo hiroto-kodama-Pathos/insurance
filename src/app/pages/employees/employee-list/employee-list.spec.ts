@@ -105,6 +105,18 @@ describe('EmployeeList', () => {
     fixture.detectChanges();
   }
 
+  it('同じ社員番号を2人以上が使っていれば、一覧の上に出す（前のデータ）', async () => {
+    expect(fixture.nativeElement.querySelector('.duplicate-numbers')).toBeNull();
+    (fixture.componentInstance as unknown as { employees: { update(f: (l: unknown[]) => unknown[]): void } }).employees.update((l) => [
+      ...l,
+      { ...yamada, id: 'dup', name: '重複 太郎' },
+    ]);
+    fixture.detectChanges();
+    const box = fixture.nativeElement.querySelector('.duplicate-numbers') as HTMLElement;
+    expect(box.textContent).toContain(`社員番号 ${yamada.employeeNumber}`);
+    expect(box.textContent).toContain('重複 太郎');
+  });
+
   it('従業員と、今の所属事業所・標準報酬月額を表示する', () => {
     const text = el().querySelector('table.list tbody')?.textContent ?? '';
     expect(text).toContain('山田 太郎');

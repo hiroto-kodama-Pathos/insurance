@@ -1,6 +1,6 @@
 // 従業員の新規登録の入力チェック（設計書 3.1）
 import { daysInMonth, monthOf } from './date';
-import { ageReachedDate } from './age';
+import { AGE75_ACQUIRE_MESSAGE, ageReachedDate, is75OrOlderOn } from './age';
 import { dateLabel } from './year-month';
 import type { InsuredType } from './insured-type';
 import type { EligibilityInput, EligibilityResult } from './eligibility-check';
@@ -219,6 +219,7 @@ export function validateNewEmployee(input: NewEmployeeInput, existingNumbers: st
   if (!isValidDate(input.acquiredDate)) e.acquiredDate = '資格取得日を正しく入力してください';
   else if (isValidDate(input.birthDate) && input.acquiredDate <= input.birthDate)
     e.acquiredDate = '資格取得日は生年月日より後の日付にしてください';
+  else if (isValidDate(input.birthDate) && is75OrOlderOn(input.birthDate, input.acquiredDate)) e.acquiredDate = AGE75_ACQUIRE_MESSAGE;
 
   // 導入時の登録：内訳は使わず、決定通知書の適用開始月を確かめる
   const ob = input.onboarding ?? null;

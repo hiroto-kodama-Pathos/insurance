@@ -16,3 +16,7 @@ tr.differs td:nth-child(6) { font-weight: bold; }
 .badge.new { background: #dcfce7; color: #166534; }
 .badge.error { background: #fee2e2; color: #991b1b; }
 .badge.closed, .badge.outOfScope, .badge.same { background: #f1f5f9; color: #555; }
+
+// 登録済みと違う行（訂正の候補）。「訂正する」を選ぶまでは取り込まない
+.badge.update { background: var(--c-warn-weak); color: var(--c-warn); }
+.check.correct { display: block; margin: 8px 0; }

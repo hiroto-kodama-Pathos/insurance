@@ -13,19 +13,34 @@ export type BonusInput = {
 };
 export type BonusErrors = Partial<Record<keyof BonusInput, string>>;
 
+/** 1回の賞与額の上限（1億円未満）。画面・CSV・ルール（firestore.rules の validBonus）で同じ値を使う */
+export const MAX_BONUS_YEN = 99_999_999;
+/** 二以上事業所勤務の、全事業所の賞与額の合計の上限（10億円未満） */
+export const MAX_BONUS_TOTAL_YEN = 999_999_999;
+
+/** 賞与の入力のチェック（画面とCSVで同じものを使う） */
 export function validateBonus(input: BonusInput): BonusErrors {
   const e: BonusErrors = {};
   if (!input.employeeId) e.employeeId = '従業員を選んでください';
   if (!isValidDate(input.paidDate)) e.paidDate = '支給日を正しく入力してください';
-  if (input.amount === null || !Number.isInteger(input.amount) || input.amount <= 0)
-    e.amount = '賞与額を円で入力してください';
-  else if (input.amount >= 100_000_000) e.amount = '賞与額が大きすぎます。桁を確かめてください';
+  if (input.amount === null || !Number.isSafeInteger(input.amount) || input.amount <= 0)
+    e.amount = '賞与額を1円以上の円で入力してください';
+  else if (input.amount > MAX_BONUS_YEN) e.amount = '賞与額が大きすぎます（1億円未満）。桁を確かめてください';
   const k = input.inKindAmount;
   if (k !== null && k !== undefined) {
-    if (!Number.isInteger(k) || k < 0) e.inKindAmount = 'うち現物の価額を0円以上の円で入力してください';
+    if (!Number.isSafeInteger(k) || k < 0) e.inKindAmount = 'うち現物の価額を0円以上の円で入力してください';
     else if (input.amount !== null && k > input.amount) e.inKindAmount = 'うち現物は賞与額の内数です（賞与額以下にしてください）';
   }
   return e;
+}
+
+/** 二以上事業所勤務の、全事業所の賞与額の合計のチェック（null は消す）。誤りがあれば文を返す */
+export function checkBonusTotal(amount: number, total: number | null): string | null {
+  if (total === null) return null;
+  if (!Number.isSafeInteger(total) || total <= amount)
+    return '全事業所の合計は、自社の賞与額より大きい円の額で入力してください（空欄にすると消します）。';
+  if (total > MAX_BONUS_TOTAL_YEN) return '全事業所の合計が大きすぎます（10億円未満）。桁を確かめてください。';
+  return null;
 }
 
 /** 届け出る賞与額（人と支給月ごと） */

@@ -1,4 +1,5 @@
 // 従業員の詳細画面での変更（退職・再加入・異動・標準報酬月額・休業）の入力チェック（設計書 2.8・2.10・2.12・3.1）
+import { AGE75_ACQUIRE_MESSAGE, is75OrOlderOn } from './age';
 import { nextDay, Qualification } from './eligibility';
 import { isValidDate } from './new-employee';
 import { Assignment } from './office';
@@ -74,10 +75,16 @@ export function checkLoss(qualifications: Qualification[], lostDate: string, rea
 }
 
 /** 再加入（新しい資格の期間を足す） */
-export function checkReacquire(qualifications: Qualification[], acquiredDate: string): Errors {
+/**
+ * 再加入（加入）の登録
+ * @param birthDate 本人の生年月日。渡すと、生年月日より後か・75歳未満か（被保険者になれる年齢か）も確かめる
+ */
+export function checkReacquire(qualifications: Qualification[], acquiredDate: string, birthDate?: string): Errors {
   const errors: Errors = {};
   if (openQualification(qualifications)) errors['acquiredDate'] = 'すでに加入中です。先に喪失を登録してください';
   else if (!isValidDate(acquiredDate)) errors['acquiredDate'] = '資格取得日を正しく入力してください';
+  else if (birthDate && isValidDate(birthDate) && acquiredDate <= birthDate) errors['acquiredDate'] = '資格取得日は生年月日より後の日付にしてください';
+  else if (birthDate && isValidDate(birthDate) && is75OrOlderOn(birthDate, acquiredDate)) errors['acquiredDate'] = AGE75_ACQUIRE_MESSAGE;
   else {
     const lastLost = qualifications.map((q) => q.lostDate ?? '').sort().at(-1) ?? '';
     if (acquiredDate < lastLost) errors['acquiredDate'] = '前の資格喪失日より前の日付にはできません';

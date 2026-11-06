@@ -111,6 +111,13 @@ describe('生年月日の入力チェックと、児童の注意', () => {
     expect(validateNewEmployee(ok, [], '2026-11-02').birthDate).toBeUndefined();
   });
 
+  it('資格取得日に75歳以上の人は「加入する」で登録しない（未加入なら登録できる）', () => {
+    const old = { ...ok, birthDate: '1950-01-01', acquiredDate: '2026-10-01' };
+    expect(validateNewEmployee(old, [], '2026-11-02').acquiredDate).toContain('資格取得日に75歳以上の人は');
+    expect(validateNewEmployee({ ...old, insured: false }, [], '2026-11-02').acquiredDate).toBeUndefined();
+    expect(validateNewEmployee({ ...ok, birthDate: '1951-10-02', acquiredDate: '2026-10-01' }, [], '2026-11-02').acquiredDate).toBeUndefined();
+  });
+
   it('被扶養者の生年月日も、今日より後ならエラー', () => {
     const e = validateNewEmployee({ ...ok, dependents: [{ name: '子', birthDate: '2026-12-01', certifiedDate: '' }] }, [], '2026-11-02');
     expect(e['dependent0']).toContain('今日より後');

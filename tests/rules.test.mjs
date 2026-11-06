@@ -23,6 +23,8 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
   await setDoc(doc(db, `${SI}/insurerRates/kyokai-tokyo`), { insurerId: 'kyokai', rateType: 'health', prefecture: '東京都', validFrom: '2026-03', rate: 9850, employeeShare: 500 });
   await setDoc(doc(db, `${SI}/insurerRates/k1-health`), { insurerId: 'k1', rateType: 'health', prefecture: null, validFrom: '2026-03', rate: 9000, employeeShare: 500 });
   await setDoc(doc(db, `${SI}/companySettings/main`), { retentionYears: 2, childSupportRounding: 'combined' });
+  await setDoc(doc(db, `${SI}/offices/honsha`), { name: '本社', prefecture: '東京都', insurerId: 'kyokai', isDefault: true });
+  await setDoc(doc(db, `${SI}/offices/osaka`), { name: '大阪支店', prefecture: '大阪府', insurerId: 'kyokai', isDefault: false });
 });
 
 // 管理者の担当範囲は常に全担当（アカウントの発行の関数が siScope: 'all' を付ける）
@@ -44,7 +46,40 @@ async function check(label, promise) {
 
 // ---- 従業員（これまでと同じ） ----
 const emp = `${SI}/employees/e1`;
-await check('担当者は従業員を書ける', assertSucceeds(setDoc(doc(staff, emp), { name: 'テスト', officeIds: ['honsha'] })));
+// 従業員は、同じ書き込みで社員番号の記録を作ったときだけ登録できる
+const person = (number, office = 'honsha') => ({ employeeNumber: number, name: 'テスト', birthDate: '1990-01-01', officeIds: [office], eligibility: null });
+const createEmployee = (db, id, number, office = 'honsha') => {
+  const b = writeBatch(db);
+  b.set(doc(db, `${SI}/employeeNumbers/${number}`), { employeeId: id });
+  b.set(doc(db, `${SI}/employees/${id}`), person(number, office));
+  return b.commit();
+};
+await check('担当者は従業員を書ける（社員番号の記録と一緒に）', assertSucceeds(createEmployee(staff, 'e1', '0001')));
+await check('社員番号の記録を作らずに従業員だけは登録できない', assertFails(setDoc(doc(staff, `${SI}/employees/x1`), person('0101'))));
+await check('ほかの人に向いた社員番号の記録では登録できない', assertFails(createEmployee(staff, 'x2', '0001')));
+await check('生年月日が実在しない日付の従業員は登録できない', assertFails((() => {
+  const b = writeBatch(staff);
+  b.set(doc(staff, `${SI}/employeeNumbers/0102`), { employeeId: 'x3' });
+  b.set(doc(staff, `${SI}/employees/x3`), { ...person('0102'), birthDate: '1990-02-30' });
+  return b.commit();
+})()));
+await check('社員番号の形が違う従業員は登録できない', assertFails(createEmployee(staff, 'x4', '00 01!')));
+await check('社員番号だけを変えることはできない（記録を作らずに）', assertFails(updateDoc(doc(staff, emp), { employeeNumber: '0103' })));
+await check('氏名を空にはできない', assertFails(updateDoc(doc(staff, emp), { name: '' })));
+await check('従業員に決まっていない項目は足せない', assertFails(updateDoc(doc(staff, emp), { memo: 'x' })));
+// サブコレクションのデータの形
+const sub = (name, id) => doc(staff, `${SI}/employees/e1/${name}/${id}`);
+await check('資格を登録できる', assertSucceeds(setDoc(sub('qualifications', 'q1'), { acquiredDate: '2024-04-01', lostDate: null, lostReason: null })));
+await check('資格取得日に実在しない日付は入れられない', assertFails(setDoc(sub('qualifications', 'q2'), { acquiredDate: '2024-02-30', lostDate: null, lostReason: null })));
+await check('資格喪失日が資格取得日以前の資格は入れられない', assertFails(setDoc(sub('qualifications', 'q3'), { acquiredDate: '2024-04-01', lostDate: '2024-04-01', lostReason: 'retirement' })));
+await check('標準報酬月額を登録できる', assertSucceeds(setDoc(sub('standardRemunerations', 's1'), { validFrom: '2024-04', reason: 'acquisition', healthStandard: 300000, pensionStandard: 300000 })));
+await check('1,000円単位でない標準報酬月額は入れられない', assertFails(setDoc(sub('standardRemunerations', 's2'), { validFrom: '2024-04', reason: 'acquisition', healthStandard: 300500, pensionStandard: 300000 })));
+await check('等級表の範囲から大きく外れた標準報酬月額は入れられない', assertFails(setDoc(sub('standardRemunerations', 's3'), { validFrom: '2024-04', reason: 'acquisition', healthStandard: 1000, pensionStandard: 300000 })));
+await check('登録されている事業所への所属は登録できる', assertSucceeds(setDoc(sub('assignments', 'a1'), { validFrom: '2024-04-01', officeId: 'honsha' })));
+await check('登録されていない事業所への所属は登録できない', assertFails(setDoc(sub('assignments', 'a2'), { validFrom: '2024-04-01', officeId: 'nowhere' })));
+await check('被保険者区分の種類が違うものは入れられない', assertFails(setDoc(sub('insuredTypes', 't1'), { validFrom: '2024-04-01', type: 'x' })));
+await check('適用除外の種類が違うものは入れられない', assertFails(setDoc(sub('exemptions', 'x1'), { type: 'x', startDate: '2024-04-01', endDate: null })));
+await check('休職の理由が違うものは入れられない', assertFails(setDoc(sub('absences', 'x1'), { reason: 'x', startDate: '2024-04-01', endDate: null })));
 await check('担当者は従業員を読める', assertSucceeds(getDoc(doc(staff, emp))));
 await check('siRoleなしは読めない', assertFails(getDoc(doc(noRole, emp))));
 await check('未ログインは読めない', assertFails(getDoc(doc(guest, emp))));
@@ -102,7 +137,7 @@ await check('親にほかの項目は書けない', assertFails(setDoc(doc(allSt
 
 
 // ---- 賞与（確定済みの月は登録・削除できない） ----
-const bonus = (ym, day, office) => ({ employeeId: 'e1', paidDate: `${ym}-${day}`, amount: 500000, yearMonth: ym, officeId: office });
+const bonus = (ym, day, office) => ({ employeeId: 'e1', paidDate: `${ym}-${day}`, amount: 500000, yearMonth: ym, officeId: office, isRemuneration: false });
 await check('未確定の月の賞与は登録できる', assertSucceeds(setDoc(doc(staff, `${SI}/bonuses/b1`), bonus('2026-11', '10', 'honsha'))));
 await check('うち現物つきの賞与は登録できる', assertSucceeds(setDoc(doc(staff, `${SI}/bonuses/b5`), { ...bonus('2026-11', '05', 'honsha'), inKindAmount: 50000 })));
 await check('うち現物が賞与額より大きい賞与は登録できない', assertFails(setDoc(doc(staff, `${SI}/bonuses/b6`), { ...bonus('2026-11', '05', 'honsha'), inKindAmount: 600000 })));
@@ -113,7 +148,27 @@ await testEnv.withSecurityRulesDisabled(async (ctx) => {
 await check('確定済みの月の賞与は登録できない', assertFails(setDoc(doc(staff, `${SI}/bonuses/b3`), bonus('2026-11', '20', 'honsha'))));
 await check('確定済みの月の賞与は削除できない', assertFails(deleteDoc(doc(staff, `${SI}/bonuses/b1`))));
 await check('同じ月でも未確定の事業所なら登録できる', assertSucceeds(setDoc(doc(staff, `${SI}/bonuses/b4`), bonus('2026-11', '20', 'osaka'))));
-await check('賞与の書き換えはできない', assertFails(updateDoc(doc(staff, `${SI}/bonuses/b4`), { amount: 1 })));
+await check('未確定の月の賞与は訂正できる（賞与額）', assertSucceeds(updateDoc(doc(staff, `${SI}/bonuses/b4`), { amount: 1 })));
+await check('賞与の訂正で従業員は変えられない', assertFails(updateDoc(doc(staff, `${SI}/bonuses/b4`), { employeeId: 'e2' })));
+// 画面を通らない書き込みでも、ありえない賞与・報酬扱いの偽りは止める（画面・CSVの validateBonus と同じ決まり）
+await testEnv.withSecurityRulesDisabled(async (ctx) => {
+  await setDoc(doc(ctx.firestore(), `${SI}/bonusTypes/quarterly`), { name: '四半期賞与', isRemuneration: true, validFrom: '2026-04' });
+  await setDoc(doc(ctx.firestore(), `${SI}/bonusTypes/summer`), { name: '夏季賞与', isRemuneration: false, validFrom: '2020-04' });
+});
+const bonusAt = (id, extra) => setDoc(doc(staff, `${SI}/bonuses/${id}`), { ...bonus('2026-10', '10', 'honsha'), ...extra });
+await check('実在しない支給日（2026-02-31）の賞与は登録できない', assertFails(setDoc(doc(staff, `${SI}/bonuses/x1`), { ...bonus('2026-02', '31', 'honsha') })));
+await check('1億円以上の賞与は登録できない', assertFails(bonusAt('x2', { amount: 100000000 })));
+await check('うち現物が文字列の賞与は登録できない', assertFails(bonusAt('x3', { inKindAmount: '500' })));
+await check('全事業所の合計が10億円以上の賞与は登録できない', assertFails(bonusAt('x4', { totalAmount: 1000000000 })));
+await check('登録されていない従業員の賞与は登録できない', assertFails(bonusAt('x5', { employeeId: 'nobody' })));
+await check('登録されていない種類の賞与は登録できない', assertFails(bonusAt('x6', { bonusTypeId: 'nothing' })));
+await check('年4回以上支給でない種類の賞与を報酬扱いにはできない', assertFails(bonusAt('x7', { bonusTypeId: 'summer', isRemuneration: true })));
+await check('種類なしの賞与を報酬扱いにはできない', assertFails(bonusAt('x8', { isRemuneration: true })));
+await check('年4回以上支給の種類の賞与を、報酬扱いでなく登録はできない', assertFails(bonusAt('x9', { bonusTypeId: 'quarterly', isRemuneration: false })));
+await check('年4回以上支給の種類の賞与は、報酬扱いで登録できる', assertSucceeds(bonusAt('ok1', { bonusTypeId: 'quarterly', isRemuneration: true })));
+await check('適用開始月より前の支給は、年4回以上支給の種類でも報酬扱いにはできない', assertFails(setDoc(doc(staff, `${SI}/bonuses/x10`), { ...bonus('2026-03', '10', 'honsha'), bonusTypeId: 'quarterly', isRemuneration: true })));
+await check('賞与に決まっていない項目は足せない', assertFails(bonusAt('x11', { memo: 'x' })));
+await check('まだない賞与も読める（同じ支給日の賞与がないことをトランザクションで確かめるため）', assertSucceeds(getDoc(doc(staff, `${SI}/bonuses/e1_2026-10-31`))));
 await check('未確定の事業所の賞与は削除できる', assertSucceeds(deleteDoc(doc(staff, `${SI}/bonuses/b4`))));
 await check('確定済みの月の賞与でも、全事業所の合計は登録できる', assertSucceeds(updateDoc(doc(staff, `${SI}/bonuses/b1`), { totalAmount: 800000 })));
 await check('全事業所の合計は、自社の賞与額より大きくないと登録できない', assertFails(updateDoc(doc(staff, `${SI}/bonuses/b1`), { totalAmount: 400000 })));
@@ -189,6 +244,7 @@ await check('直すときも、扶養に入った日を生年月日より前に�
 await check('被扶養者は削除できる', assertSucceeds(deleteDoc(dep('d1'))));
 
 await check('担当者は従業員の支払区分の履歴を登録できる', assertSucceeds(setDoc(doc(staff, `${SI}/employees/e1/payrollAssignments/p1`), { validFrom: '2026-10-01', payrollGroupId: 'g1' })));
+await check('登録されていない支払区分の履歴は登録できない', assertFails(setDoc(doc(staff, `${SI}/employees/e1/payrollAssignments/p2`), { validFrom: '2026-10-01', payrollGroupId: 'nothing' })));
 
 // ---- 届出済みの記録 ----
 await check('担当者は届出済みにできる', assertSucceeds(setDoc(doc(staff, `${SI}/filings/e1_acquisition_2026-10-01`), { employeeId: 'e1', kind: 'acquisition', trigger: '2026-10-01', officeId: 'honsha', filedBy: 'u1' })));
@@ -222,10 +278,10 @@ await check('担当者は消去の記録を読める', assertSucceeds(getDoc(doc
 // ---- 担当範囲での読み書きの制限（特定の適用事業所の担当者） ----
 await testEnv.withSecurityRulesDisabled(async (ctx) => {
   const db = ctx.firestore();
-  await setDoc(doc(db, `${SI}/employees/sH`), { name: '本社の人', officeIds: ['honsha'] });
-  await setDoc(doc(db, `${SI}/employees/sO`), { name: '大阪の人', officeIds: ['osaka'] });
+  await setDoc(doc(db, `${SI}/employees/sH`), { employeeNumber: '1001', name: '本社の人', birthDate: '1990-01-01', officeIds: ['honsha'] });
+  await setDoc(doc(db, `${SI}/employees/sO`), { employeeNumber: '1002', name: '大阪の人', birthDate: '1990-01-01', officeIds: ['osaka'] });
   // 大阪から本社に異動した人（これまでの所属に大阪を含む）
-  await setDoc(doc(db, `${SI}/employees/sM`), { name: '異動した人', officeIds: ['osaka', 'honsha'] });
+  await setDoc(doc(db, `${SI}/employees/sM`), { employeeNumber: '1003', name: '異動した人', birthDate: '1990-01-01', officeIds: ['osaka', 'honsha'] });
   await setDoc(doc(db, `${SI}/employees/sH/qualifications/q1`), { acquiredDate: '2020-04-01', lostDate: null });
   await setDoc(doc(db, `${SI}/employees/sO/qualifications/q1`), { acquiredDate: '2020-04-01', lostDate: null });
   await setDoc(doc(db, `${SI}/salaries/sH_2026-08-25`), { employeeId: 'sH', paidDate: '2026-08-25', yearMonth: '2026-08', officeId: 'honsha', fixedWages: 1, nonFixedWages: 0, paymentBaseDays: 30 });
@@ -248,12 +304,13 @@ await check('大阪の担当者は大阪の届出済みを読める', assertSucc
 await check('大阪の担当者は本社の届出済みを読めない', assertFails(getDoc(doc(osakaStaff, `${SI}/filings/sH_acquisition_2026-10-01`))));
 {
   const b = writeBatch(osakaStaff);
-  b.set(doc(osakaStaff, `${SI}/employees/sNew`), { name: '新しい人', officeIds: ['osaka'] });
+  b.set(doc(osakaStaff, `${SI}/employeeNumbers/2001`), { employeeId: 'sNew' });
+  b.set(doc(osakaStaff, `${SI}/employees/sNew`), { ...person('2001', 'osaka'), name: '新しい人' });
   b.set(doc(osakaStaff, `${SI}/employees/sNew/assignments/a1`), { validFrom: '2026-11-01', officeId: 'osaka' });
   b.set(doc(osakaStaff, `${SI}/employees/sNew/qualifications/q1`), { acquiredDate: '2026-11-01', lostDate: null });
   await check('大阪の担当者は、大阪の所属で従業員を登録できる（同じ書き込みでサブコレクションも）', assertSucceeds(b.commit()));
 }
-await check('大阪の担当者は、本社の所属で従業員を登録できない', assertFails(setDoc(doc(osakaStaff, `${SI}/employees/sNew2`), { name: 'x', officeIds: ['honsha'] })));
+await check('大阪の担当者は、本社の所属で従業員を登録できない', assertFails(createEmployee(osakaStaff, 'sNew2', '2002', 'honsha')));
 await check('大阪の担当者は、所属事業所の一覧を変えられない（異動は全担当）', assertFails(updateDoc(doc(osakaStaff, `${SI}/employees/sO`), { officeIds: ['osaka', 'honsha'] })));
 await check('大阪の担当者は、本社への所属の履歴を作れない', assertFails(setDoc(doc(osakaStaff, `${SI}/employees/sO/assignments/a2`), { validFrom: '2026-12-01', officeId: 'honsha' })));
 await check('大阪の担当者も、大阪の従業員の名前は直せる', assertSucceeds(updateDoc(doc(osakaStaff, `${SI}/employees/sO`), { name: '大阪の人（直した）' })));

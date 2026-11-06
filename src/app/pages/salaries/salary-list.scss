@@ -77,3 +77,4 @@ tr.payments-panel > td {
 .list tbody tr.payments-total > td { background: #f1f5f9; font-size: 13px; font-weight: bold; }
 .list tbody tr.payments-total .help { font-weight: normal; }
 td.sub { padding-left: 1.5em; color: var(--c-muted); }
+.warn-text { color: var(--c-warn); font-size: 12px; display: block; white-space: normal; max-width: 220px; }

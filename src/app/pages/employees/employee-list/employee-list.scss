@@ -42,3 +42,15 @@ fieldset.onboarding { border: 1px solid #ccc; border-radius: 4px; padding: 8px 1
 /* fieldset は中身の幅より狭くならないので、スマホでは画面の幅に収める（所定労働時間・日数の欄は折り返す） */
 fieldset.breakdown, fieldset.eligibility, fieldset.dependents { min-width: 0; }
 fieldset.eligibility .row { flex-wrap: wrap; }
+
+// 同じ社員番号を2人以上が使っている（前のデータ。解消するまで出す）
+.duplicate-numbers {
+  margin: 8px 0;
+  padding: 8px 12px;
+  border: 1px solid var(--c-danger);
+  border-radius: var(--radius);
+  background: var(--c-danger-weak);
+  color: var(--c-danger);
+  ul { margin: 4px 0; }
+  .hint { display: block; color: var(--c-text); }
+}

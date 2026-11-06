@@ -62,6 +62,9 @@ describe('EmployeeDetail', () => {
   let logWriteFails: boolean;
   /** 確定済みの月（事業所ID → 月） */
   let closedMonths: Record<string, string[]>;
+  /** 確定済みの月・ほかの従業員を読めない（読み込みに失敗したときの動きを確かめる） */
+  let closedFail = false;
+  let loadAllFail = false;
   let logLoadFails: boolean;
   /** yamada() の一部を差し替えて読み込ませる（reload() で画面を作り直す） */
   let detailOverride: Record<string, unknown> = {};
@@ -71,6 +74,8 @@ describe('EmployeeDetail', () => {
     logs = [];
     logWriteFails = false;
     closedMonths = {};
+    closedFail = false;
+    loadAllFail = false;
     logLoadFails = false;
     detailOverride = {};
     const record = (name: string) => async (...args: unknown[]) => {
@@ -87,16 +92,27 @@ describe('EmployeeDetail', () => {
           useValue: { loadFiledIds: async () => new Set<string>(), setFiled: record('setFiled'), unsetFiled: record('unsetFiled') },
         },
         // 削除の影響に使う、確定済みの月（事業所ごと）
-        { provide: ClosingRepository, useValue: { closedMonthsOf: async (officeId: string) => closedMonths[officeId] ?? [] } },
+        {
+          provide: ClosingRepository,
+          useValue: {
+            closedMonthsOf: async (officeId: string) => {
+              if (closedFail) throw new Error('unavailable');
+              return closedMonths[officeId] ?? [];
+            },
+          },
+        },
         { provide: ActivatedRoute, useValue: { snapshot: { paramMap: convertToParamMap({ id: 'e1' }) } } },
         {
           provide: EmployeeRepository,
           useValue: {
             loadDetail: async () => ({ ...yamada(), ...detailOverride }),
-            loadAll: async () => [
+            loadAll: async () => {
+              if (loadAllFail) throw new Error('unavailable');
+              return [
               { id: 'e1', employeeNumber: '0001' },
               { id: 'e2', employeeNumber: '0002' },
-            ],
+            ];
+            },
             // 担当外の事業所の人が使っている番号（画面の一覧には出ない）は、保存のときに止まる
             updateEmployeeNumber: async (...args: unknown[]) => {
               if (args[1] === '0099') throw new EmployeeNumberTakenError(['0099']);
@@ -660,6 +676,70 @@ describe('EmployeeDetail', () => {
     expect(el().textContent).toContain('退職（資格喪失）を取り消し、加入中に戻しました');
   });
 
+  it('資格の期間を直すとき、生年月日より前・75歳以上の資格取得日は入れない', async () => {
+    rowButton('table', '2024年4月1日', '直す').click();
+    fixture.detectChanges();
+    input('input[name=qualAcquired]', '1979-04-01');
+    await submit();
+    expect(el().textContent).toContain('資格取得日は生年月日より後の日付にしてください');
+    input('input[name=qualAcquired]', '2055-05-10');
+    await submit();
+    expect(el().textContent).toContain('資格取得日に75歳以上の人は');
+    expect(calls).toEqual([]);
+  });
+
+  it('資格取得日を後ろにずらすと、被扶養者の扶養に入った日が資格の期間の外になるときは止める', async () => {
+    rowButton('table', '2024年4月1日', '直す').click();
+    fixture.detectChanges();
+    input('input[name=qualAcquired]', '2024-05-01');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('山田 花子さん（扶養に入った日 2024年4月1日）の扶養に入った日が、資格の期間の外になります');
+  });
+
+  it('再加入は、資格取得時決定の標準報酬月額と一緒に登録する（75歳以上は登録しない）', async () => {
+    detailOverride = { qualifications: [{ id: 'q1', acquiredDate: '2024-04-01', lostDate: '2026-04-01', lostReason: 'retirement' }] };
+    await reload();
+    button('再加入を登録').click();
+    fixture.detectChanges();
+    input('input[name=reacquireDate]', '2026-09-01');
+    input('input[name=reacquireHealth]', '280000');
+    input('input[name=reacquirePension]', '280000');
+    await submit();
+    expect(calls).toEqual([['addQualification', 'e1', '2026-09-01', { healthStandard: 280_000, pensionStandard: 280_000 }]]);
+    expect(el().textContent).toContain('2026年9月分からの標準報酬月額 健保 28万円／厚年 28万円');
+  });
+
+  it('資格取得日がまだ来ていない資格は「加入予定」と出し、退職・喪失・異動は出さない', async () => {
+    detailOverride = { qualifications: [{ id: 'q1', acquiredDate: '2099-04-01', lostDate: null, lostReason: null }] };
+    await reload();
+    expect(el().textContent).toContain('加入予定（2099年4月1日から）');
+    expect(button('退職を登録')).toBeUndefined();
+    expect(button('異動を登録')).toBeUndefined();
+  });
+
+  it('ほかの従業員の社員番号を読めなかったら、社員番号の変更を保存しない', async () => {
+    loadAllFail = true;
+    button('社員番号を変更').click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    await new Promise((r) => setTimeout(r));
+    input('input[name=newEmployeeNumber]', '0099');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('ほかの従業員の社員番号を読み込めなかったため');
+  });
+
+  it('確定済みの月を読めなかったら、履歴を削除しない', async () => {
+    closedFail = true;
+    rowButton('#card-family table', '山田 花子', '削除').click();
+    await new Promise((r) => setTimeout(r));
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(calls.filter((c) => String(c[0]).startsWith('delete'))).toEqual([]);
+    expect(el().textContent).toContain('確定済みの月を読み込めなかったため');
+  });
+
   it('資格の期間を直すとき、ほかの資格の期間と重なる日は入れない', async () => {
     rowButton('table', '2024年4月1日', '直す').click();
     fixture.detectChanges();
@@ -855,7 +935,7 @@ describe('EmployeeDetail', () => {
     health.dispatchEvent(new Event('input'));
     await submit();
     expect(logs[0]).toContain('標準報酬月額を直しました');
-    expect(logs[0]).toContain('（直す前：2024年4月からの標準報酬月額（健保 30万円／厚年 30万円））');
+    expect(logs[0]).toContain('（直す前：2024年4月からの標準報酬月額（健保 30万円／厚年 30万円）／直したあと：2024年4月からの標準報酬月額（健保 32万円／厚年 30万円））');
 
     rowButton('table.dependents', '山田 花子', '削除').click();
     await answer(true);

@@ -7,6 +7,7 @@ import { daysInMonth, formatDate, monthEnd, monthOf, parseDate, previousDay } fr
 import { exemptedInsurances, isValidLeave, Leave, nextDay, Qualification } from './eligibility';
 import { EmployeeData, findEffective, Masters } from './employee-month';
 import { calcMonthlyPremium, ChildSupportRounding, MonthlyPremium, MonthlyPremiumInput, RateShare } from './monthly-premium';
+import type { PremiumResult } from './premium-calculator';
 import { Assignment, findOffice } from './office';
 import type { Insurer, InsurerRate } from './rate';
 
@@ -49,8 +50,15 @@ export type BonusResult = {
   target: BonusTarget;
   officeId: string | null;
   insurerId: string | null;
-  /** 1,000円未満を切り捨てた標準賞与額 */
+  /**
+   * この支給の標準賞与額。同じ月に2回以上支給したときは、合算して1,000円未満を切り捨てた額のうち、この支給で増えた分
+   * （500円・500円なら、1回目は0円、2回目は1,000円）
+   */
   standardBonus: number;
+  /** 同じ月・同じ事業所の支給を合算した標準賞与額（この支給まで。1回だけなら standardBonus と同じ） */
+  monthStandard?: number;
+  /** 同じ月・同じ事業所の何回目の支給か（1から） */
+  sameMonthIndex?: number;
   /** 上限を当てたあとの、保険料の計算に使う額 */
   base: { health: number; pension: number };
   /** 上限で減った分があるか */
@@ -197,12 +205,16 @@ export function calcEmployeeBonuses(
   // 健康保険の累計は「保険者 × 年度」、厚生年金は「月」ごとに積み上げる
   const healthTotal = new Map<string, number>();
   const pensionTotal = new Map<string, number>();
+  // 同じ月・同じ事業所・同じ保険者の支給（設計書 2.4）：賞与額を合算してから1,000円未満を切り捨て、上限を当て、
+  // 合算した額の保険料から前の支給で控除した保険料を引いた差額を、この支給で控除する（端数処理も合算した額で1回）
+  const months = new Map<string, { count: number; amount: number; standard: number; health: number; pension: number; premium: MonthlyPremium | null }>();
   // 二以上事業所勤務の決定（全事業所の合算）の上限の累計。合計を登録していない賞与は自社の額で数える
   const healthTotalC = new Map<string, number>();
   const pensionTotalC = new Map<string, number>();
 
   return sorted.map((bonus) => {
     const yearMonth = monthOf(bonus.paidDate);
+    // 同じ月の合算は、事業所・保険者が決まってから（下の monthKey）。それまでは、この支給だけの額で仮に置く
     const standardBonus = standardBonusOf(bonus.amount);
     const base: BonusResult = {
       bonus,
@@ -239,14 +251,30 @@ export function calcEmployeeBonuses(
     if (!insurer) return { ...base, status: 'noOffice', officeId: office.id };
     const multi = !!(std?.ownRemuneration && std?.totalRemuneration && std.ownRemuneration < std.totalRemuneration);
 
-    // 上限（免除・喪失月の賞与も累計には含める）
+    // 同じ月・同じ事業所・同じ保険者の支給を合算した標準賞与額のうち、この支給で増えた分
+    const monthKey = `${yearMonth}|${office.id}|${insurer.id}`;
+    const month = months.get(monthKey) ?? { count: 0, amount: 0, standard: 0, health: 0, pension: 0, premium: null };
+    month.count++;
+    month.amount += bonus.amount;
+    const monthStandard = standardBonusOf(month.amount);
+    const increment = monthStandard - month.standard;
+    month.standard = monthStandard;
+    months.set(monthKey, month);
+    base.standardBonus = increment;
+    base.monthStandard = monthStandard;
+    base.sameMonthIndex = month.count;
+
+    // 上限（免除・喪失月の賞与も累計には含める）。合算した額に当てるので、増えた分を前の累計に足して当てる
     const hKey = `${insurer.id}|${fiscalYearOf(bonus.paidDate)}`;
     const hBefore = healthTotal.get(hKey) ?? 0;
-    const health = Math.max(0, Math.min(standardBonus, HEALTH_BONUS_CAP - hBefore));
+    const health = Math.max(0, Math.min(increment, HEALTH_BONUS_CAP - hBefore));
     healthTotal.set(hKey, hBefore + health);
     const pBefore = pensionTotal.get(yearMonth) ?? 0;
-    const pension = Math.max(0, Math.min(standardBonus, PENSION_BONUS_CAP - pBefore));
+    const pension = Math.max(0, Math.min(increment, PENSION_BONUS_CAP - pBefore));
     pensionTotal.set(yearMonth, pBefore + pension);
+    // この月の、ここまでの合算（保険料は合算した額で計算する）
+    month.health += health;
+    month.pension += pension;
 
     // 全事業所の合計を登録した賞与は、合算した標準賞与額で上限を当てる
     const total = multi && bonus.totalAmount && bonus.totalAmount > bonus.amount ? bonus.totalAmount : null;
@@ -264,7 +292,7 @@ export function calcEmployeeBonuses(
       officeId: office.id,
       insurerId: insurer.id,
       base: { health, pension },
-      capped: { health: health < standardBonus, pension: pension < standardBonus },
+      capped: { health: health < increment, pension: pension < increment },
       exemption,
       multiOffice: multi,
       // 自社の賞与だけで、同月150万円・年度573万円の上限の半分を超える
@@ -289,7 +317,10 @@ export function calcEmployeeBonuses(
       specialInsured: employee.specialInsured ?? isSpecialInsuredMonth(insurer, employee.dependents, yearMonth),
       childSupportRounding,
     };
-    const premium = calcMonthlyPremium({ ...input, standard: { health, pension } });
+    // 合算した額（この支給まで）の保険料から、前の支給までの保険料を引いた差額を、この支給で控除する
+    const cumulative = calcMonthlyPremium({ ...input, standard: { health: month.health, pension: month.pension } });
+    const premium = month.premium ? diffPremium(cumulative, month.premium) : cumulative;
+    month.premium = cumulative;
     const result: BonusResult = { ...common, status: premium.missingRates.length > 0 ? 'missingRate' : 'ok', premium, rates };
     if (total !== null) {
       // 合算した標準賞与額の保険料を、賞与額の割合（自社 ÷ 合計）で按分する（月額と同じく割り算は最後）
@@ -306,6 +337,19 @@ export function calcEmployeeBonuses(
     }
     return result;
   });
+}
+
+/** 保険料の差（合算した額の保険料 − 前の支給までの保険料）。同じ月の2回目以降の支給で控除する額 */
+function diffPremium(cur: MonthlyPremium, prev: MonthlyPremium): MonthlyPremium {
+  const sub = (a: PremiumResult | null, b: PremiumResult | null): PremiumResult | null =>
+    a === null ? null : { fullSen: a.fullSen - (b?.fullSen ?? 0n), employeeYen: a.employeeYen - (b?.employeeYen ?? 0n), employerSen: a.employerSen - (b?.employerSen ?? 0n) };
+  return {
+    ...cur,
+    health: sub(cur.health, prev.health),
+    care: sub(cur.care, prev.care),
+    childSupport: sub(cur.childSupport, prev.childSupport),
+    pension: sub(cur.pension, prev.pension),
+  };
 }
 
 /** 賞与支払届の期限（支給日から5日以内） */

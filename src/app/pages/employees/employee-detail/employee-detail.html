@@ -20,7 +20,7 @@
       <button type="button" class="secondary small" (click)="open('employeeNumber')">社員番号を変更</button>
       <span>生年月日 {{ d.birthDate | ymd }}</span>
       <button type="button" class="secondary small" (click)="openEdit('birthDate')">生年月日を直す</button>
-      <span class="badge">{{ isInsuredNow() ? '加入中' : '資格なし' }}</span>
+      <span class="badge">{{ isInsuredNow() ? '加入中' : plannedQualification() ? '加入予定（' + (plannedQualification()!.acquiredDate | ymd) + 'から）' : '資格なし' }}</span>
       <span class="badge">{{ insuredTypeLabel[currentInsuredType()] }}</span>
       <span class="badge">{{ currentPayrollGroup().name }}</span>
       @if (absentNow(); as a) {
@@ -46,6 +46,8 @@
             <button type="button" class="secondary" (click)="open('retire')">退職を登録</button>
             <button type="button" class="secondary" (click)="open('loss')">退職以外の資格喪失</button>
             <button type="button" class="secondary" (click)="open('transfer')">異動を登録</button>
+          } @else if (plannedQualification(); as p) {
+            <span class="hint planned">{{ p.acquiredDate | ymd }}から加入予定です。退職・喪失・異動は資格を取得してから登録します（取り消すときは資格の期間の「直す」「削除」）。</span>
           } @else {
             <button type="button" class="secondary" (click)="open('reacquire')">{{ d.qualifications.length ? '再加入を登録' : '加入を登録' }}</button>
           }
@@ -422,7 +424,7 @@
 
     <section class="card" id="card-log">
       <header><h2>変更の記録</h2></header>
-      <p class="help">この人の情報を、誰が・いつ・何を登録・変更・削除したか（新しい順に100件）。直した・削除したときは、直す前の値も残します。記録は書き換え・削除できません。</p>
+      <p class="help">この人の情報を、誰が・いつ・何を登録・変更・削除したか（新しい順に100件）。直したときは直す前と直したあとの値を、削除したときは削除した内容を残します。記録は書き換え・削除できません。</p>
       @if (changeLogsFailed()) {
         <p class="error log-failed" role="alert">
           変更の記録を読み込めませんでした（記録が消えたのではありません）。通信を確かめて、読み込み直してください。
@@ -504,9 +506,18 @@
             @case ('reacquire') {
               <h2>{{ d.qualifications.length ? '再加入を登録' : '加入を登録' }}</h2>
               <label>資格取得日
-                <input type="date" [value]="date()" (input)="date.set($any($event.target).value)" />
+                <input type="date" name="reacquireDate" [value]="date()" (input)="date.set($any($event.target).value)" />
               </label>
               <span class="err">{{ errors()['acquiredDate'] }}</span>
+              <p class="help">資格取得時決定の標準報酬月額（資格取得月から）も一緒に登録します。保険料の計算に要るので、資格だけを登録することはできません（前の額を入れてあります。等級の額にしてください）。</p>
+              <label>健康保険の標準報酬月額（円）
+                <input inputmode="numeric" name="reacquireHealth" [value]="standardForm().healthStandard ?? ''" (input)="setStandard('healthStandard', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['healthStandard'] }}</span>
+              <label>厚生年金の標準報酬月額（円）
+                <input inputmode="numeric" name="reacquirePension" [value]="standardForm().pensionStandard ?? ''" (input)="setStandard('pensionStandard', $any($event.target).value)" />
+              </label>
+              <span class="err">{{ errors()['pensionStandard'] }}{{ errors()['validFrom'] }}</span>
             }
             @case ('transfer') {
               <h2>異動を登録</h2>

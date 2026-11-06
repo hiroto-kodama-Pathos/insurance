@@ -480,6 +480,22 @@ describe('Settings', () => {
     }
     const deletes = () => calls.filter((c) => String(c[0]).startsWith('delete'));
 
+    it('使用中の賞与の種類は、年4回以上支給と適用開始月を変えられない（名前は変えられる）', async () => {
+      bonusTypeUsed = new Set(['t1']);
+      const row = [...el().querySelectorAll('table.bonus-types tbody tr')].find((r) => r.textContent!.includes('夏季賞与'))!;
+      ([...row.querySelectorAll('button')].find((b) => b.textContent!.trim() === '変更') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      (form().querySelector('input[name=isRemuneration]') as HTMLInputElement).click();
+      await submit(form());
+      expect(calls).toEqual([]);
+      expect(form().textContent).toContain('この種類の賞与が登録されているため、年4回以上支給の設定と適用開始月は変えられません');
+      (form().querySelector('input[name=isRemuneration]') as HTMLInputElement).click();
+      type('種類の名前', '夏の賞与');
+      await submit(form());
+      expect(calls[0]).toEqual(['saveBonusType', 't1', { name: '夏の賞与', isRemuneration: false, validFrom: '2024-04' }]);
+    });
+
     it('1件でも使われていれば「使用中なので、削除できません」と出し、削除しない（過去の所属も数える）', async () => {
       assignments = [{ officeId: 'osaka', groupId: 'g2' }];
       bonusTypeUsed = new Set(['t1']);

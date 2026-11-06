@@ -13,9 +13,10 @@ import { FilingRepository } from '../../core/repository/filing-repository';
 import { isValidDate } from '../../core/calc/new-employee';
 import { Component, computed, HostListener, inject, OnInit, signal, ElementRef } from '@angular/core';
 import { afterDiscardCheck, FormSnapshot, HasUnsavedChanges } from '../../core/ui/unsaved-guard';
-import { BonusErrors, BonusInput, bonusReportAmounts, validateBonus } from '../../core/calc/bonus-input';
+import { BonusErrors, BonusInput, bonusReportAmounts, checkBonusTotal, validateBonus } from '../../core/calc/bonus-input';
+import { filingId } from '../../core/calc/filing';
 import { isPensionAge } from '../../core/calc/age';
-import { BonusType, fourthBonusWarning, isRemunerationBonus } from '../../core/calc/bonus-type';
+import { BonusType, bonusCountRange, fourOrMoreBonuses, fourthBonusWarning, isRemunerationBonus } from '../../core/calc/bonus-type';
 import {
   BonusRecord,
   BonusResult,
@@ -29,7 +30,7 @@ import { findOffice } from '../../core/calc/office';
 import { careNote, ChildSupportRounding } from '../../core/calc/monthly-premium';
 import { PaymentLine, summarizeMonth } from '../../core/calc/monthly-summary';
 import { PremiumResult, senToDisplayYen } from '../../core/calc/premium-calculator';
-import { BonusRepository } from '../../core/repository/bonus-repository';
+import { BonusExistsError, BonusRepository } from '../../core/repository/bonus-repository';
 import { ClosingRepository } from '../../core/repository/closing-repository';
 import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
 import { MasterRepository } from '../../core/repository/master-repository';
@@ -46,8 +47,20 @@ export type BonusRow = {
   closed: boolean;
 };
 
-/** 賞与支払届（事業所 × 支給日ごとに1件） */
-export type BonusReport = { officeId: string; officeName: string; paidDate: string; count: number; deadline: string };
+/**
+ * 賞与支払届の期限（事業所 × 届け出る日ごと）。同じ月に同じ人へ2回以上支給したときは、最後の支給のあとに合算して
+ * 届け出るので、その人は最後の支給日で数える（設計書 2.4）
+ */
+export type BonusReport = {
+  officeId: string;
+  officeName: string;
+  /** 最後の支給日（この日から5日以内に届け出る） */
+  paidDate: string;
+  count: number;
+  /** そのうち、同じ月に2回以上支給して合算する人 */
+  combined: number;
+  deadline: string;
+};
 
 const LINE_LABEL: Record<PaymentLine, string> = {
   healthCare: '健康保険（介護保険を含む）',
@@ -128,15 +141,36 @@ export class BonusList implements OnInit, HasUnsavedChanges {
   });
   /** 支給日の年度の賞与（表示している対象月と年度が違うときは、別に読む） */
   private readonly paidFyBonuses = signal<{ fy: string; list: BonusRecord[] } | null>(null);
-  /** 報酬扱いでない賞与が同じ年度で4回目になる（年4回以上支給の設定がない） */
+  /** 報酬扱いでない賞与が、7月〜翌6月で4回目になる（年4回以上支給の設定がない） */
   protected readonly fourthWarning = computed(() => {
     const f = this.form();
     if (!f.employeeId || !isValidDate(f.paidDate) || this.formIsRemuneration()) return null;
-    const fy = fiscalYearOf(f.paidDate);
-    const other = this.paidFyBonuses();
-    const list = fy === this.loadedFyName() ? this.fyBonuses() : other?.fy === fy ? other.list : null;
-    return list ? fourthBonusWarning(list, f.employeeId, f.paidDate) : null;
+    const list = this.countWindows().get(bonusCountRange(f.paidDate).from);
+    if (!list) return null;
+    // 直している賞与は、直す前の支給日では数えない
+    return fourthBonusWarning(list.filter((b) => b.id !== this.editingId()), f.employeeId, f.paidDate);
   });
+  /** 年4回以上かを数える期間（7月1日〜翌6月30日）ごとの賞与（期間の最初の日 → 賞与） */
+  private readonly countWindows = signal<Map<string, BonusRecord[]>>(new Map());
+  /** 表示している月の期間で、年4回以上の支給になっているのに報酬扱いでない人（設定漏れの確認） */
+  protected readonly fourOrMore = computed(() => {
+    const ym = this.yearMonth();
+    const from = bonusCountRange(`${ym}-01`).from;
+    const list = this.countWindows().get(from);
+    if (!list) return [];
+    const byId = new Map(this.employees().map((e) => [e.id, e]));
+    return fourOrMoreBonuses(list, `${ym}-01`)
+      .filter((x) => byId.has(x.employeeId))
+      .map((x) => ({ ...x, name: byId.get(x.employeeId)!.name, from }));
+  });
+  /** 7月〜翌6月の賞与を読む（年4回以上の確認）。登録・直す・削除のあとは読み直す（force） */
+  private async loadCountWindow(date: string, force = false): Promise<void> {
+    if (!isValidDate(date)) return;
+    const { from, to } = bonusCountRange(date);
+    if (!force && this.countWindows().has(from)) return;
+    const list = await this.bonusRepo.loadRange(from, to);
+    this.countWindows.update((m) => new Map(m).set(from, list));
+  }
   private readonly loadedFyName = signal('');
   protected readonly errors = signal<BonusErrors>({});
 
@@ -149,7 +183,7 @@ export class BonusList implements OnInit, HasUnsavedChanges {
   /** 直している賞与のID（登録のフォームを、直す入力として使う） */
   protected readonly editingId = signal<string | null>(null);
   /** 直す前の賞与（確定済みの月かどうかと、全事業所の合計を引き継ぐのに使う） */
-  private editingBonus: { yearMonth: string; officeId: string; totalAmount: number | null } | null = null;
+  private editingBonus: { paidDate: string; yearMonth: string; officeId: string; totalAmount: number | null } | null = null;
 
   /** 一覧の賞与を、登録のフォームに入れて直す */
   protected startEdit(row: BonusRow): void | Promise<void> {
@@ -159,7 +193,7 @@ export class BonusList implements OnInit, HasUnsavedChanges {
   private startEditNow(row: BonusRow): void {
     const b = row.result.bonus;
     this.editingId.set(b.id);
-    this.editingBonus = { yearMonth: b.paidDate.slice(0, 7), officeId: row.result.officeId ?? '', totalAmount: b.totalAmount ?? null };
+    this.editingBonus = { paidDate: b.paidDate, yearMonth: b.paidDate.slice(0, 7), officeId: row.result.officeId ?? '', totalAmount: b.totalAmount ?? null };
     this.employeeQuery.set('');
     this.errors.set({});
     this.form.set({ employeeId: b.employeeId, paidDate: b.paidDate, amount: b.amount, inKindAmount: b.inKindAmount ?? null, bonusTypeId: b.bonusTypeId ?? '' });
@@ -264,19 +298,22 @@ export class BonusList implements OnInit, HasUnsavedChanges {
   /** 賞与支払届：保険料がかからない賞与（免除・喪失月）も届け出るので含める */
   protected readonly reports = computed<BonusReport[]>(() => {
     const map = new Map<string, BonusReport>();
+    // 人ごとの、その月の支給日（同じ月に2回以上なら最後の支給のあとに合算して届け出る）
+    const people = new Map<string, { officeId: string; officeName: string; dates: string[] }>();
     for (const r of this.rows()) {
       if (r.result.target === 'outside' || r.result.status === 'remuneration' || !r.result.officeId) continue;
-      const key = `${r.result.officeId}|${r.result.bonus.paidDate}`;
-      const cur = map.get(key);
-      if (cur) cur.count++;
-      else
-        map.set(key, {
-          officeId: r.result.officeId,
-          officeName: r.officeName,
-          paidDate: r.result.bonus.paidDate,
-          count: 1,
-          deadline: bonusReportDeadline(r.result.bonus.paidDate),
-        });
+      const key = `${r.result.officeId}|${r.employee.id}`;
+      const p = people.get(key) ?? { officeId: r.result.officeId, officeName: r.officeName, dates: [] };
+      p.dates.push(r.result.bonus.paidDate);
+      people.set(key, p);
+    }
+    for (const p of people.values()) {
+      const last = [...p.dates].sort().at(-1)!;
+      const key = `${p.officeId}|${last}`;
+      const cur = map.get(key) ?? { officeId: p.officeId, officeName: p.officeName, paidDate: last, count: 0, combined: 0, deadline: bonusReportDeadline(last) };
+      cur.count++;
+      if (p.dates.length > 1) cur.combined++;
+      map.set(key, cur);
     }
     return [...map.values()].sort((a, b) => a.deadline.localeCompare(b.deadline));
   });
@@ -323,8 +360,9 @@ export class BonusList implements OnInit, HasUnsavedChanges {
   protected async saveTotal(row: BonusRow): Promise<void> {
     const id = row.result.bonus.id;
     const total = parseNumberInput(this.totalInputs()[id]);
-    if (total !== null && (!Number.isInteger(total) || total <= row.result.bonus.amount)) {
-      this.notice.set('全事業所の合計は、自社の賞与額より大きい円の額で入力してください（空欄にすると消します）。');
+    const err = checkBonusTotal(row.result.bonus.amount, total);
+    if (err) {
+      this.notice.set(err);
       return;
     }
     this.saving.set(true);
@@ -387,6 +425,13 @@ export class BonusList implements OnInit, HasUnsavedChanges {
     this.loadedFy = fy;
     this.loadedFyName.set(fy);
     this.fyBonuses.set(list);
+    if (force) {
+      // 登録・直す・削除のあとは、年4回以上の確認・二重登録の確認に使う賞与も読み直す（古いままだと、消した賞与と重なると出てしまう）
+      this.countWindows.set(new Map());
+      this.paidFyBonuses.set(null);
+      // 一覧の表示を待たせないよう、読み終わりは待たない
+      void this.loadCountWindow(`${ym}-01`, true).catch((e) => console.error(e));
+    }
   }
 
   protected onMonthChange(value: string): void {
@@ -394,6 +439,7 @@ export class BonusList implements OnInit, HasUnsavedChanges {
     this.yearMonth.set(value);
     this.notice.set(null);
     void this.loadBonuses();
+    void this.loadCountWindow(`${value}-01`).catch((e) => console.error(e));
   }
 
   /** 表示している月に、確定済みの事業所があるか */
@@ -409,7 +455,11 @@ export class BonusList implements OnInit, HasUnsavedChanges {
   }
 
   protected setForm<K extends keyof BonusInput>(key: K, value: string): void {
-    if (key === 'paidDate') void this.loadPaidFy(value);
+    if (key === 'paidDate') {
+      void this.loadPaidFy(value);
+      // 支給日を変えるたびに読み直す（ほかの担当者が登録した賞与も数える）
+      void this.loadCountWindow(value, true).catch((e) => console.error(e));
+    }
     this.form.update((f) => ({
       ...f,
       [key]:
@@ -423,6 +473,9 @@ export class BonusList implements OnInit, HasUnsavedChanges {
     event.preventDefault();
     const f = this.form();
     const errors = validateBonus(f);
+    // 同じ人・同じ支給日の賞与は1件（同じ月の別の日の支給はよい）。直しているときは、その賞与を除いて比べる
+    if (!errors.paidDate && !errors.employeeId && this.knownBonuses().some((b) => b.employeeId === f.employeeId && b.paidDate === f.paidDate && b.id !== this.editingId()))
+      errors.paidDate = `${dateLabel(f.paidDate)}支給の賞与はすでに登録されています（直すときは一覧の「直す」から。同じ月の別の日の支給は登録できます）`;
     this.errors.set(errors);
     if (Object.keys(errors).length > 0) return;
     // 支給日の所属事業所と、その月が確定済みでないか
@@ -461,7 +514,13 @@ export class BonusList implements OnInit, HasUnsavedChanges {
         this.yearMonth.set(f.paidDate.slice(0, 7));
         await this.loadBonuses(true);
         const name = this.employees().find((e) => e.id === f.employeeId)?.name ?? '';
-        this.notice.set(`${name}さんの賞与を直しました（${dateLabel(f.paidDate)}支給・${f.amount!.toLocaleString('ja-JP')}円）。賞与支払届を届け出たあとなら、訂正の届出も確かめてください。`);
+        const filed = this.bonusFiled(f.employeeId, [f.paidDate, before.paidDate]);
+        this.notice.set(
+          `${name}さんの賞与を直しました（${dateLabel(f.paidDate)}支給・${f.amount!.toLocaleString('ja-JP')}円）。` +
+            (filed
+              ? 'この月の賞与支払届は届出済みです。訂正（支給日を変えたときは取消と再提出）の届出をしてください。'
+              : '賞与支払届はまだ届出済みにしていません。'),
+        );
         this.resetEdit();
         return;
       }
@@ -485,6 +544,10 @@ export class BonusList implements OnInit, HasUnsavedChanges {
       this.employeeQuery.set('');
     } catch (e) {
       console.error(e);
+      if (e instanceof BonusExistsError) {
+        this.errors.set({ paidDate: `${dateLabel(e.paidDate)}支給の賞与はすでに登録されています（ほかの担当者が登録した可能性があります。画面を読み込み直して確かめてください）` });
+        return;
+      }
       // 通信・権限で保存できなかった（支給額の欄の誤りではない）ので、知らせとして出す
       this.notice.set('保存できませんでした。権限と通信を確かめてください。');
     } finally {
@@ -493,9 +556,12 @@ export class BonusList implements OnInit, HasUnsavedChanges {
   }
 
   protected async remove(row: BonusRow): Promise<void> {
+    const filed = this.bonusFiled(row.employee.id, [row.result.bonus.paidDate]);
     const ok = await this.confirm.ask({
       title: '賞与を削除しますか',
-      message: `${row.employee.name}さんの賞与（${dateLabel(row.result.bonus.paidDate)}支給・${row.result.bonus.amount.toLocaleString('ja-JP')}円）を削除します。元に戻せません。`,
+      message:
+        `${row.employee.name}さんの賞与（${dateLabel(row.result.bonus.paidDate)}支給・${row.result.bonus.amount.toLocaleString('ja-JP')}円）を削除します。元に戻せません。` +
+        (filed ? 'この月の賞与支払届は届出済みです。削除したら、取消（同じ月にほかの支給があれば合算した額での訂正）の届出をしてください。' : ''),
       ok: '削除する',
       danger: true,
     });
@@ -542,11 +608,33 @@ export class BonusList implements OnInit, HasUnsavedChanges {
       const l = e ? bonusExemptingLeave(e.leaves, r.bonus.paidDate) : null;
       n.push(l ? leaveExemptLabel(r.bonus.employeeId, l, this.filedIds()) : r.exemption === 'maternity' ? '産休免除' : '育休免除');
     }
+    if ((r.sameMonthIndex ?? 1) > 1)
+      n.push(`同じ月の${r.sameMonthIndex}回目の支給（合算した標準賞与額 ${this.yen(r.monthStandard)}円。保険料は合算した額で計算し、前の支給で控除した額を引いた差額）`);
+    else if (this.rows().some((x) => x.result.bonus.employeeId === r.bonus.employeeId && x.result.officeId === r.officeId && (x.result.sameMonthIndex ?? 1) > 1))
+      n.push('同じ月にあとの支給あり（合算して計算・届出）');
+    if (r.target !== 'outside' && r.status !== 'remuneration' && this.bonusFiled(r.bonus.employeeId, [r.bonus.paidDate])) n.push('賞与支払届は届出済み');
     if (r.capped.health) n.push(`健保の年度累計の上限（${this.yen(r.base.health)}円まで）`);
     if (r.capped.pension) n.push(`厚年の同月の上限（${this.yen(r.base.pension)}円まで）`);
     if (r.multiOfficeReview) n.push('二以上事業所勤務のため要確認（他社の賞与と合わせると上限にかかるおそれ）');
     return n;
   }
+  /** 読み込んである賞与（表示している年度と、7月〜6月の期間の分。同じ支給日の二重登録を画面で止めるのに使う） */
+  private knownBonuses(): BonusRecord[] {
+    const other = this.paidFyBonuses()?.list ?? [];
+    const w = [...this.countWindows().values()].flat();
+    return [...this.fyBonuses(), ...other, ...w];
+  }
+
+  /**
+   * その人のその月の賞与支払届を届出済みにしているか。届出のIDは、その月の最後の支給日（前に届け出た支給日のこともある）
+   * @param dates 見る支給日（直す前・直したあと）。同じ月のほかの支給日も含めて見る
+   */
+  protected bonusFiled(employeeId: string, dates: string[]): boolean {
+    const months = new Set(dates.filter((d) => d).map((d) => d.slice(0, 7)));
+    const all = new Set([...dates.filter((d) => d), ...this.knownBonuses().filter((b) => b.employeeId === employeeId && months.has(b.paidDate.slice(0, 7))).map((b) => b.paidDate)]);
+    return [...all].some((d) => this.filedIds().has(filingId(employeeId, 'bonus', d)));
+  }
+
   protected officeName(id: string): string {
     return this.masters()?.offices.find((o) => o.id === id)?.name ?? id;
   }

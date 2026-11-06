@@ -133,6 +133,15 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
   private readonly auth = inject(Auth);
   protected readonly isAdmin = computed(() => this.auth.user()?.siRole === 'admin');
   /**
+   * 前のデータで、同じ社員番号を2人以上が使っているもの（社員番号の記録を作れず、重なりを防げない）。
+   * 解消するまで一覧の上に出し、どちらかの社員番号を詳細で変えてもらう
+   */
+  protected readonly duplicateNumbers = computed(() => {
+    const byNumber = new Map<string, EmployeeRecord[]>();
+    for (const e of this.employees()) if (e.employeeNumber) byNumber.set(e.employeeNumber, [...(byNumber.get(e.employeeNumber) ?? []), e]);
+    return [...byNumber.entries()].filter(([, list]) => list.length > 1).map(([number, list]) => ({ number, people: list }));
+  });
+  /**
    * 新規登録で選べる適用事業所。特定の事業所の担当者は、自分の担当事業所だけ
    * （セキュリティルールでも、担当者はほかの事業所の人を登録できない。選べてしまうと、登録を押したときに断られる）
    */

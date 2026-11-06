@@ -24,7 +24,7 @@ import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employ
 import { MasterRepository } from '../../core/repository/master-repository';
 import { SalaryRepository } from '../../core/repository/salary-repository';
 import { SettingsRepository } from '../../core/repository/settings-repository';
-import { needsExclusion, periodChange } from '../../core/calc/pay-period-change';
+import { needsExclusion, periodCalendarDays, periodChange } from '../../core/calc/pay-period-change';
 import { cutoffOf, PayrollGroup, payrollGroupAt } from '../../core/calc/payroll-group';
 import { dateLabel } from '../../core/calc/year-month';
 
@@ -115,6 +115,8 @@ export class SalaryImport implements OnInit {
       existingIds: this.existingIds(),
       scope: this.auth.user()?.siScope ?? 'all',
       needsExclusion: need,
+      periodDaysOf: this.periodDaysFn(),
+      today: new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()),
     });
   });
 
@@ -132,9 +134,22 @@ export class SalaryImport implements OnInit {
     };
   });
 
+  /** その人のその支払月の、給与の計算期間の暦日数（締め日・支払月の変更月は null。支払基礎日数の注意に使う） */
+  private readonly periodDaysFn = computed(() => {
+    const groups = this.groups();
+    if (!groups) return undefined;
+    const byId = new Map(this.employees().map((e) => [e.id, e]));
+    return (employeeId: string, ym: string) => {
+      const e = byId.get(employeeId);
+      if (!e) return null;
+      const cutoffAt = (x: string) => cutoffOf(payrollGroupAt(groups, e.payrollAssignments, `${x}-01`));
+      return periodChange(ym, cutoffAt) ? null : periodCalendarDays(ym, cutoffAt);
+    };
+  });
+
   /** エラー・注意の行（登録しない行と、登録済みを上書きする行）だけを表示するか */
   protected readonly onlyIssues = signal(false);
-  protected readonly shownPreview = computed(() => (this.onlyIssues() ? this.preview().filter((r) => r.status !== 'new') : this.preview()));
+  protected readonly shownPreview = computed(() => (this.onlyIssues() ? this.preview().filter((r) => r.status !== 'new' || r.warnings.length > 0) : this.preview()));
 
   protected readonly counts = computed(() => {
     const c: Record<PreviewStatus, number> = { new: 0, overwrite: 0, error: 0, closed: 0, outOfScope: 0 };

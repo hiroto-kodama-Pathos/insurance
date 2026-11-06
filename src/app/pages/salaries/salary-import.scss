@@ -10,3 +10,4 @@ tr.error { background: #ffecec; }
 tr.closed, tr.outOfScope { color: #888; }
 tr.overwrite { background: #fffbe6; }
 .counts { margin: 8px 0; }
+.warn-text { color: var(--c-warn); font-size: 12px; }

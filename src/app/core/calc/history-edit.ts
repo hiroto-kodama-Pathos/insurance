@@ -1,6 +1,7 @@
 // 登録した履歴の訂正・削除の入力チェック（設計書 3.1「登録した情報の訂正・削除」）
 // 追加のときと同じ基準で確かめる。訂正では、直している行そのものは比べる相手から除く。
 // 削除は、消すと計算できなくなる場合（資格がある人の標準報酬月額が0件になるなど）だけ止める。
+import { AGE75_ACQUIRE_MESSAGE, is75OrOlderOn } from './age';
 import { nextDay, Qualification } from './eligibility';
 import { isValidDate } from './new-employee';
 import { Assignment } from './office';
@@ -56,9 +57,13 @@ export function checkQualificationEdit(
   all: WithId<Qualification>[],
   id: string,
   input: QualificationEditInput,
+  birthDate?: string,
 ): { errors: Errors; lostDate: string | null } {
   const errors: Errors = {};
   if (!isValidDate(input.acquiredDate)) errors['acquiredDate'] = '資格取得日を正しく入力してください';
+  // 新規登録と同じく、生年月日より後・75歳未満（被保険者になれる年齢）に限る
+  else if (birthDate && isValidDate(birthDate) && input.acquiredDate <= birthDate) errors['acquiredDate'] = '資格取得日は生年月日より後の日付にしてください';
+  else if (birthDate && isValidDate(birthDate) && is75OrOlderOn(birthDate, input.acquiredDate)) errors['acquiredDate'] = AGE75_ACQUIRE_MESSAGE;
   let lostDate: string | null = null;
   if (input.lostReason) {
     const retire = input.lostReason === 'retirement';
@@ -155,6 +160,20 @@ export function checkLeaveOverlap(
 }
 
 // ---- 被扶養者 ----
+
+/**
+ * 資格の期間を直すと、扶養に入った日が本人の資格の期間の外になってしまう被扶養者（直す前は中にあった人だけ）。
+ * 被扶養者は本人に資格がある期間にだけ扶養に入れる（被扶養者の登録と同じ決まり）ので、資格取得日を後ろにずらすときなどに止める
+ */
+export function dependentsLeftOutside(
+  dependents: { id: string; name: string; certifiedDate: string }[],
+  before: { acquiredDate: string; lostDate: string | null }[],
+  after: { acquiredDate: string; lostDate: string | null }[],
+): { id: string; name: string; certifiedDate: string }[] {
+  const inside = (qs: { acquiredDate: string; lostDate: string | null }[], d: string) =>
+    qs.some((q) => q.acquiredDate <= d && (q.lostDate === null || d < q.lostDate));
+  return dependents.filter((x) => inside(before, x.certifiedDate) && !inside(after, x.certifiedDate));
+}
 
 /**
  * 資格の期間を直したとき、同じ日に扶養から外れていた被扶養者の「扶養から外れた日」も合わせる

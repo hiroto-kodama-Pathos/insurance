@@ -65,8 +65,11 @@ describe('MasterImportPage', () => {
         {
           provide: BonusRepository,
           useValue: {
-            loadRange: async () => [{ id: 'b1', employeeId: 'e1', paidDate: '2026-07-10', amount: 1 }],
-            importMany: async (list: unknown[]) => { calls.push(['importMany', list]); },
+            loadRange: async () => [{ id: 'b1', employeeId: 'e1', paidDate: '2026-07-10', amount: 500_000, inKindAmount: null, bonusTypeId: null }],
+            importMany: async (list: { existingId?: string }[]) => {
+              calls.push(['importMany', list]);
+              return { added: list.filter((x) => !x.existingId).length, updated: list.filter((x) => x.existingId).length, conflicts: [], failed: 0, error: null };
+            },
           },
         },
         { provide: ClosingRepository, useValue: { loadMonth: async () => [] } },
@@ -157,5 +160,23 @@ describe('MasterImportPage', () => {
     expect(calls[0]).toEqual(['importMany', [
       { employeeId: 'e1', paidDate: '2026-12-10', amount: 500_000, inKindAmount: null, bonusTypeId: null, isRemuneration: false, officeId: 'honsha' },
     ]]);
+  });
+
+  it('賞与：登録済みと内容が違う行は、「訂正する」を選んだときだけ訂正する', async () => {
+    tab('賞与').click();
+    fixture.detectChanges();
+    await load('社員番号,支給日,賞与額,うち現物,賞与の種類\r\n0001,2026-07-10,550000,,\r\n');
+    expect(el().querySelector('.counts')!.textContent).toContain('登録済みと違う 1件');
+    expect(el().querySelector('table.preview')!.textContent).toContain('賞与額 500,000円 → 550,000円');
+    expect(importButton().disabled).toBe(true);
+    (el().querySelector('input[name=correct]') as HTMLInputElement).click();
+    fixture.detectChanges();
+    importButton().click();
+    await fixture.whenStable();
+    expect(calls[0]).toEqual(['importMany', [
+      { employeeId: 'e1', paidDate: '2026-07-10', amount: 550_000, inKindAmount: null, bonusTypeId: null, isRemuneration: false, officeId: 'honsha', existingId: 'b1' },
+    ]]);
+    fixture.detectChanges();
+    expect(el().textContent).toContain('1件は登録済みの賞与を訂正しました');
   });
 });

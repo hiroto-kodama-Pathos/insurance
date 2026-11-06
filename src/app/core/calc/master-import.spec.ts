@@ -41,6 +41,12 @@ describe('従業員のCSV', () => {
   const head = ['社員番号', '氏名', '生年月日', '適用事業所', '入社日', '資格取得日', '被保険者区分', '支払区分'];
   const run = (rows: string[][], scope = 'all') => buildEmployeeImport([head, ...rows], templateMapping('employee'), { ...ctx, scope });
 
+  it('資格取得日に75歳以上の人は加入する人として取り込まない', () => {
+    const [r] = run([['0103', '上田 茂', '1950-01-01', '本社', '', '2026-10-01', '', '']]);
+    expect(r.status).toBe('error');
+    expect(r.errors[0]).toContain('資格取得日に75歳以上の人は');
+  });
+
   it('加入する人・未加入の人を登録する内容にする', () => {
     const [a, b] = run([
       ['0101', '青木 健', 'S60.4.1', '本社', '', '2020/4/1', '', 'パート'],
@@ -170,8 +176,31 @@ describe('賞与のCSV', () => {
       ['0001', '2026-12-10', '100000', '', ''],
     ], 'honsha');
     expect(rows.map((r) => r.status)).toEqual(['same', 'closed', 'outOfScope', 'error', 'error']);
-    expect(rows[3].errors).toEqual(['うち現物が賞与額より多いです', '賞与の種類「決算賞与」が見つかりません']);
+    expect(rows[3].errors).toEqual(['うち現物は賞与額の内数です（賞与額以下にしてください）', '賞与の種類「決算賞与」が見つかりません']);
     expect(rows[4].errors).toContain('同じ社員番号・支給日の行がファイルの中に2つ以上あります');
+  });
+
+  it('賞与額は画面と同じチェック（1億円以上・桁の多すぎる額・負の額・うち現物が多い）', () => {
+    const one = (amount: string, inKind = '') => run([['0001', '2026-12-10', amount, inKind, '']])[0];
+    expect(one('100000000').errors).toContain('賞与額が大きすぎます（1億円未満）。桁を確かめてください');
+    expect(one('99999999').status).toBe('new');
+    expect(one('9007199254740993').errors).toContain('賞与額を読み取れません');
+    expect(one('-1').errors).toContain('賞与額を1円以上の円で入力してください');
+    expect(one('100000', '100001').errors).toContain('うち現物は賞与額の内数です（賞与額以下にしてください）');
+  });
+
+  it('登録済みの賞与と内容が違う行は「訂正」の候補にする（同じ内容は取り込まない。確定済みの月は訂正しない）', () => {
+    const c = { ...ctx, existing: [{ id: 'x1', employeeId: 'e1', paidDate: '2026-12-10', amount: 300_000, inKindAmount: null, bonusTypeId: 'summer' }] };
+    const r = buildBonusImport([head, ['0001', '2026-12-10', '350000', '', '夏季賞与'], ['0001', '2026-12-10', '300000', '', '夏季賞与']], templateMapping('bonus'), c);
+    expect(r[0].status).toBe('update');
+    expect(r[0].summary).toBe('賞与額 300,000円 → 350,000円');
+    expect(r[0].save).toMatchObject({ existingId: 'x1', amount: 350_000 });
+    const same = buildBonusImport([head, ['0001', '2026-12-10', '300000', '', '夏季賞与']], templateMapping('bonus'), c)[0];
+    expect(same.status).toBe('same');
+    const closed = buildBonusImport([head, ['0002', '2026-06-30', '1', '', '']], templateMapping('bonus'), {
+      ...c, existing: [{ id: 'x2', employeeId: 'e2', paidDate: '2026-06-30', amount: 5, inKindAmount: null, bonusTypeId: null }],
+    })[0];
+    expect(closed.status).toBe('closed');
   });
 
   it('支給日の範囲', () => {

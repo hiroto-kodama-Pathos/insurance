@@ -261,6 +261,19 @@
   } @else if (error()) {
     <p class="error">{{ error() }}</p>
   } @else {
+    @if (duplicateNumbers().length > 0) {
+      <div class="duplicate-numbers" role="alert">
+        <strong>同じ社員番号を2人以上が使っています（前に登録したデータ）</strong>
+        <ul>
+          @for (x of duplicateNumbers(); track x.number) {
+            <li>社員番号 {{ x.number }}：
+              @for (p of x.people; track p.id) { <a [routerLink]="['/employees', p.id]">{{ p.name }}</a>{{ $last ? '' : '・' }} }
+            </li>
+          }
+        </ul>
+        <span class="hint">給与・賞与のCSVは社員番号で照らし合わせるので、取り込み先を取り違えるおそれがあります。どちらかの人の詳細で「社員番号を変更」してください（変えると、この知らせは消えます）。</span>
+      </div>
+    }
     <div class="filters">
       <div class="tabs" role="tablist">
         @for (t of statusTabs; track t) {

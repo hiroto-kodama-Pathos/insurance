@@ -68,6 +68,13 @@
     }
 
     <h2>{{ yearMonth() | ym }}に支給する賞与</h2>
+    @if (fourOrMore().length > 0) {
+      <p class="warn four-or-more">
+        {{ fourOrMore()[0].from.slice(0, 4) }}年7月〜翌年6月に、報酬扱いでない賞与を4回以上支給している人がいます：
+        @for (x of fourOrMore(); track x.employeeId) { {{ x.name }}さん（{{ x.count }}回）{{ $last ? '' : '・' }} }。
+        年4回以上支給する賞与は報酬扱い（賞与の保険料をかけず、定時決定で報酬に上乗せ）になる可能性があります。給与規程を確かめ、年4回以上支給する種類なら、設定の「賞与の種類」で新しい種類（年4回以上支給・適用開始月つき）を作って選んでください。
+      </p>
+    }
     @if (hasClosed()) {
       <p class="hint">確定済みの事業所の賞与は、確定したときの金額を表示しています。直すときは、月次保険料一覧で確定を解除してください。</p>
     }
@@ -184,13 +191,13 @@
 
     <h2>賞与支払届の期限</h2>
     <table class="list reports">
-      <thead><tr><th>適用事業所</th><th>支給日</th><th>人数</th><th>期限</th></tr></thead>
+      <thead><tr><th>適用事業所</th><th>支給日（同じ月の最後の支給日）</th><th>人数</th><th>期限</th></tr></thead>
       <tbody>
         @for (r of reports(); track r.officeId + r.paidDate) {
           <tr>
             <td>{{ r.officeName }}</td>
             <td>{{ r.paidDate | ymd }}</td>
-            <td class="num">{{ r.count }}人</td>
+            <td class="num">{{ r.count }}人@if (r.combined > 0) {<span class="note">（うち{{ r.combined }}人は同じ月の支給を合算）</span>}</td>
             <td>{{ r.deadline | ymd }}</td>
           </tr>
         } @empty {
@@ -199,7 +206,7 @@
       </tbody>
     </table>
     <p class="hint">二以上事業所勤務の人の賞与は、支給日には自社の賞与額で計算します。決定通知や他社との情報共有で全事業所の賞与額の合計が分かったら「全事業所の合計を登録」を押すと、合算した標準賞与額の保険料を賞与額の割合で按分した額と、控除した額との過不足を出します。過不足の精算は給与ソフトで行ってください。</p>
-    <p class="hint">支給日から5日以内に届け出ます。産休・育休で免除された賞与や、資格喪失月の賞与も届け出が必要なので含めています。</p>
+    <p class="hint">支給日から5日以内に届け出ます。同じ月に同じ人へ2回以上支給したときは、最後の支給のあとに、その月の賞与を合算して届け出ます（期限は最後の支給日から5日以内）。届け出たあとに同じ月の追加の支給があったときは、合算した額で届け直し、備考に初回の支給日を書きます。産休・育休で免除された賞与や、資格喪失月の賞与も届け出が必要なので含めています。</p>
 
     <h2 class="with-action">届け出る賞与額
       <button type="button" class="secondary small" (click)="saveCsv('table.report-amounts', '届け出る賞与額_' + yearMonth() + '.csv')">CSVで保存</button>

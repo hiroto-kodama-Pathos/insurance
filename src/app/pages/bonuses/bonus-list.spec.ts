@@ -86,6 +86,7 @@ describe('BonusList', () => {
           provide: BonusRepository,
           useValue: {
             loadFiscalYear: async () => [...store],
+            loadRange: async (from: string, to: string) => store.filter((b) => b.paidDate >= from && b.paidDate <= to),
             add: async (b: Omit<BonusRecord, 'id'>, _officeId: string) => {
               store.push({ ...b, id: `b${store.length + 1}` });
             },
@@ -192,6 +193,70 @@ describe('BonusList', () => {
     expect(el().querySelector('.notice')!.textContent).toContain('賞与支払届は2026年12月30日までに届け出ます');
   });
 
+  async function register(paidDate: string, amountText: string) {
+    const sel = el().querySelector('select[name=employeeId]') as HTMLSelectElement;
+    sel.value = 'e1';
+    sel.dispatchEvent(new Event('change'));
+    const [date, amount] = [el().querySelector('form input[name=paidDate]'), el().querySelector('form input[name=amount]')] as HTMLInputElement[];
+    date.value = paidDate;
+    date.dispatchEvent(new Event('input'));
+    amount.value = amountText;
+    amount.dispatchEvent(new Event('input'));
+    el().querySelector('form')!.dispatchEvent(new Event('submit'));
+    await settle();
+  }
+
+  it('同じ人・同じ支給日の賞与は二重に登録しない（同じ月の別の日はよい）', async () => {
+    await register('2026-12-10', '100000');
+    expect(store).toHaveLength(1);
+    expect(el().textContent).toContain('2026年12月10日支給の賞与はすでに登録されています');
+  });
+
+  it('同じ月に2回支給した人の賞与支払届は、最後の支給日で1件（期限も最後の支給日から5日）。同じ月の2回目と分かるように出す', async () => {
+    await register('2026-12-25', '100000');
+    const report = el().querySelector('table.reports tbody')!.textContent!;
+    expect(report).toContain('2026年12月25日');
+    expect(report).toContain('（うち1人は同じ月の支給を合算）');
+    expect(report).toContain('2026年12月30日');
+    expect(report).not.toContain('2026年12月15日');
+    expect(el().querySelector('table.persons tbody')!.textContent).toContain('同じ月の2回目の支給（合算した標準賞与額 600,000円');
+  });
+
+  it('賞与支払届を届出済みにした月の賞与を直す・削除するときは、訂正（取消）の届出を知らせる', async () => {
+    filed.add('e1_bonus_2026-12-10');
+    fixture = TestBed.createComponent(BonusList);
+    fixture.componentRef.instance['yearMonth'].set('2026-12');
+    await settle();
+    expect(el().querySelector('table.persons tbody')!.textContent).toContain('賞与支払届は届出済み');
+    const del = [...el().querySelectorAll('table.persons tbody button')].find((b) => b.textContent!.includes('削除')) as HTMLButtonElement;
+    del.click();
+    await settle();
+    expect(asked.at(-1)!.message).toContain('この月の賞与支払届は届出済みです。削除したら、取消');
+    filed.clear();
+  });
+
+  it('全事業所の賞与額の合計は、10億円以上・桁の多すぎる額を入れない', () => {
+    const page = fixture.componentInstance as unknown as { totalInputs: { set(v: Record<string, string>): void }; saveTotal(r: unknown): Promise<void>; rows(): unknown[] };
+    page.totalInputs.set({ b1: '1000000000' });
+    void page.saveTotal(page.rows()[0]);
+    fixture.detectChanges();
+    expect(el().textContent).toContain('全事業所の合計が大きすぎます（10億円未満）');
+  });
+
+  it('7月〜翌6月に報酬扱いでない賞与を4回以上支給している人を出す（年4回以上の設定漏れの確認）', async () => {
+    store.push(
+      { id: 'b2', employeeId: 'e1', paidDate: '2026-07-10', amount: 100_000 },
+      { id: 'b3', employeeId: 'e1', paidDate: '2026-09-10', amount: 100_000 },
+      { id: 'b4', employeeId: 'e1', paidDate: '2027-03-10', amount: 100_000 },
+    );
+    fixture = TestBed.createComponent(BonusList);
+    fixture.componentRef.instance['yearMonth'].set('2026-12');
+    await settle();
+    await new Promise((r) => setTimeout(r));
+    await settle();
+    expect(el().querySelector('.four-or-more')!.textContent).toContain('山田 太郎さん（4回）');
+  });
+
   it('年4回以上支給の種類を選ぶと報酬扱いで登録し、賞与の保険料をかけず、届出にも含めない', async () => {
     const sel = el().querySelector('select[name=employeeId]') as HTMLSelectElement;
     sel.value = 'e1';
@@ -213,9 +278,9 @@ describe('BonusList', () => {
     expect(el().querySelector('table.reports tbody tr')!.textContent).toContain('1人');
   });
 
-  it('種類を選ばずに同じ年度で4回目の賞与を登録しようとすると警告する', async () => {
+  it('種類を選ばずに、7月〜翌6月で4回目の賞与を登録しようとすると警告する', async () => {
     store.push(
-      { id: 'b2', employeeId: 'e1', paidDate: '2026-06-10', amount: 100_000 },
+      { id: 'b2', employeeId: 'e1', paidDate: '2026-07-10', amount: 100_000 },
       { id: 'b3', employeeId: 'e1', paidDate: '2026-09-10', amount: 100_000 },
     );
     fixture.componentRef.instance['fyBonuses'].set([...store]);
@@ -226,16 +291,17 @@ describe('BonusList', () => {
     const [date] = [el().querySelector('form input[name=paidDate]'), el().querySelector('form input[name=amount]')] as HTMLInputElement[];
     date.value = '2027-03-10';
     date.dispatchEvent(new Event('input'));
+    await new Promise((r) => setTimeout(r));
     await settle();
-    expect(el().querySelector('p.warn')!.textContent).toContain('同じ年度で4回目の賞与です');
+    expect(el().querySelector('p.warn')!.textContent).toContain('2026年7月〜2027年6月で4回目の賞与です');
   });
 
-  it('対象月と支給日の年度が違っても、支給日の年度の賞与で4回目を数える', async () => {
+  it('対象月と支給日の期間（7月〜翌6月）が違っても、支給日の期間の賞与で4回目を数える', async () => {
     store.push(
-      { id: 'b2', employeeId: 'e1', paidDate: '2026-06-10', amount: 100_000 },
+      { id: 'b2', employeeId: 'e1', paidDate: '2026-07-10', amount: 100_000 },
       { id: 'b3', employeeId: 'e1', paidDate: '2026-09-10', amount: 100_000 },
     );
-    fixture.componentRef.instance['onMonthChange']('2027-04');
+    fixture.componentRef.instance['onMonthChange']('2027-07');
     await settle();
     const sel = el().querySelector('select[name=employeeId]') as HTMLSelectElement;
     sel.value = 'e1';
@@ -243,9 +309,9 @@ describe('BonusList', () => {
     const [date] = [el().querySelector('form input[name=paidDate]'), el().querySelector('form input[name=amount]')] as HTMLInputElement[];
     date.value = '2027-03-10';
     date.dispatchEvent(new Event('input'));
+    await new Promise((r) => setTimeout(r));
     await settle();
-    await settle();
-    expect(el().querySelector('p.warn')!.textContent).toContain('同じ年度で4回目の賞与です');
+    expect(el().querySelector('p.warn')!.textContent).toContain('2026年7月〜2027年6月で4回目の賞与です');
   });
 
   it('入力が足りなければ登録しない', async () => {

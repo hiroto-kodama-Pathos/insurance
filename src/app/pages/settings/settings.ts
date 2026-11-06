@@ -325,6 +325,23 @@ export class Settings implements OnInit, HasUnsavedChanges {
     const id = m?.kind === 'bonusType' ? m.id : null;
     const f = this.bonusTypeForm();
     const errors = checkBonusType(f, this.bonusTypes().filter((t) => t.id !== id).map((t) => t.name));
+    // 使用中の種類（この種類の賞与がある）は、年4回以上支給（報酬扱い）と適用開始月を変えない（設計書 2.4）。
+    // 登録済みの賞与は登録したときの設定で計算・届出しているので、変えると種類の設定と過去の賞与が食い違うため。
+    // 支給の回数が変わったときは、新しい種類（適用開始月つき）を作ってもらう。名前は変えられる
+    const before = id ? this.bonusTypes().find((t) => t.id === id) : undefined;
+    if (!errors['isRemuneration'] && before && (before.isRemuneration !== f.isRemuneration || before.validFrom !== f.validFrom)) {
+      this.saving.set(true);
+      try {
+        if (await this.repo.isBonusTypeUsed(before.id))
+          errors['isRemuneration'] =
+            'この種類の賞与が登録されているため、年4回以上支給の設定と適用開始月は変えられません（登録済みの賞与は登録したときの設定で計算・届出しています）。支給の回数が変わったときは、新しい種類を作り、適用開始月からその種類を選んでください';
+      } catch (e) {
+        console.error(e);
+        errors['isRemuneration'] = 'この種類の賞与が登録されているかを確かめられませんでした。権限と通信を確かめてください';
+      } finally {
+        this.saving.set(false);
+      }
+    }
     this.errors.set(errors);
     if (Object.keys(errors).length > 0) return;
     await this.run(() => this.repo.saveBonusType(id, f), `賞与の種類「${f.name.trim()}」を保存しました。`);

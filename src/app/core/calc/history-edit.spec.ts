@@ -8,6 +8,7 @@ import {
   checkQualificationEdit,
   checkStandardDelete,
   dependentMoves,
+  dependentsLeftOutside,
   officeIdsOf,
   prevDay,
   toQualificationEdit,
@@ -94,5 +95,28 @@ describe('登録した履歴の訂正・削除のチェック', () => {
     expect(dependentMoves(deps, '2026-04-01', '2026-05-01')).toEqual([{ id: 'd1', removedDate: '2026-05-01' }]);
     expect(dependentMoves(deps, '2026-04-01', '2026-04-01')).toEqual([]);
     expect(dependentMoves(deps, null, '2026-04-01')).toEqual([]);
+  });
+});
+
+describe('資格の期間の訂正：生年月日・75歳・被扶養者との整合（設計書 3.1）', () => {
+  const quals = [{ id: 'q1', acquiredDate: '2024-04-01', lostDate: null, lostReason: null }];
+  const edit = (acquiredDate: string) => checkQualificationEdit(quals, 'q1', { acquiredDate, lostReason: '', endDate: '' }, '1980-05-10');
+
+  it('資格取得日は生年月日より後で、75歳の誕生日より前', () => {
+    expect(edit('1979-04-01').errors['acquiredDate']).toBe('資格取得日は生年月日より後の日付にしてください');
+    expect(edit('2055-05-10').errors['acquiredDate']).toContain('資格取得日に75歳以上の人は');
+    expect(edit('2055-05-09').errors).toEqual({});
+  });
+
+  it('直すと扶養に入った日が資格の期間の外になる被扶養者を返す（直す前から外にいた人は返さない）', () => {
+    const deps = [
+      { id: 'd1', name: '花子', certifiedDate: '2024-04-01' },
+      { id: 'd2', name: '一郎', certifiedDate: '2024-06-01' },
+      { id: 'd3', name: '次郎', certifiedDate: '2020-01-01' },
+    ];
+    const before = [{ acquiredDate: '2024-04-01', lostDate: null }];
+    expect(dependentsLeftOutside(deps, before, [{ acquiredDate: '2024-05-01', lostDate: null }]).map((x) => x.id)).toEqual(['d1']);
+    expect(dependentsLeftOutside(deps, before, [{ acquiredDate: '2024-04-01', lostDate: '2024-05-01' }]).map((x) => x.id)).toEqual(['d2']);
+    expect(dependentsLeftOutside(deps, before, before)).toEqual([]);
   });
 });

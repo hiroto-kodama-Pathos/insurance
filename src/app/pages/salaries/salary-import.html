@@ -101,6 +101,9 @@
                     @for (e of r.errors; track e) {
                       <div class="err">{{ e }}</div>
                     }
+                    @for (w of r.warnings; track w) {
+                      <div class="warn-text">{{ w }}</div>
+                    }
                   </td>
                 </tr>
               }

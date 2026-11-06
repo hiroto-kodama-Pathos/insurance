@@ -160,6 +160,19 @@ export const MAX_SALARY_YEN = 99_999_999;
 const isYen = (v: number | null) => v !== null && Number.isSafeInteger(v) && v >= 0 && v <= MAX_SALARY_YEN;
 const YEN_MESSAGE = `0円以上・${MAX_SALARY_YEN.toLocaleString('ja-JP')}円以下の円で入力してください`;
 
+/**
+ * 支払基礎日数が、給与の計算期間の暦日数より多いときの注意（保存は止めない）。
+ * 支払基礎日数は支払月ではなく計算期間で数える（翌月払いなら11月支払分は10月の31日）ので、支払月の日数とは比べない。
+ * periodDays：その支払月の計算期間の暦日数。締め日・支払月を変えた月は、担当者が日数を決めるので null（注意しない）
+ */
+export function baseDaysWarning(days: number | null, periodDays: number | null): string | null {
+  // 0〜31日の整数でないものは、validateSalary のエラーの方で伝える
+  if (days === null || !Number.isInteger(days) || days < 0 || days > 31 || periodDays === null) return null;
+  return days > periodDays
+    ? `支払基礎日数（${days}日）が、給与の計算期間の暦日数（${periodDays}日）より多いです。入力を確かめてください`
+    : null;
+}
+
 export function validateSalary(input: SalaryInput): SalaryErrors {
   const e: SalaryErrors = {};
   if (!isValidDate(input.paidDate)) e.paidDate = '支払日を正しく入力してください';

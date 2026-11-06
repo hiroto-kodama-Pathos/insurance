@@ -11,6 +11,7 @@ import { decodeCsv, parseCsv } from '../../core/calc/csv';
 import { GradeRow } from '../../core/calc/grade-suggest';
 import {
   importKindFromQuery,
+  BonusImportContext,
   bonusDateRange,
   buildBonusImport,
   buildEmployeeImport,
@@ -36,6 +37,7 @@ import {
 import { Office } from '../../core/calc/office';
 import { PayrollGroup } from '../../core/calc/payroll-group';
 import { monthRange } from '../../core/calc/period-total';
+import { dateLabel } from '../../core/calc/year-month';
 import { BonusRepository } from '../../core/repository/bonus-repository';
 import { ClosingRepository } from '../../core/repository/closing-repository';
 import { EmployeeNumberTakenError, EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
@@ -77,7 +79,9 @@ export class MasterImportPage implements OnInit {
   private readonly bonusTypes = signal<BonusType[]>([]);
   private readonly savedMappings = signal<Partial<Record<ImportKind, ColumnMapping>>>({});
   /** 賞与：ファイルの支給日の範囲の登録済みの賞与と確定 */
-  private readonly existingBonuses = signal<{ employeeId: string; paidDate: string }[]>([]);
+  private readonly existingBonuses = signal<BonusImportContext['existing']>([]);
+  /** 登録済みの賞与で内容が違う行（訂正の候補）を、訂正として取り込むか */
+  protected readonly correct = signal(false);
   private readonly closings = signal<OfficeClosing[]>([]);
 
   protected readonly fileName = signal('');
@@ -130,12 +134,13 @@ export class MasterImportPage implements OnInit {
   );
 
   protected readonly counts = computed(() => {
-    const c: Record<ImportStatus, number> = { new: 0, same: 0, error: 0, closed: 0, outOfScope: 0 };
+    const c: Record<ImportStatus, number> = { new: 0, update: 0, same: 0, error: 0, closed: 0, outOfScope: 0 };
     for (const r of this.preview()) c[r.status]++;
     return c;
   });
 
-  protected readonly toSave = computed(() => this.preview().filter((r) => r.save !== null));
+  /** 登録する行。登録済みと違う行（訂正）は、「訂正する」を選んだときだけ */
+  protected readonly toSave = computed(() => this.preview().filter((r) => r.save !== null && (r.status !== 'update' || this.correct())));
   /** エラー・注意の行（登録しない行）だけを表示するか */
   protected readonly onlyIssues = signal(false);
   /** 表に出す行。登録する行の数（toSave）は、表示に関係なく全部で数える */
@@ -248,7 +253,28 @@ export class MasterImportPage implements OnInit {
       }
       else if (kind === 'dependent') await this.employeeRepo.importDependents(saves(this.dependentPreview()));
       else if (kind === 'standard') await this.employeeRepo.saveDecisions(saves(this.standardPreview()));
-      else await this.bonusRepo.importMany(saves(this.bonusPreview()));
+      else {
+        const list = this.bonusPreview().flatMap((r) => (r.save && (r.status !== 'update' || this.correct()) ? [r.save] : []));
+        const r = await this.bonusRepo.importMany(list);
+        if (r.error) console.error(r.error);
+        const nameOf = (id: string) => this.employees().find((e) => e.id === id)?.name ?? '';
+        await this.loadBonusContext();
+        this.correct.set(false);
+        this.notice.set(
+          `賞与を${r.added}件登録しました。` +
+            (r.updated > 0 ? `${r.updated}件は登録済みの賞与を訂正しました（賞与支払届を届け出たあとなら、訂正の届出も確かめてください）。` : '') +
+            (r.conflicts.length > 0
+              ? `${r.conflicts.length}件は、確認のあとにほかの担当者が同じ支給日の賞与を登録したため、登録していません（${r.conflicts
+                  .slice(0, 5)
+                  .map((c) => `${nameOf(c.employeeId)}さん ${dateLabel(c.paidDate)}`)
+                  .join('、')}${r.conflicts.length > 5 ? ' ほか' : ''}）。`
+              : '') +
+            (r.failed > 0
+              ? `${r.failed}件は、途中で書き込めなかったため登録できていません（確定済みの月・権限・通信を確かめてください）。同じファイルを取り込み直すと、登録できた行は「登録済み」として出るので、二重にはなりません。`
+              : ''),
+        );
+        return;
+      }
       this.employees.set(await this.employeeRepo.loadAll());
       await this.loadBonusContext();
       this.notice.set(

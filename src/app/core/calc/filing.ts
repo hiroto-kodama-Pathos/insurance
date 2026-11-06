@@ -54,7 +54,22 @@ export type Filing = {
   deadlineLabel: string;
   /** 月額変更届だけ：随時改定の候補の状態 */
   candidateStatus?: CandidateStatus;
+  /**
+   * 賞与支払届だけ：同じ月の前の支給日のきっかけで作られたID（前の支給のあとに届け出て「届出済み」にした記録）。
+   * これが届出済みで、この届出（最後の支給日）が未対応なら、届出済みの月の追加支給なので、合算して届け直す（filingName）
+   */
+  earlierIds?: string[];
 };
+
+/**
+ * 一覧に出す届出の名前。賞与支払届で、同じ月の前の支給の分を届け出たあとに追加の支給があったときは、届け直しを添える
+ * （届出済みの月に追加で支払ったときは、その月の賞与を合算し、備考に初回の支給日を書いて届け出る）
+ */
+export function filingName(f: Filing, filedIds: Set<string>): string {
+  if (f.kind === 'bonus' && !filedIds.has(f.id) && (f.earlierIds ?? []).some((id) => filedIds.has(id)))
+    return `${f.name}（届出済みの月の追加支給：合算した額で届け直す。備考に初回の支給日を書く）`;
+  return f.name;
+}
 
 export type FilingEmployee = Age70Employee & {
   qualifications: Qualification[];
@@ -214,18 +229,31 @@ export function findFilings(
     }
   }
 
-  // 賞与支払届（保険料のかからない賞与も含む。資格のない日の支給は除く）
-  const seen = new Set<string>();
+  // 賞与支払届（保険料のかからない賞与も含む。資格のない日の支給は除く）。
+  // 同じ人・同じ月・同じ事業所に2回以上支給したときは、最後の支給のあとに合算して1回届け出るので、1件にまとめ、
+  // 期限は最後の支給日から5日以内にする（設計書 2.4）
+  const bonusMonths = new Map<string, { employeeId: string; officeId: string | null; dates: string[] }>();
   for (const b of bonuses) {
     const e = employees.find((x) => x.id === b.employeeId);
     // 報酬扱いの賞与（年4回以上支給）は賞与支払届の対象外
     if (!e || b.isRemuneration || bonusTarget(e.qualifications, b.paidDate) === 'outside') continue;
-    const key = `${b.employeeId}_${b.paidDate}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const officeId = officeOn(e.assignments, b.paidDate);
+    const key = `${b.employeeId}|${b.paidDate.slice(0, 7)}|${officeId}`;
+    const g = bonusMonths.get(key) ?? { employeeId: b.employeeId, officeId, dates: [] };
+    if (!g.dates.includes(b.paidDate)) g.dates.push(b.paidDate);
+    bonusMonths.set(key, g);
+  }
+  for (const g of bonusMonths.values()) {
+    const dates = [...g.dates].sort();
+    const last = dates.at(-1)!;
     push({
-      kind: 'bonus', name: FILING_KIND_LABEL.bonus, employeeId: b.employeeId, officeId: officeOn(e.assignments, b.paidDate),
-      trigger: b.paidDate, triggerLabel: `支給日 ${dateLabel(b.paidDate)}`, ...within5(b.paidDate),
+      kind: 'bonus',
+      name: dates.length > 1 ? `${FILING_KIND_LABEL.bonus}（同じ月の${dates.length}回の支給を合算）` : FILING_KIND_LABEL.bonus,
+      employeeId: g.employeeId, officeId: g.officeId,
+      trigger: last,
+      triggerLabel: dates.length > 1 ? `支給日 ${dates.map((d) => dateLabel(d)).join('・')}（最後の支給のあとに届け出る）` : `支給日 ${dateLabel(last)}`,
+      ...within5(last),
+      earlierIds: dates.slice(0, -1).map((d) => filingId(g.employeeId, 'bonus', d)),
     });
   }
 

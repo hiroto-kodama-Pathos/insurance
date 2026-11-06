@@ -118,6 +118,9 @@
                     <span class="auto" title="月給制で欠勤控除がない人の支払基礎日数は、給与の計算期間の暦日数です。欠勤控除がある月は、所定労働日数から欠勤日数を引いた日数に直してください。">暦日数（自動）</span>
                   }
                   <span class="err">{{ err(row.employee.id, $any(key)) }}</span>
+                  @if (key === 'paymentBaseDays' && !err(row.employee.id, 'paymentBaseDays') && baseDaysNote(row); as note) {
+                    <span class="warn-text">{{ note }}</span>
+                  }
                 </td>
               }
               <td class="num">{{ yen(row.previousFixed) }}</td>

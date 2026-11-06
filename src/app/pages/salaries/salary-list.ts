@@ -24,6 +24,7 @@ import {
   SalaryErrors,
   SalaryInput,
   SalaryRecord,
+  baseDaysWarning,
   validateSalary,
 } from '../../core/calc/salary';
 import { ClosingRepository } from '../../core/repository/closing-repository';
@@ -76,6 +77,8 @@ export type SalaryRow = {
   groupId: string;
   /** 支払基礎日数の初期値（月給制とみなせる人の、計算期間の暦日数）。入れない人は null */
   autoBaseDays: number | null;
+  /** この月の給与の計算期間の暦日数（締め日・支払月の変更月は null）。支払基礎日数がこれより多いと注意する */
+  periodDays: number | null;
 };
 
 @Component({
@@ -170,6 +173,7 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
           periodChange: periodChange(ym, cutoffAt),
           groupId: payrollGroupAt(this.groups(), e.payrollAssignments, `${ym}-01`).id,
           autoBaseDays: this.autoBaseDays(e, mine, ym, cutoffAt),
+          periodDays: periodChange(ym, cutoffAt) ? null : periodCalendarDays(ym, cutoffAt),
         };
       });
   });
@@ -210,6 +214,12 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     const previous = prevSalaries.length === 1 ? prevSalaries[0] : null;
     if (!isMonthlyPaid(e.eligibility?.employmentType, previous, periodCalendarDays(prevYm, cutoffAt))) return null;
     return periodCalendarDays(ym, cutoffAt);
+  }
+
+  /** 支払基礎日数が計算期間の暦日数より多いときの注意（保存は止めない） */
+  protected baseDaysNote(row: SalaryRow): string | null {
+    const days = parseNumberInput(this.draft(row.employee.id, 'paymentBaseDays'));
+    return baseDaysWarning(days !== null && Number.isNaN(days) ? null : days, row.periodDays);
   }
 
   /** 支払基礎日数の欄に、初期値（暦日数）がそのまま入っているか（「暦日数（自動）」と添える） */

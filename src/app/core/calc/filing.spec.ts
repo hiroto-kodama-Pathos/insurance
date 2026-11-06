@@ -1,4 +1,4 @@
-import { addDays, FilingEmployee, filingState, findFilings, onboardingFilings, urgentFilings } from './filing';
+import { addDays, FilingEmployee, filingName, filingState, findFilings, onboardingFilings, urgentFilings } from './filing';
 import { buildKyokaiGrades } from './grade-suggest';
 
 const grades = buildKyokaiGrades('2020-09');
@@ -59,6 +59,16 @@ describe('届出の一覧', () => {
   it('賞与支払届（同じ日の賞与は1件。資格のない日の支給は除く）', () => {
     const list = find([person()], { bonuses: [{ employeeId: 'e1', paidDate: '2026-12-10' }, { employeeId: 'e1', paidDate: '2026-12-10' }, { employeeId: 'e1', paidDate: '2026-09-10' }] });
     expect(list.filter((f) => f.kind === 'bonus').map((f) => f.deadline)).toEqual(['2026-12-15']);
+  });
+
+  it('賞与支払届：同じ月に2回以上支給した人は、最後の支給日で1件（合算して届け出る）。前の支給の分を届け出たあとなら届け直しを添える', () => {
+    const list = find([person()], { bonuses: [{ employeeId: 'e1', paidDate: '2026-12-10' }, { employeeId: 'e1', paidDate: '2026-12-20' }] }).filter((f) => f.kind === 'bonus');
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({ trigger: '2026-12-20', deadline: '2026-12-25', id: 'e1_bonus_2026-12-20', earlierIds: ['e1_bonus_2026-12-10'] });
+    expect(list[0].name).toBe('賞与支払届（同じ月の2回の支給を合算）');
+    expect(filingName(list[0], new Set())).toBe('賞与支払届（同じ月の2回の支給を合算）');
+    expect(filingName(list[0], new Set(['e1_bonus_2026-12-10']))).toContain('届出済みの月の追加支給：合算した額で届け直す');
+    expect(filingName(list[0], new Set(['e1_bonus_2026-12-10', 'e1_bonus_2026-12-20']))).not.toContain('届け直す');
   });
 
   it('休業は申出書、適用除外は種類ごとの届出', () => {

@@ -2,7 +2,7 @@
 // 給与ソフトごとに列の並びや名前が違うため、列の対応づけを会社の設定（csvMappings.salary）に保存して毎月使う。
 import { parseDateLoose, parseHoursLoose, parseNumberLoose } from './csv';
 import { findOffice, Assignment, Office } from './office';
-import { SalaryRecord, validateSalary } from './salary';
+import { addMonths, baseDaysWarning, SalaryRecord, validateSalary } from './salary';
 import { toHalfWidth } from './half-width';
 
 /** アプリの項目ごとに、対応するCSVの列名（固定的・非固定的賃金は複数の列を合計） */
@@ -78,6 +78,8 @@ export type PreviewRow = {
   name: string;
   status: PreviewStatus;
   errors: string[];
+  /** 取り込むが、確かめてほしいこと（支払基礎日数が計算期間の暦日数より多いなど） */
+  warnings: string[];
   salary: Omit<SalaryRecord, 'id'> | null;
   officeId: string | null;
 };
@@ -96,7 +98,14 @@ export type PreviewContext = {
    * 取り込む画面では必ず渡す（支払区分を読めないときは、取り込み自体を止める）。渡さないのは、ファイルの支払月を集めるときだけ
    */
   needsExclusion?: (employeeId: string, yearMonth: string) => boolean;
+  /** その人のその支払月の、給与の計算期間の暦日数（締め日・支払月の変更月は null）。渡さなければ注意しない */
+  periodDaysOf?: (employeeId: string, yearMonth: string) => number | null;
+  /** 今日（YYYY-MM-DD）。支払日が来月より先の行に注意を出す。渡さなければ注意しない */
+  today?: string;
 };
+
+/** 小数の数字か（「300000.5」など）。金額・日数は整数なので、読めない理由をはっきり伝える */
+const isDecimal = (raw: string | undefined) => /^-?\d+\.\d+$/.test(toHalfWidth(raw ?? '').replace(/[,\s円¥日]/g, ''));
 
 /** 社員番号で従業員を探す。先頭の0が消えていても、登録済みの社員番号の桁数にそろえて照合する */
 export function findByNumber(employees: ImportEmployee[], raw: string): ImportEmployee | null {
@@ -149,7 +158,11 @@ function buildRows(rows: string[][], mapping: SalaryMapping, ctx: PreviewContext
       for (const n of names) {
         const v = parseNumberLoose(cell(r, n));
         if (Number.isNaN(v)) {
-          errors.push(`${label}の「${n}」を数値として読み取れません`);
+          errors.push(
+            isDecimal(cell(r, n))
+              ? `${label}の「${n}」が小数です（円単位の整数で入れてください）`
+              : `${label}の「${n}」を数値として読み取れません`,
+          );
           continue;
         }
         if (v !== null) total = (total ?? 0) + v;
@@ -168,9 +181,11 @@ function buildRows(rows: string[][], mapping: SalaryMapping, ctx: PreviewContext
     const hours = parseHoursLoose(cell(r, mapping.workingHours ?? ''));
     const rate = parseNumberLoose(cell(r, mapping.hourlyRate ?? ''));
     const excluded = parseNumberLoose(cell(r, mapping.excludedAmount ?? ''));
-    if (Number.isNaN(days)) errors.push('支払基礎日数を数値として読み取れません');
-    if (Number.isNaN(retro)) errors.push('うち遡及差額を数値として読み取れません');
-    if (Number.isNaN(inKind)) errors.push('うち現物給与を数値として読み取れません');
+    const unreadable = (label: string, raw: string | undefined, unit: string) =>
+      isDecimal(raw) ? `${label}が小数です（${unit}の整数で入れてください）` : `${label}を数値として読み取れません`;
+    if (Number.isNaN(days)) errors.push(unreadable('支払基礎日数', cell(r, mapping.paymentBaseDays), '日'));
+    if (Number.isNaN(retro)) errors.push(unreadable('うち遡及差額', cell(r, mapping.retroactiveDiff), '円単位'));
+    if (Number.isNaN(inKind)) errors.push(unreadable('うち現物給与', cell(r, mapping.inKindWages), '円単位'));
     if (Number.isNaN(hours)) errors.push('労働時間を数値として読み取れません');
     if (Number.isNaN(rate)) errors.push('時給単価を数値として読み取れません');
     if (Number.isNaN(excluded)) errors.push('算定から除く額を数値として読み取れません');
@@ -203,7 +218,15 @@ function buildRows(rows: string[][], mapping: SalaryMapping, ctx: PreviewContext
       seen.add(key);
     }
 
-    const base = { line, employeeNumber: rawNumber, name: employee?.name ?? '', officeId };
+    const warnings: string[] = [];
+    if (employee && paidDate && ctx.periodDaysOf) {
+      const w = baseDaysWarning(input.paymentBaseDays, ctx.periodDaysOf(employee.id, paidDate.slice(0, 7)));
+      if (w) warnings.push(w);
+    }
+    // 過去の給与は取り込める（定時決定・随時改定に前の月が要る）。来月より先の支払日は、年・月の打ち間違いのことが多いので注意する
+    if (paidDate && ctx.today && paidDate.slice(0, 7) > addMonths(ctx.today.slice(0, 7), 1))
+      warnings.push(`支払日（${paidDate}）が来月より先です。年・月を確かめてください`);
+    const base = { line, employeeNumber: rawNumber, name: employee?.name ?? '', officeId, warnings };
     if (errors.length > 0) return { ...base, status: 'error' as const, errors, salary: null };
     const salary: Omit<SalaryRecord, 'id'> = {
       employeeId: employee!.id,
