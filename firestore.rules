@@ -409,6 +409,16 @@ service cloud.firestore {
       // 給与の支払区分：管理者だけが追加・変更・削除する。削除は、使用中（従業員が属した・初期値）でないことを画面で確かめてから
       function isPayDay(v) { return v == 'end' || (v is int && v >= 1 && v <= 30); }
       // 休業（産前産後休業・育児休業）のデータの形。壊れたデータで保険料の免除の計算が止まったり誤ったりしないように（設計書 2.12）
+      // 実在する日付か（'YYYY-MM-DD' の形で、その月にある日。2026-02-31 などを止める）
+      function isRealDate(s) {
+        return s is string && s.matches('^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$')
+          && isDayInMonth(int(s[0:4]), int(s[5:7]), int(s[8:10]));
+      }
+      function isDayInMonth(y, m, d) {
+        return d <= 28
+          || (m != 2 && (d <= 30 || !(m in [4, 6, 9, 11])))
+          || (m == 2 && d == 29 && y % 4 == 0 && (y % 100 != 0 || y % 400 == 0));
+      }
       function isYmd(v) { return v is string && v.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$'); }
       function isLeaveData(d) {
         return d.keys().hasOnly(['type', 'startDate', 'endDate', 'workedDays'])
@@ -443,7 +453,7 @@ service cloud.firestore {
       // 賞与の種類：管理者だけが追加・変更・削除する。削除は、その種類の賞与がないことを画面で確かめてから
       match /bonusTypes/{id} {
         allow read: if isSiUser();
-        allow delete: if isSiAdmin();
+        allow delete: if false; // CloudFunctions だけが削除可能（運営者が使う）
         allow create, update: if isSiAdmin()
           && request.resource.data.keys().hasOnly(['name', 'isRemuneration', 'validFrom'])
           && request.resource.data.name is string && request.resource.data.name.size() > 0
@@ -464,12 +474,79 @@ service cloud.firestore {
       // 従業員：特定の事業所の担当者は、これまでにその事業所に所属した人（officeIds に含む人）だけを読み書きできる。
       // 新しく登録するときは、所属事業所を担当事業所にする。所属事業所の一覧（異動）を変えられるのは全担当だけ。
       // 削除は Cloud Functions だけ（誤登録の削除・保管期間の終わった退職者の消去）
+      // 従業員：画面の入力チェックと同じ決まりで、画面を通らない書き込みも止める（設計書 4章 employees）
+      // - 社員番号は半角英数字とハイフンで20文字以内、氏名は1〜50文字、生年月日は実在する日付
+      // - 社員番号は、同じ書き込みで社員番号の記録（employeeNumbers）をこの人に向けて作ったときだけ登録・変更できる
+      //   （記録を作らずに番号だけを入れたり変えたりすると、重なりを防げないため）
+      function validEmployee(d) {
+        return d.employeeNumber is string && d.employeeNumber.matches('^[0-9A-Za-z-]{1,20}$')
+          && d.name is string && d.name.size() > 0 && d.name.size() <= 50
+          && isRealDate(d.birthDate)
+          && d.officeIds is list
+          && (d.get('eligibility', null) == null || d.eligibility is map);
+      }
+      function numberRecordIs(number, employeeId) {
+        return existsAfter(siPath('employeeNumbers', number))
+          && getAfter(siPath('employeeNumbers', number)).data.employeeId == employeeId;
+      }
       match /employees/{employeeId} {
         allow read: if isSiUser() && (scopeAll() || siScope() in resource.data.get('officeIds', []));
         allow create: if isSiUser() && request.resource.data.officeIds is list
-          && (scopeAll() || request.resource.data.officeIds == [siScope()]);
+          && (scopeAll() || request.resource.data.officeIds == [siScope()])
+          && request.resource.data.keys().hasOnly(['employeeNumber', 'name', 'birthDate', 'officeIds', 'eligibility', 'createdAt', 'updatedAt'])
+          && validEmployee(request.resource.data)
+          && numberRecordIs(request.resource.data.employeeNumber, employeeId);
+        // 変える項目は決めたものだけ（前のデータにほかの項目があっても、書き換えられるように、変わった項目で見る）
         allow update: if isSiUser() && (scopeAll()
-          || (siScope() in resource.data.get('officeIds', []) && request.resource.data.get('officeIds', []) == resource.data.get('officeIds', [])));
+          || (siScope() in resource.data.get('officeIds', []) && request.resource.data.get('officeIds', []) == resource.data.get('officeIds', [])))
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['employeeNumber', 'name', 'birthDate', 'officeIds', 'eligibility', 'updatedAt'])
+          && validEmployee(request.resource.data)
+          && (request.resource.data.employeeNumber == resource.data.employeeNumber
+            || numberRecordIs(request.resource.data.employeeNumber, employeeId));
+
+        // サブコレクションのデータの形（休業・被扶養者は上の isLeaveData・isDependentData）
+        function isYearMonth(v) { return v is string && v.matches('^[0-9]{4}-(0[1-9]|1[0-2])$'); }
+        function optRealDate(d, key) { return d.get(key, null) == null || isRealDate(d.get(key, null)); }
+        function validSubData(sub, d) {
+          return (sub != 'qualifications' || (isRealDate(d.acquiredDate) && optRealDate(d, 'lostDate')
+              && (d.get('lostDate', null) == null || d.lostDate > d.acquiredDate)
+              && (d.get('lostReason', null) == null || d.lostReason is string)
+              && (d.get('refundStatus', null) == null || d.refundStatus in ['pending', 'returned', 'none'])))
+            // 標準報酬月額：1,000円単位で、等級表のおおよその範囲（等級の額かは画面で等級表と照らし合わせる。
+            // 等級表の改定で上下の等級が増えても書けるよう、今の表より少し広くとる）
+            && (sub != 'standardRemunerations' || (isYearMonth(d.validFrom)
+              && (d.get('reason', null) == null || d.reason in ['acquisition', 'regular', 'revision', 'leaveEnd'])
+              && d.healthStandard is int && d.healthStandard % 1000 == 0 && d.healthStandard >= 50000 && d.healthStandard <= 2000000
+              && d.pensionStandard is int && d.pensionStandard % 1000 == 0 && d.pensionStandard >= 80000 && d.pensionStandard <= 1000000
+              && (d.get('remuneration', null) == null || (d.remuneration is int && d.remuneration >= 0))
+              && (d.get('provisional', null) == null || d.provisional is bool)))
+            // 所属：登録されている適用事業所だけ
+            && (sub != 'assignments' || (isRealDate(d.validFrom) && d.officeId is string && exists(siPath('offices', d.officeId))))
+            && (sub != 'insuredTypes' || (isRealDate(d.validFrom) && d.type in ['general', 'partTime', 'shortTime', 'specialReduction']))
+            // 支払区分：登録されている区分だけ
+            && (sub != 'payrollAssignments' || (isRealDate(d.validFrom) && d.payrollGroupId is string && exists(siPath('payrollGroups', d.payrollGroupId))))
+            && (sub != 'exemptions' || (d.type in ['care', 'healthNhiUnion', 'healthLateElderly', 'healthAgreement', 'pensionAgreement']
+              && isRealDate(d.startDate) && optRealDate(d, 'endDate')
+              && (d.get('endDate', null) == null || d.endDate > d.startDate)))
+            && (sub != 'absences' || (d.reason in ['sickness', 'personal', 'furlough', 'other']
+              && isRealDate(d.startDate) && optRealDate(d, 'endDate')
+              && (d.get('endDate', null) == null || d.endDate >= d.startDate)))
+            && (sub != 'fixedWageChanges' || (isYearMonth(d.yearMonth) && d.direction in ['up', 'down'] && d.note is string && d.note.size() <= 200))
+            && (sub != 'leaves' || isLeaveData(d))
+            && (sub != 'dependents' || isDependentData(d));
+        }
+        // 書ける項目（登録では全部の項目、直すときは変えた項目で見る。前のデータにほかの項目があっても直せるように）
+        function subKeysOk(sub, keys) {
+          return (sub != 'qualifications' || keys.hasOnly(['acquiredDate', 'lostDate', 'lostReason', 'refundStatus']))
+            && (sub != 'standardRemunerations' || keys.hasOnly(['validFrom', 'reason', 'healthStandard', 'pensionStandard', 'remuneration',
+                'remunerationBreakdown', 'ownRemuneration', 'totalRemuneration', 'selectedInsurerId', 'provisional']))
+            && (sub != 'assignments' || keys.hasOnly(['validFrom', 'officeId']))
+            && (sub != 'insuredTypes' || keys.hasOnly(['validFrom', 'type']))
+            && (sub != 'payrollAssignments' || keys.hasOnly(['validFrom', 'payrollGroupId']))
+            && (sub != 'exemptions' || keys.hasOnly(['type', 'startDate', 'endDate']))
+            && (sub != 'absences' || keys.hasOnly(['reason', 'startDate', 'endDate']))
+            && (sub != 'fixedWageChanges' || keys.hasOnly(['yearMonth', 'direction', 'note']));
+        }
 
         // サブコレクション（資格・標準報酬月額・休業・休職・被扶養者など）
         // 所属事業所の履歴（assignments）は、特定の事業所の担当者は担当事業所への所属を作ることだけができる（異動は全担当）
@@ -479,13 +556,12 @@ service cloud.firestore {
           allow read: if isSiUser() && employeeInScope(employeeId);
           allow create: if isSiUser() && employeeInScopeAfter(employeeId)
             && (sub != 'assignments' || scopeAll() || request.resource.data.officeId == siScope())
-            && (sub != 'leaves' || isLeaveData(request.resource.data))
-            && (sub != 'dependents' || isDependentData(request.resource.data))
+            && validSubData(sub, request.resource.data) && subKeysOk(sub, request.resource.data.keys())
             && (sub != 'changeLogs' || (request.resource.data.by == request.auth.token.email
               && request.resource.data.at == request.time && request.resource.data.text is string));
           allow update: if isSiUser() && employeeInScope(employeeId) && sub != 'changeLogs' && (sub != 'assignments' || scopeAll())
-            && (sub != 'leaves' || isLeaveData(request.resource.data))
-            && (sub != 'dependents' || isDependentData(request.resource.data));
+            && validSubData(sub, request.resource.data)
+            && subKeysOk(sub, request.resource.data.diff(resource.data).affectedKeys());
           allow delete: if isSiUser() && employeeInScope(employeeId) && sub != 'changeLogs' && (sub != 'assignments' || scopeAll());
         }
       }
@@ -501,7 +577,9 @@ service cloud.firestore {
         allow create, update: if isSiUser() && inScope(request.resource.data.get('officeId', null));
       }
       match /adjustments/{id} {
-        allow read, delete: if isSiUser() && inScope(resource.data.get('officeId', null));
+        // まだない記録も読める（精算をトランザクションで記録するとき、ほかの担当者が先に記録していないかを確かめるため。ないものは何も分からない）
+        allow read: if isSiUser() && (resource == null || inScope(resource.data.get('officeId', null)));
+        allow delete: if isSiUser() && inScope(resource.data.get('officeId', null));
         allow create, update: if isSiUser() && inScope(request.resource.data.get('officeId', null));
       }
 
@@ -522,17 +600,33 @@ service cloud.firestore {
       function closedPath(yearMonth, officeId) {
         return /databases/$(database)/documents/apps/socialInsurance/closings/$(yearMonth)/offices/$(officeId);
       }
+      // 賞与：画面・CSVの validateBonus と同じ決まり（設計書 2.4・4章 bonuses）。画面を通らない書き込みも止める
+      // - 支給日は実在する日付、賞与額は1円〜99,999,999円、うち現物は賞与額以下、全事業所の合計は自社の額より大きく10億円未満
+      // - 従業員は登録されている人、種類は登録されている種類
+      // - 報酬扱い（isRemuneration）は、選んだ種類の設定（年4回以上支給で、支給月が適用開始月以後）と同じ値だけ
+      //   （報酬扱いにすると賞与の保険料・賞与支払届がなくなるので、直接の書き込みで偽れないようにする）
+      function bonusTypeRemuneration(d) {
+        return get(siPath('bonusTypes', d.bonusTypeId)).data.isRemuneration == true
+          && d.yearMonth >= get(siPath('bonusTypes', d.bonusTypeId)).data.validFrom;
+      }
+      function validBonus(d) {
+        return d.employeeId is string && exists(siPath('employees', d.employeeId))
+          && isRealDate(d.paidDate) && d.yearMonth is string && d.paidDate.matches(d.yearMonth + '-[0-9]{2}')
+          && d.officeId is string
+          && d.amount is int && d.amount > 0 && d.amount <= 99999999
+          && (d.get('inKindAmount', null) == null || (d.inKindAmount is int && d.inKindAmount >= 0 && d.inKindAmount <= d.amount))
+          && (d.get('totalAmount', null) == null || (d.totalAmount is int && d.totalAmount > d.amount && d.totalAmount <= 999999999))
+          && d.isRemuneration is bool
+          && ((d.get('bonusTypeId', null) == null && d.isRemuneration == false)
+            || (d.get('bonusTypeId', null) is string && exists(siPath('bonusTypes', d.bonusTypeId))
+              && d.isRemuneration == bonusTypeRemuneration(d)));
+      }
       match /bonuses/{bonusId} {
-        allow read: if isSiUser() && inScope(resource.data.officeId);
+        allow read: if isSiUser() && (resource == null || inScope(resource.data.officeId));
         allow create: if isSiUser() && inScope(request.resource.data.officeId)
-          && request.resource.data.employeeId is string
-          && request.resource.data.amount is int && request.resource.data.amount > 0
-          && request.resource.data.yearMonth is string
-          && request.resource.data.paidDate.matches(request.resource.data.yearMonth + '-[0-9]{2}')
-          && request.resource.data.officeId is string
-          && (request.resource.data.get('inKindAmount', null) == null
-            || (request.resource.data.inKindAmount is int && request.resource.data.inKindAmount >= 0
-              && request.resource.data.inKindAmount <= request.resource.data.amount))
+          && request.resource.data.keys().hasOnly(['employeeId', 'paidDate', 'yearMonth', 'officeId', 'amount', 'inKindAmount',
+            'bonusTypeId', 'isRemuneration', 'totalAmount', 'createdAt'])
+          && validBonus(request.resource.data)
           && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId));
         allow delete: if isSiUser() && inScope(resource.data.officeId)
           && !exists(closedPath(resource.data.yearMonth, resource.data.officeId));
@@ -541,34 +635,48 @@ service cloud.firestore {
         allow update: if isSiUser() && inScope(resource.data.officeId)
           && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalAmount', 'updatedAt'])
             && (request.resource.data.totalAmount == null
-              || (request.resource.data.totalAmount is int && request.resource.data.totalAmount > resource.data.amount)))
+              || (request.resource.data.totalAmount is int && request.resource.data.totalAmount > resource.data.amount
+                && request.resource.data.totalAmount <= 999999999)))
           || (request.resource.data.diff(resource.data).affectedKeys()
               .hasOnly(['paidDate', 'yearMonth', 'amount', 'inKindAmount', 'bonusTypeId', 'isRemuneration', 'totalAmount', 'officeId', 'updatedAt'])
             && inScope(request.resource.data.officeId)
-            && request.resource.data.amount is int && request.resource.data.amount > 0
-            && request.resource.data.paidDate.matches(request.resource.data.yearMonth + '-[0-9]{2}')
-            && (request.resource.data.get('inKindAmount', null) == null
-              || (request.resource.data.inKindAmount is int && request.resource.data.inKindAmount >= 0
-                && request.resource.data.inKindAmount <= request.resource.data.amount))
-            && (request.resource.data.get('totalAmount', null) == null
-              || (request.resource.data.totalAmount is int && request.resource.data.totalAmount > request.resource.data.amount))
+            && validBonus(request.resource.data)
             && !exists(closedPath(resource.data.yearMonth, resource.data.officeId))
             && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId))));
       }
 
       // 給与：確定済みの月（closings/{支払月}/offices/{事業所} がある）の給与は、登録・上書き・削除ができない。
       // 同じ人・同じ支払日は1件（ドキュメントID＝従業員ID_支払日）にして、上書きで直す
+      // 給与の金額（0以上の整数・1回の支払いで1億円未満。画面・CSVの MAX_SALARY_YEN と同じ）
+      function isSalaryYen(v) { return v is int && v >= 0 && v <= 99999999; }
+      function optYen(d, key) { return d.get(key, null) == null || isSalaryYen(d.get(key, 0)); }
+      // 給与：画面・CSVの validateSalary と同じ決まり（設計書 3.6・4章 salaries）。画面を通らない書き込みも止める
       function validSalary(d) {
-        return d.employeeId is string
-          && d.paidDate is string && d.yearMonth is string
+        return d.keys().hasOnly(['employeeId', 'paidDate', 'yearMonth', 'officeId', 'fixedWages', 'nonFixedWages', 'paymentBaseDays',
+            'retroactiveDiff', 'inKindWages', 'workingHours', 'hourlyRate', 'excludedAmount', 'updatedAt'])
+          && d.employeeId is string
+          && isRealDate(d.paidDate) && d.yearMonth is string
           && d.paidDate.matches(d.yearMonth + '-[0-9]{2}')
           && d.officeId is string
-          && d.fixedWages is int && d.fixedWages >= 0
-          && d.nonFixedWages is int && d.nonFixedWages >= 0
+          && isSalaryYen(d.fixedWages)
+          && isSalaryYen(d.nonFixedWages)
           && d.paymentBaseDays is int && d.paymentBaseDays >= 0 && d.paymentBaseDays <= 31
-          // 算定から除く額（支払月・締め日の変更月だけ）：0以上の整数で、支払った額以下
+          // うち遡及差額：固定的賃金の内数
+          // （null の項目は get の既定値にならず null が返るので、「null か、上限以下か」で書く）
+          && optYen(d, 'retroactiveDiff') && (d.get('retroactiveDiff', null) == null || d.retroactiveDiff <= d.fixedWages)
+          // うち現物給与：支払った額（固定的賃金＋非固定的賃金）の内数
+          && optYen(d, 'inKindWages') && (d.get('inKindWages', null) == null || d.inKindWages <= d.fixedWages + d.nonFixedWages)
+          // 労働時間：0〜744時間（小数第1位まで）
+          && (d.get('workingHours', null) == null
+            || ((d.workingHours is int || d.workingHours is float) && d.workingHours >= 0 && d.workingHours <= 744
+              && math.round(d.workingHours * 10) == d.workingHours * 10))
+          // 時給単価：1〜100,000円
+          && (d.get('hourlyRate', null) == null || (d.hourlyRate is int && d.hourlyRate >= 1 && d.hourlyRate <= 100000))
+          // 算定から除く額（支払月・締め日の変更月だけ）：支払った額（遡及差額を除く）以下
+          && optYen(d, 'excludedAmount')
           && (d.get('excludedAmount', null) == null
-            || (d.get('excludedAmount', 0) is int && d.get('excludedAmount', 0) >= 0 && d.get('excludedAmount', 0) <= d.fixedWages + d.nonFixedWages));
+            || (d.get('retroactiveDiff', null) == null && d.excludedAmount <= d.fixedWages + d.nonFixedWages)
+            || (d.get('retroactiveDiff', null) != null && d.excludedAmount <= d.fixedWages - d.retroactiveDiff + d.nonFixedWages));
       }
       match /salaries/{salaryId} {
         // まだない給与も読める（追加・支払日の変更で、同じ支払日の給与がないことをトランザクションで確かめるため。ないものは何も分からない）

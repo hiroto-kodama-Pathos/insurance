@@ -3,7 +3,8 @@
 import { inject, Service } from '@angular/core';
 import { Auth } from '../auth/auth';
 import { scopeWhere } from './scope';
-import { deleteDoc, getDocs, query, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
+import { getDocs, query, runTransaction, serverTimestamp } from 'firebase/firestore';
+import { db } from '../firebase';
 import { Diffs, SettlementRecord, TrackedAdjustment } from '../calc/adjustment';
 import { siCol, siDoc } from '../firestore-paths';
 
@@ -19,28 +20,57 @@ export class AdjustmentRepository {
     }));
   }
 
-  /** 残りの差額を、精算した給与の月とあわせて記録する（前に精算した記録は残す） */
+  /**
+   * 残りの差額を、精算した給与の月とあわせて記録する（前に精算した記録は残す）。
+   * 画面で読んだあとに、ほかの担当者が精算・取り消しをしていたら書かない（古い記録に足して書くと、先の精算が消えたり、
+   * 同じ差額を二重に精算したりするため）。トランザクションで今の記録を読み直して確かめる
+   */
   async settle(a: TrackedAdjustment, settledMonth: string, previous: SettlementRecord | undefined): Promise<void> {
-    await setDoc(siDoc('adjustments', a.id), {
-      employeeId: a.employeeId,
-      yearMonth: a.yearMonth,
-      officeId: a.officeId,
-      cause: a.cause,
-      beforeStandard: a.beforeStandard,
-      afterStandard: a.afterStandard,
-      diffs: a.diffs,
-      entries: [...(previous?.entries ?? []), { settledMonth, diffs: a.remaining }],
-      updatedAt: serverTimestamp(),
+    const ref = siDoc('adjustments', a.id);
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref);
+      const current = snap.exists() ? ((snap.data()['entries'] ?? []) as SettlementRecord['entries']) : [];
+      if (!sameEntries(current, previous?.entries ?? [])) throw new AdjustmentChangedError();
+      tx.set(ref, {
+        employeeId: a.employeeId,
+        yearMonth: a.yearMonth,
+        officeId: a.officeId,
+        cause: a.cause,
+        beforeStandard: a.beforeStandard,
+        afterStandard: a.afterStandard,
+        diffs: a.diffs,
+        entries: [...current, { settledMonth, diffs: a.remaining }],
+        updatedAt: serverTimestamp(),
+      });
     });
   }
 
   /**
    * 精算済みを取り消す（精算した給与の月の誤りなど）。最後に記録した精算だけを取り消し、残りの差額は未精算に戻る。
-   * 精算の記録が1つもなくなったら、文書ごと消す
+   * 精算の記録が1つもなくなったら、文書ごと消す。画面で読んだあとに記録が変わっていたら取り消さない
    */
   async unsettle(id: string, previous: SettlementRecord): Promise<void> {
-    const entries = previous.entries.slice(0, -1);
-    if (entries.length === 0) await deleteDoc(siDoc('adjustments', id));
-    else await updateDoc(siDoc('adjustments', id), { entries, updatedAt: serverTimestamp() });
+    const ref = siDoc('adjustments', id);
+    await runTransaction(db, async (tx) => {
+      const snap = await tx.get(ref);
+      const current = snap.exists() ? ((snap.data()['entries'] ?? []) as SettlementRecord['entries']) : [];
+      if (current.length === 0 || !sameEntries(current, previous.entries)) throw new AdjustmentChangedError();
+      const entries = current.slice(0, -1);
+      if (entries.length === 0) tx.delete(ref);
+      else tx.update(ref, { entries, updatedAt: serverTimestamp() });
+    });
   }
+}
+
+/** 画面で読んだあとに、ほかの担当者が精算の記録を変えていた */
+export class AdjustmentChangedError extends Error {
+  constructor() {
+    super('ほかの担当者が先に精算の記録を変えました');
+    this.name = 'AdjustmentChangedError';
+  }
+}
+
+/** 精算の記録が同じか（件数と、精算した給与の月で比べる。精算・取り消しのたびに件数か月が変わる） */
+export function sameEntries(a: SettlementRecord['entries'], b: SettlementRecord['entries']): boolean {
+  return a.length === b.length && a.every((x, i) => x.settledMonth === b[i].settledMonth);
 }

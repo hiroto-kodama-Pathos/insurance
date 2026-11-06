@@ -2,11 +2,11 @@
 // ・purgeRetiredEmployees：毎日（日本時間3時）、保管期間の終わった退職者の個人データを消去し、月次確定の氏名・社員番号を匿名IDにする
 // ・deleteMistakenEmployee：誤って登録した従業員を、管理者がその場で削除する（月次確定に一度も含まれていない人だけ）
 // Firestore はサブコレクションを自動で消さないため、Admin SDK の recursiveDelete で、従業員とサブコレクションをまとめて消す。
-import { DocumentData, getFirestore, Timestamp } from "firebase-admin/firestore";
+import { DocumentData, FieldPath, getFirestore, Timestamp } from "firebase-admin/firestore";
 import { logger } from "firebase-functions";
 import { HttpsError, onCall } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
-import { anonymizeRows, findPurgeTargets, lastClosedDates, PersonFields, PurgeQualification } from "./purge-logic.js";
+import { anonymizeRows, findPurgeTargets, idPrefixRange, lastClosedDates, PersonFields, PurgeQualification } from "./purge-logic.js";
 
 const REGION = "asia-northeast1";
 const SI = "apps/socialInsurance";
@@ -39,8 +39,10 @@ async function deleteEmployeeData(employeeId: string): Promise<void> {
     const snap = await db.collection(`${SI}/${name}`).where("employeeId", "==", employeeId).get();
     for (const d of snap.docs) writer.delete(d.ref);
   }
+  // 範囲の終わりは、目に見えない文字（\uf8ff）を足したもの。idPrefixRange でエスケープして書き、テストする
+  const { start, end } = idPrefixRange(employeeId);
   for (const name of BY_ID_PREFIX) {
-    const snap = await db.collection(`${SI}/${name}`).orderBy("__name__").startAt(`${employeeId}_`).endAt(`${employeeId}_`).get();
+    const snap = await db.collection(`${SI}/${name}`).orderBy(FieldPath.documentId()).startAt(start).endAt(end).get();
     for (const d of snap.docs) writer.delete(d.ref);
   }
   // 社員番号の記録（employeeNumbers/{社員番号}）も消し、その番号をほかの人に使えるようにする（この人を指しているときだけ）

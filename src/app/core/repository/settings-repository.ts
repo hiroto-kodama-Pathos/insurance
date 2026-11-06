@@ -82,7 +82,11 @@ export class SettingsRepository {
   async savePayrollGroup(id: string | null, input: PayrollGroupInput, groups: PayrollGroup[]): Promise<void> {
     const batch = writeBatch(db);
     const ref = id ? siDoc('payrollGroups', id) : siDocNew('payrollGroups');
-    batch.set(ref, { ...termsOf(input), name: input.name.trim(), isDefault: input.isDefault === true, changes: input.changes ?? [] });
+    // 直すときは、制度の変更の履歴（changes）には触れない（ほかの画面で「○年○月から変える」を登録したあとに、
+    // 古い一覧のまま直すと、その履歴が消えるため。履歴は savePayrollTermsChanges だけで変える）
+    const data = { ...termsOf(input), name: input.name.trim(), isDefault: input.isDefault === true };
+    if (id) batch.update(ref, data);
+    else batch.set(ref, { ...data, changes: [] });
     if (input.isDefault) {
       for (const g of groups) if (g.id !== ref.id && g.isDefault) batch.update(siDoc('payrollGroups', g.id), { isDefault: false });
     }

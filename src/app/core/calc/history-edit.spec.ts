@@ -120,3 +120,10 @@ describe('資格の期間の訂正：生年月日・75歳・被扶養者との�
     expect(dependentsLeftOutside(deps, before, before)).toEqual([]);
   });
 });
+
+describe('生年月日の訂正：75歳', () => {
+  it('新しい生年月日で、どれかの資格取得日に75歳以上になるなら止める', () => {
+    expect(checkBirthDateChange('1980-05-10', '1945-05-10', '2026-11-06', '2020-04-01', ['2020-04-01', '2024-04-01'])['birthDate']).toContain('資格取得日（2024年4月1日）に75歳以上');
+    expect(checkBirthDateChange('1980-05-10', '1950-05-10', '2026-11-06', '2020-04-01', ['2020-04-01'])).toEqual({});
+  });
+});

@@ -41,6 +41,9 @@ describe('MasterImportPage', () => {
               // 担当外の事業所の人・ほかの担当者が先に使った番号（画面の一覧にはない）
               if (list.some((x) => x.employeeNumber === '0099')) throw new EmployeeNumberTakenError(['0099']);
               calls.push(['importEmployees', list]);
+              // 途中で失敗する（2人目から書けなかった）
+              if (list.some((x) => x.employeeNumber === '0098')) return { saved: 1, failed: list.length - 1, error: new Error('network') };
+              return { saved: list.length, failed: 0, error: null };
             },
             saveDecisions: async (list: unknown[]) => { calls.push(['saveDecisions', list]); },
             importDependents: async (list: unknown[]) => { calls.push(['importDependents', list]); },
@@ -106,6 +109,15 @@ describe('MasterImportPage', () => {
     fixture.detectChanges();
     expect(calls).toEqual([]);
     expect(el().textContent).toContain('社員番号 0099 はすでに登録されているため、取り込んでいません');
+  });
+
+  it('従業員：途中で書き込めなかったら、登録できた人数・できなかった人数と、取り込み直せば残りから再開できることを知らせる', async () => {
+    await load('社員番号,氏名,生年月日,適用事業所,入社日,資格取得日,被保険者区分,支払区分\r\n0101,青木 健,1985-04-01,本社,,2020-04-01,,\r\n0098,途中 失敗,1985-04-01,本社,,2020-04-01,,\r\n');
+    importButton().click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(el().textContent).toContain('従業員を1人登録しました。1人は、途中で書き込めなかったため登録できていません');
+    expect(el().textContent).toContain('同じファイルを取り込み直すと、登録できた人は「登録済み」として飛ばし');
   });
 
   it('エラー・確定済み・担当範囲外の行だけを表示できる（登録する件数は変わらない）', async () => {

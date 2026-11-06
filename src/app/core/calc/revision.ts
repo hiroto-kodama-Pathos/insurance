@@ -170,7 +170,7 @@ export function findRevisionCandidates(
     );
     if (!health) return [];
     // 3か月の途中で70歳になる人も、厚生年金は判定しない
-    const pensionJudged = employee.birthDate !== '' && isPensionAge(employee.birthDate, yms[2]);
+    const pensionJudged = employee.birthDate === '' || isPensionAge(employee.birthDate, yms[2]);
     const pension = pensionJudged
       ? judge(
           'pension', current.pensionStandard, suggestion.pensionGrade, suggestion.pensionStandard,

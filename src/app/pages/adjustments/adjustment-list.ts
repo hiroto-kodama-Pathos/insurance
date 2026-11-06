@@ -19,7 +19,7 @@ import { Masters } from '../../core/calc/employee-month';
 import { ChildSupportRounding } from '../../core/calc/monthly-premium';
 import { findOffice } from '../../core/calc/office';
 import { addMonths } from '../../core/calc/salary';
-import { AdjustmentRepository } from '../../core/repository/adjustment-repository';
+import { AdjustmentChangedError, AdjustmentRepository } from '../../core/repository/adjustment-repository';
 import { ClosingRepository } from '../../core/repository/closing-repository';
 import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
 import { MasterRepository } from '../../core/repository/master-repository';
@@ -176,7 +176,11 @@ export class AdjustmentList implements OnInit {
       this.notice.set(`${row.employee?.name ?? ''}さんの${yearMonthLabel(row.yearMonth)}分の差額を、${yearMonthLabel(month)}の給与で精算済みにしました。`);
     } catch (e) {
       console.error(e);
-      this.notice.set('保存できませんでした。権限と通信を確かめてください。');
+      if (e instanceof AdjustmentChangedError) {
+        // ほかの担当者が先に精算・取り消しをした。今の記録を読み直して見せる（古い記録のまま書くと、二重に精算するため）
+        this.settlements.set(await this.adjustmentRepo.loadSettlements().catch(() => this.settlements()));
+        this.notice.set('ほかの担当者が先にこの差額の精算を記録・取り消ししました。最新の状態を読み込んだので、確かめてからやり直してください。');
+      } else this.notice.set('保存できませんでした。権限と通信を確かめてください。');
     } finally {
       this.saving.set(false);
     }
@@ -200,7 +204,11 @@ export class AdjustmentList implements OnInit {
       this.notice.set(`${row.employee?.name ?? ''}さんの${yearMonthLabel(row.yearMonth)}分の差額を、未精算に戻しました。`);
     } catch (e) {
       console.error(e);
-      this.notice.set('保存できませんでした。権限と通信を確かめてください。');
+      if (e instanceof AdjustmentChangedError) {
+        // ほかの担当者が先に精算・取り消しをした。今の記録を読み直して見せる（古い記録のまま書くと、二重に精算するため）
+        this.settlements.set(await this.adjustmentRepo.loadSettlements().catch(() => this.settlements()));
+        this.notice.set('ほかの担当者が先にこの差額の精算を記録・取り消ししました。最新の状態を読み込んだので、確かめてからやり直してください。');
+      } else this.notice.set('保存できませんでした。権限と通信を確かめてください。');
     } finally {
       this.saving.set(false);
     }

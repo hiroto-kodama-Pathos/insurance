@@ -105,3 +105,14 @@ describe('決定通知書の取り込み：その月の等級表がないとき'
     expect(p[0].errors.filter((e) => e.includes('使える等級表が登録されていない'))).toHaveLength(1);
   });
 });
+
+describe('決定通知書の取り込み：資格の期間・千円単位の読み替え', () => {
+  it('資格のない適用年月はエラー。千円単位として読んだことを出す', () => {
+    const withQuals = employees.map((e) => ({ ...e, qualifications: [{ acquiredDate: '2020-04-01', lostDate: '2026-10-01' }] }));
+    const p = buildDecisionPreview(csv(['0001,,,2026-11,380,380', '0002,,,2026-09,280000,280000']), DECISION_TEMPLATE_MAPPING, withQuals, []);
+    expect(p[0].status).toBe('error');
+    expect(p[0].errors.join()).toContain('2026年11月に社会保険の資格がありません');
+    expect(p[0].notes?.[0]).toContain('「380」を千円単位として380,000円と読みました');
+    expect(p[1].notes).toEqual([]);
+  });
+});

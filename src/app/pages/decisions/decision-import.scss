@@ -12,3 +12,4 @@ tr.confirm { background: #fffbe6; }
 tr.same { color: #888; }
 tr.differs td:nth-child(6) { font-weight: bold; }
 .counts { margin: 8px 0; }
+.note { color: var(--c-warn); font-size: 12px; }

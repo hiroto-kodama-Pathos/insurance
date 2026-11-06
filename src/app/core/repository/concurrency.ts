@@ -15,6 +15,8 @@ export async function mapWithConcurrency<T, R>(items: readonly T[], limit: numbe
       results[i] = await fn(items[i], i);
     }
   };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, worker));
+  // limit が数でない・1未満のときも、1つは動かす（0個だと何も実行されず、穴の空いた結果を返してしまう）
+  const n = Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 1;
+  await Promise.all(Array.from({ length: Math.min(n, Math.max(1, items.length)) }, worker));
   return results;
 }

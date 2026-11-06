@@ -121,11 +121,19 @@ export type StandardInput = {
  * 標準報酬月額の履歴の追加・訂正・異動
  * @param grades 等級表（額が適用開始月の等級の額かを確かめる。その月の表がなければ登録できない。null なら確かめない）
  */
-export function checkStandard(existingMonths: string[], input: StandardInput, grades: GradeRow[] | null = null): Errors {
+export function checkStandard(
+  existingMonths: string[],
+  input: StandardInput,
+  grades: GradeRow[] | null = null,
+  /** 資格の期間（渡したときは、適用開始月に資格があるかも確かめる。CSVの標準報酬月額と同じ決まり） */
+  qualifications: Qualification[] | null = null,
+): Errors {
   const errors: Errors = {};
   if (!isValidMonth(input.validFrom)) errors['validFrom'] = '適用開始月を正しく入力してください';
   else if (existingMonths.includes(input.validFrom))
     errors['validFrom'] = 'この月からの標準報酬月額はすでに登録されています';
+  else if (qualifications && !insuredInMonth(qualifications, input.validFrom))
+    errors['validFrom'] = `${yearMonthLabel(input.validFrom)}に社会保険の資格がありません。適用開始月の年・月を確かめてください（資格のない月の標準報酬月額は計算に使いません）`;
   for (const key of ['healthStandard', 'pensionStandard'] as const) {
     const v = input[key];
     if (v === null || !Number.isInteger(v) || v <= 0) errors[key] = '標準報酬月額を円で入力してください';
@@ -144,6 +152,11 @@ export function checkStandard(existingMonths: string[], input: StandardInput, gr
     if (!input.selectedInsurerId) errors['selectedInsurerId'] = '本人が選んだ保険者を選んでください';
   }
   return errors;
+}
+
+/** その月に資格があるか（資格取得日の月から、資格喪失日の前の月まで） */
+function insuredInMonth(qualifications: Qualification[], ym: string): boolean {
+  return qualifications.some((q) => q.acquiredDate.slice(0, 7) <= ym && (q.lostDate === null || q.lostDate.slice(0, 7) > ym));
 }
 
 export type LeaveInput = {
@@ -200,17 +213,18 @@ export function checkLeave(input: LeaveInput, qualifications: Qualification[] | 
       errors['endDate'] = '育児休業が3年以上になっています。育児休業の保険料の免除は、子が3歳になるまでです。終了日の年を確かめてください';
   }
 
-  if (input.workedDays !== null) {
+  // 0日は入れていないのと同じ（休業の種類を問わない）
+  if (input.workedDays !== null && input.workedDays !== 0) {
     const days = startOk && endOk && input.endDate >= input.startDate ? daysInclusive(input.startDate, input.endDate) : null;
     if (input.type !== 'childcare') errors['workedDays'] = '就業した日数は育児休業（産後パパ育休）だけ入力できます';
     else if (!Number.isInteger(input.workedDays) || input.workedDays < 0) errors['workedDays'] = '就業した日数は0以上の整数で入力してください';
-    else if (input.workedDays === 0) {
-      // 0日は入れていないのと同じ
-    } else if (input.endDate === '') errors['workedDays'] = '就業した日数は、終了日を入れた産後パパ育休（28日以内）だけ入力できます';
+    else if (input.endDate === '') errors['workedDays'] = '就業した日数は、終了日を入れた産後パパ育休（28日以内）だけ入力できます';
     else if (days !== null && days > PATERNITY_MAX_DAYS)
       errors['workedDays'] = `就業した日数は産後パパ育休（28日以内の休業）だけ入力できます（この休業は${days}日です）`;
     else if (days !== null && input.workedDays > Math.floor(days / 2))
-      errors['workedDays'] = `就業した日数が多すぎます。産後パパ育休中に就業できるのは休業中の所定労働日数の半分までで、${days}日の休業なら多くても${Math.floor(days / 2)}日です`;
+      // 法律の上限は「休業中の所定労働日数の半分」。所定労働日数はアプリに登録していないので、それを超えることのない
+      // 暦日数の半分を上限にして、明らかな入力の誤りだけを止める（所定労働日数の半分以内かは、担当者が確かめる）
+      errors['workedDays'] = `就業した日数が多すぎます。産後パパ育休中に就業できるのは休業中の所定労働日数の半分までなので、${days}日の休業なら暦日数の半分（${Math.floor(days / 2)}日）を超えることはありません`;
   }
   return errors;
 }

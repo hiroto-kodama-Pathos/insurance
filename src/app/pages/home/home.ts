@@ -13,7 +13,7 @@ import { ChildSupportRounding } from '../../core/calc/monthly-premium';
 import { OfficeClosing } from '../../core/calc/closing';
 import { GradeRow } from '../../core/calc/grade-suggest';
 import { CandidateStatusRecord, GradeThreshold, openRevisionCandidates, trackRevisionCandidates } from '../../core/calc/revision';
-import { addDays, findFilings, urgentFilings } from '../../core/calc/filing';
+import { addDays, filingName, findFilings, urgentFilings } from '../../core/calc/filing';
 import { standardChangeLabel } from '../../core/calc/employee-month';
 import { BonusRecord } from '../../core/calc/bonus-premium';
 import { BonusRepository } from '../../core/repository/bonus-repository';
@@ -105,7 +105,7 @@ export class Home implements OnInit {
     if (!m) return [];
     const candidates = trackRevisionCandidates(this.employees(), this.salaries(), this.grades(), this.thresholds(), this.statuses(), this.cutoff());
     const list = findFilings(this.employees(), this.bonuses(), this.salaries(), this.grades(), candidates, m.offices, this.today(), this.settings().startDate ?? null);
-    return urgentFilings(list, this.filedIds(), this.today());
+    return urgentFilings(list, this.filedIds(), this.today()).map((f) => ({ ...f, name: filingName(f, this.filedIds()) }));
   });
   protected readonly overdueFilings = computed(() => this.urgentFilings().filter((f) => f.deadline !== null && f.deadline < this.today()).length);
 

@@ -6,7 +6,7 @@ import { SettlementRecord } from '../../core/calc/adjustment';
 import { buildOfficeClosing } from '../../core/calc/closing';
 import { calcEmployeeMonth, Masters } from '../../core/calc/employee-month';
 import { DEFAULT_SETTINGS } from '../../core/calc/settings';
-import { AdjustmentRepository } from '../../core/repository/adjustment-repository';
+import { AdjustmentChangedError, AdjustmentRepository } from '../../core/repository/adjustment-repository';
 import { ClosingRepository } from '../../core/repository/closing-repository';
 import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
 import { MasterRepository } from '../../core/repository/master-repository';
@@ -38,9 +38,11 @@ const confirmStub = { provide: Confirm, useValue: { ask: async (r: ConfirmReques
 describe('AdjustmentList', () => {
   let fixture: ComponentFixture<AdjustmentList>;
   let settlements: SettlementRecord[];
+  let otherSettled: boolean;
 
   beforeEach(async () => {
     settlements = [];
+    otherSettled = false;
     // 7月分を28万円で確定したあと、7月分から34万円とする決定通知が届いた
     const before = yamada();
     const closing = { ...buildOfficeClosing('2026-07', 'honsha', [{ employee: before, result: calcEmployeeMonth(before, masters, '2026-07') }], 'u1'), closedAt: null };
@@ -60,6 +62,11 @@ describe('AdjustmentList', () => {
           useValue: {
             loadSettlements: async () => settlements,
             settle: async (a: { id: string; remaining: SettlementRecord['entries'][0]['diffs'] }, month: string) => {
+              // ほかの担当者が先に精算していた（画面で読んだあとに記録が変わった）
+              if (otherSettled) {
+                settlements = [{ id: a.id, entries: [{ settledMonth: '2026-10', diffs: a.remaining }] }];
+                throw new AdjustmentChangedError();
+              }
               settlements = [{ id: a.id, entries: [{ settledMonth: month, diffs: a.remaining }] }];
             },
             unsettle: async (id: string) => {
@@ -95,6 +102,16 @@ describe('AdjustmentList', () => {
     expect(settlements[0].entries[0].settledMonth).toBe('2026-09');
     expect(el().textContent).toContain('未精算（0）');
     expect(el().textContent).toContain('2026年9月の給与で精算済みにしました。');
+  });
+
+  it('ほかの担当者が先に精算していたら、上書きせずに最新の記録を読み込み直して知らせる', async () => {
+    otherSettled = true;
+    (el().querySelector('table.adjustments button') as HTMLButtonElement).click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(settlements[0].entries.map((e) => e.settledMonth)).toEqual(['2026-10']);
+    expect(el().textContent).toContain('ほかの担当者が先にこの差額の精算を記録・取り消ししました');
+    expect(el().textContent).toContain('未精算（0）');
   });
 
   it('精算済みにした差額を、未精算に戻せる（精算した給与の月の誤りなど）', async () => {

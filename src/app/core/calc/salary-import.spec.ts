@@ -158,4 +158,115 @@ describe('給与のCSV：空欄・桁の多すぎる金額・対応づけの矛�
     const r = buildPreview(parseCsv(`${H}\r\n0001,2026-11-25,30,300000,0,,,,\r\n0001,2026-11-10,30,1000,0,,,,\r\n`), TEMPLATE_MAPPING, ctx({ employees: moved }));
     expect(r.map((x) => x.officeId)).toEqual(['osaka', 'honsha']);
   });
+
+  describe('給与データの矛盾・エラー検出（バリデーション強化）', () => {
+    // 期待値は、実際の仕様（設計書 3.8）に合わせている。エラー＝取り込まない、注意（warnings）＝取り込むが確かめてほしい
+
+    it('支払基礎日数が31日を超えるとエラー', () => {
+      const invalid = one('0001,2026-10-25,32,300000,0,,,,');
+      expect(invalid.status).toBe('error');
+      expect(invalid.errors[0]).toContain('0〜31日');
+    });
+
+    it('支払基礎日数が0日・1日でも取り込む（休職中・欠勤の多い月。17日未満の月は定時決定・随時改定の平均から除く）', () => {
+      expect(one('0001,2026-10-25,0,0,0,,,,').status).toBe('new');
+      expect(one('0001,2026-10-25,1,300000,0,,,,').salary?.paymentBaseDays).toBe(1);
+    });
+
+    it('過去の支払日は取り込む（定時決定・随時改定に前の月が要る。初めて使うときに過去分を入れる）', () => {
+      const old = one('0001,2024-09-25,30,300000,0,,,,');
+      expect(old.status).toBe('new');
+      expect(old.warnings).toEqual([]);
+    });
+
+    it('来月より先の支払日は、取り込むが注意を出す（年・月の打ち間違い）', () => {
+      const at = (line: string) => buildPreview(parseCsv(`${H}\r\n${line}\r\n`), TEMPLATE_MAPPING, ctx({ today: '2026-11-06' }))[0];
+      expect(at('0001,2026-12-25,30,300000,0,,,,').warnings).toEqual([]); // 来月の給与を先に取り込むのはよくある
+      const far = at('0001,2027-01-25,30,300000,0,,,,');
+      expect(far.status).toBe('new');
+      expect(far.warnings[0]).toContain('来月より先です');
+    });
+
+    it('ファイルの中で同じ従業員・同じ支払日の行が2つあれば、2つ目はエラー', () => {
+      const csv = parseCsv(`${H}\r\n0001,2026-10-25,30,300000,0,,,,\r\n0001,2026-10-25,30,350000,0,,,,\r\n`);
+      const p = buildPreview(csv, TEMPLATE_MAPPING, ctx());
+      expect(p[0].status).toBe('new');
+      expect(p[1].status).toBe('error');
+      expect(p[1].errors[0]).toContain('同じ社員番号・支払日の行がファイルの中に2つ以上あります');
+    });
+
+    it('上限（99,999,999円）を超える金額はエラー。5000万円は役員報酬などがあるので取り込む', () => {
+      expect(one('0001,2026-10-25,30,50000000,0,,,,').status).toBe('new');
+      const huge = one('0001,2026-10-25,30,100000000,0,,,,');
+      expect(huge.status).toBe('error');
+      expect(huge.errors[0]).toContain('99,999,999円以下');
+    });
+
+    it('翌月払い（10月分を11月25日に支払う）は、支払日の月の給与として取り込む', () => {
+      expect(one('0001,2026-11-25,30,300000,0,,,,').salary?.paidDate).toBe('2026-11-25');
+    });
+
+    it('遡及差額・現物給与は、それぞれの列から読む（固定的賃金の内数）', () => {
+      const backpay = one('0001,2026-10-25,30,300000,0,50000,,,');
+      expect(backpay.salary?.retroactiveDiff).toBe(50_000);
+      // 列：社員番号,支払日,支払基礎日数,固定的賃金,非固定的賃金,うち遡及差額,うち現物給与,労働時間,時給単価
+      const kind = one('0001,2026-10-25,30,300000,0,,100000,,');
+      expect(kind.salary?.inKindWages).toBe(100_000);
+    });
+
+    it('登録されていない社員番号はエラー', () => {
+      const notRegistered = one('9999,2026-10-25,30,300000,0,,,,');
+      expect(notRegistered.status).toBe('error');
+      expect(notRegistered.errors[0]).toContain('登録されていない社員番号です');
+    });
+
+    it('和暦・西暦が混ざっていても読む', () => {
+      const csv = parseCsv(`${H}\r\n0001,2026-10-25,30,300000,0,,,,\r\n0002,R8.10.25,30,250000,0,,,,\r\n`);
+      const p = buildPreview(csv, TEMPLATE_MAPPING, ctx());
+      expect(p[0].salary?.paidDate).toBe('2026-10-25');
+      expect(p[1].salary?.paidDate).toBe('2026-10-25');
+    });
+
+    it('登録済みの給与は「上書き」になり、「上書きする」を選んだときだけ登録する（二重登録しない）', () => {
+      const r = buildPreview(parseCsv(`${H}\r\n0001,2026-10-25,30,300000,0,,,,\r\n`), TEMPLATE_MAPPING, ctx({ existingIds: new Set(['e1_2026-10-25']) }));
+      expect(r[0].status).toBe('overwrite');
+    });
+
+    it('確定済みの月（支払月|事業所ID）は取り込まない', () => {
+      const officeId = one('0001,2026-09-25,30,300000,0,,,,').officeId!;
+      const csv = parseCsv(`${H}\r\n0001,2026-09-25,30,300000,0,,,,\r\n0001,2026-10-25,30,350000,0,,,,\r\n`);
+      const r = buildPreview(csv, TEMPLATE_MAPPING, ctx({ closed: new Set([`2026-09|${officeId}`]) }));
+      expect(r[0].status).toBe('closed');
+      expect(r[1].status).toBe('new');
+    });
+
+    it('列の順序が違う（支払日の列に日数が入っている）とエラー', () => {
+      const swapped = one('0001,30,2026-10-25,300000,0,,,,');
+      expect(swapped.status).toBe('error');
+      expect(swapped.errors.join()).toContain('支払日を読み取れません');
+    });
+
+    it('金額に文字が混ざっているとエラー（「円」とカンマは読む）', () => {
+      expect(one('0001,2026-10-25,30,30万円,0,,,,').errors[0]).toContain('数値として読み取れません');
+      expect(one('0001,2026-10-25,30,"300,000円",0,,,,').salary?.fixedWages).toBe(300_000);
+    });
+
+    it('小数の金額はエラー（円単位の整数）', () => {
+      const decimal = one('0001,2026-10-25,30,300000.5,0,,,,');
+      expect(decimal.status).toBe('error');
+      expect(decimal.errors[0]).toContain('整数');
+    });
+
+    it('支払基礎日数が計算期間の暦日数より多ければ、取り込むが注意を出す', () => {
+      const at = (line: string, days: number | null) =>
+        buildPreview(parseCsv(`${H}\r\n${line}\r\n`), TEMPLATE_MAPPING, ctx({ periodDaysOf: () => days }))[0];
+      // 翌月払いの11月支払分（計算期間10月）は31日が正しい
+      expect(at('0001,2026-11-25,31,300000,0,,,,', 31).warnings).toEqual([]);
+      const over = at('0001,2026-11-25,31,300000,0,,,,', 30);
+      expect(over.status).toBe('new');
+      expect(over.warnings[0]).toContain('計算期間の暦日数（30日）より多い');
+      // 締め日・支払月の変更月（null）は注意しない
+      expect(at('0001,2026-11-25,31,300000,0,,,,', null).warnings).toEqual([]);
+    });
+  });
 });

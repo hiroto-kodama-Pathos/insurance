@@ -7,7 +7,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { ActivatedRoute, convertToParamMap, provideRouter } from '@angular/router';
 import { Masters } from '../../../core/calc/employee-month';
 import { buildKyokaiGrades } from '../../../core/calc/grade-suggest';
-import { EmployeeNumberTakenError, EmployeeDetail as Detail, EmployeeRepository } from '../../../core/repository/employee-repository';
+import { EmployeeNumberTakenError, EmployeeDetail as Detail, EmployeeRepository, HistoryConflictError } from '../../../core/repository/employee-repository';
 import { MasterRepository } from '../../../core/repository/master-repository';
 import { SettingsRepository } from '../../../core/repository/settings-repository';
 import { DEFAULT_SETTINGS } from '../../../core/calc/settings';
@@ -64,6 +64,7 @@ describe('EmployeeDetail', () => {
   let closedMonths: Record<string, string[]>;
   /** 確定済みの月・ほかの従業員を読めない（読み込みに失敗したときの動きを確かめる） */
   let closedFail = false;
+  let leaveConflict = false;
   let loadAllFail = false;
   let logLoadFails: boolean;
   /** yamada() の一部を差し替えて読み込ませる（reload() で画面を作り直す） */
@@ -75,6 +76,7 @@ describe('EmployeeDetail', () => {
     logWriteFails = false;
     closedMonths = {};
     closedFail = false;
+    leaveConflict = false;
     loadAllFail = false;
     logLoadFails = false;
     detailOverride = {};
@@ -123,7 +125,11 @@ describe('EmployeeDetail', () => {
             addTransfer: record('addTransfer'),
             addStandard: record('addStandard'),
             confirmStandard: record('confirmStandard'),
-            addLeave: record('addLeave'),
+            addLeave: async (...args: unknown[]) => {
+              // 保存の直前に読み直したら、ほかの担当者が先に登録した休業と重なっていた
+              if (leaveConflict) throw new HistoryConflictError('startDate', 'ほかの休業（育児休業 2026年11月1日〜休業中）と期間が重なっています（ほかの担当者が先に登録した休業かもしれません。画面を読み込み直しました）');
+              calls.push(['addLeave', ...args]);
+            },
             updateLeave: record('updateLeave'),
             addInsuredType: record('addInsuredType'),
             addPayrollAssignment: record('addPayrollAssignment'),
@@ -420,6 +426,16 @@ describe('EmployeeDetail', () => {
     expect(calls).toEqual([
       ['addLeave', 'e1', { type: 'childcare', startDate: '2026-12-01', endDate: '', workedDays: null }],
     ]);
+  });
+
+  it('保存の直前に、ほかの担当者が登録した休業と重なると分かったら、保存せずにその欄に理由を出す', async () => {
+    leaveConflict = true;
+    button('休業を追加').click();
+    fixture.detectChanges();
+    input('input[type=date]', '2026-12-01');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('ほかの担当者が先に登録した休業かもしれません');
   });
 
   it('被保険者区分を変える（今と同じ区分は登録しない）', async () => {

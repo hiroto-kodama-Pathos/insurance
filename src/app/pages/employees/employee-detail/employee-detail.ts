@@ -72,7 +72,7 @@ import {
 import { calcEmployeeMonth, EmployeeMonthResult, findEffective, Masters } from '../../../core/calc/employee-month';
 import { GradeRow, standardGradeError, suggestStandards } from '../../../core/calc/grade-suggest';
 import { senToDisplayYen } from '../../../core/calc/premium-calculator';
-import { ChangeLog, EmployeeDetail as Detail, EmployeeNumberTakenError, EmployeeRepository } from '../../../core/repository/employee-repository';
+import { ChangeLog, EmployeeDetail as Detail, EmployeeNumberTakenError, EmployeeRepository, HistoryConflictError } from '../../../core/repository/employee-repository';
 import { MasterRepository } from '../../../core/repository/master-repository';
 import { NgTemplateOutlet } from '@angular/common';
 import { SettingsRepository } from '../../../core/repository/settings-repository';
@@ -90,6 +90,7 @@ import {
   checkLeaveOverlap,
   checkQualificationDelete,
   checkQualificationEdit,
+  dependentsLeftOutside,
   checkStandardDelete,
   dependentMoves,
   officeIdsOf,
@@ -293,6 +294,8 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   /** 社員番号の変更の入力と、ほかの人の社員番号（読み込み中は null） */
   protected readonly numberForm = signal('');
   private readonly otherNumbers = signal<string[] | null>(null);
+  /** ほかの従業員の社員番号を読めなかった（重なりを確かめられないので、社員番号の変更を保存しない） */
+  private readonly otherNumbersFailed = signal(false);
   protected readonly careExemptionLabel = careExemptionLabel;
   /** 被扶養者の介護保険の適用除外（追加・非該当年月日の登録）の入力 */
   protected readonly depExemptionForm = signal<DependentCareExemptionInput>({ startDate: '', endDate: '' });
@@ -438,7 +441,16 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   );
   /** 今日の被保険者区分 */
   protected readonly currentInsuredType = computed(() => insuredTypeAt(this.detail()?.insuredTypes, today()));
-  protected readonly isInsuredNow = computed(() => openQualification(this.detail()?.qualifications ?? []) !== null);
+  /** 今日の時点で加入中か（資格取得日が今日以前の、喪失していない資格がある）。一覧の判定（その月に資格があるか）とそろえる */
+  protected readonly isInsuredNow = computed(() => {
+    const q = openQualification(this.detail()?.qualifications ?? []);
+    return q !== null && q.acquiredDate <= today();
+  });
+  /** 資格取得日がまだ来ていない資格（加入予定）。退職・喪失・異動は、資格を取ってから登録する（取り消すときは「直す」「削除」） */
+  protected readonly plannedQualification = computed(() => {
+    const q = openQualification(this.detail()?.qualifications ?? []);
+    return q !== null && q.acquiredDate > today() ? q : null;
+  });
 
   /** 直近12か月の保険料（問い合わせの対応用） */
   protected readonly history = computed<EmployeeMonthResult[]>(() => {
@@ -594,7 +606,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     this.breakdown.set(EMPTY_BREAKDOWN);
     const d = this.detail();
     const latest = d ? findEffective(d.standardHistory, '9999-12') : null;
-    if (mode === 'standard' || mode === 'transfer') {
+    if (mode === 'standard' || mode === 'transfer' || mode === 'reacquire') {
       this.standardForm.set({
         validFrom: monthOf(today()),
         reason: 'revision',
@@ -614,10 +626,15 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       this.numberForm.set(d?.employeeNumber ?? '');
       // 重なりを確かめるため、ほかの人の社員番号を読む（一覧の読み込みの記憶を使うので、ふつうは問い合わせなし）
       this.otherNumbers.set(null);
+      this.otherNumbersFailed.set(false);
       void this.repo
         .loadAll()
         .then((list) => this.otherNumbers.set(list.filter((e) => e.id !== d?.id).map((e) => e.employeeNumber)))
-        .catch(() => this.otherNumbers.set([]));
+        // 読めなかったときは、重なっていないとみなさず、保存を止める（空の一覧で確かめると、重なりを見逃すため）
+        .catch((e) => {
+          console.error(e);
+          this.otherNumbersFailed.set(true);
+        });
     }
     if (mode === 'dependent') this.dependentForm.set({ name: '', birthDate: '', certifiedDate: '' });
     if (mode === 'exemption') this.exemptionForm.set({ type: 'care', startDate: '', endDate: '' });
@@ -1016,8 +1033,10 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     }
   }
 
-  /** 削除の確認に出す、影響の文。計算できなければ、確かめられなかったことを出す */
-  private async deleteImpactText(kind: DeleteKind, id: string): Promise<string> {
+  /**
+   * 削除の確認に出す、影響の文。確定済みの月を読めなかったときは null（影響を確かめられないので、削除しない）
+   */
+  private async deleteImpactText(kind: DeleteKind, id: string): Promise<string | null> {
     const d = this.detail();
     const m = this.masters();
     const span = d ? this.deleteSpan(kind, id) : null;
@@ -1027,17 +1046,16 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     const from = [monthOf(span.start), addMonths(thisMonth, -60)].sort().at(-1)!;
     const to = [addMonths(thisMonth, 1), span.end ? monthOf(span.end) : ''].sort().at(-1)!;
     let closedByOffice: Record<string, string[]> = {};
-    let closedNote = '';
     try {
       const officeIds = [...new Set(d.assignments.map((a) => a.officeId))];
       const lists = await Promise.all(officeIds.map((o) => this.closingRepo.closedMonthsOf(o)));
       closedByOffice = Object.fromEntries(officeIds.map((o, k) => [o, lists[k]]));
     } catch (e) {
       console.error(e);
-      closedNote = '（確定済みの月を確かめられませんでした）';
+      return null;
     }
     const impact = deleteImpact(d, this.withoutRow(kind, id), m, from, to, thisMonth, this.rounding(), closedByOffice);
-    return deleteImpactMessage(impact, thisMonth, EmployeeDetail.NO_PREMIUM_NOTE[kind] ?? '', this.deleteFilingNote(kind, id)) + closedNote;
+    return deleteImpactMessage(impact, thisMonth, EmployeeDetail.NO_PREMIUM_NOTE[kind] ?? '', this.deleteFilingNote(kind, id));
   }
 
   /**
@@ -1055,6 +1073,11 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     // 削除の前と後で月ごとの保険料を計算し直し、影響する月・保険料・確定済みの月・届出・削除後の今月の状態を出す
     this.saving.set(true);
     const impact = await this.deleteImpactText(kind, id).finally(() => this.saving.set(false));
+    if (impact === null) {
+      // 確定済みの月を確かめられないと、確定した月への影響が分からないので、削除しない
+      this.notice.set(`確定済みの月を読み込めなかったため、${t.label}を削除しませんでした。通信と権限を確かめて、もう一度削除してください。`);
+      return;
+    }
     const ok = await this.confirm.ask({
       title: '削除しますか',
       message:
@@ -1194,6 +1217,8 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     let errors: Errors = {};
     let action: (() => Promise<void>) | null = null;
     let message = '';
+    /** 直したあとの値（変更の記録に「直す前」と並べて残す） */
+    let after: string | null = null;
 
     if (mode === 'retire') {
       const r = checkRetirement(d.qualifications, this.date());
@@ -1207,9 +1232,23 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       action = () => this.repo.closeQualification(d.id, open!.id, this.date(), this.reason(), deps);
       message = `資格の喪失を登録しました。${deps.length ? `被扶養者${deps.length}人も同じ日に扶養から外れます。` : ''}`;
     } else if (mode === 'reacquire') {
-      errors = checkReacquire(d.qualifications, this.date());
-      action = () => this.repo.addQualification(d.id, this.date());
-      message = `${d.qualifications.length ? '再加入' : '加入'}を登録しました。標準報酬月額の履歴も追加してください（決定の理由は「資格取得時決定」）。`;
+      // 資格と、資格取得時決定の標準報酬月額を一緒に登録する（資格だけ登録して標準報酬月額を忘れると、保険料を計算できないため）
+      const f = this.standardForm();
+      const date = this.date();
+      errors = checkReacquire(d.qualifications, date, d.birthDate);
+      if (!errors['acquiredDate'])
+        errors = {
+          ...errors,
+          ...checkStandard(
+            d.standardHistory.map((s) => s.validFrom),
+            { ...f, validFrom: monthOf(date), reason: 'acquisition', ownRemuneration: null, totalRemuneration: null, selectedInsurerId: null },
+            this.grades(),
+          ),
+        };
+      action = () => this.repo.addQualification(d.id, date, { healthStandard: f.healthStandard!, pensionStandard: f.pensionStandard! });
+      message =
+        `${d.qualifications.length ? '再加入' : '加入'}を登録しました（資格取得日 ${dateLabel(date)}・${yearMonthLabel(monthOf(date))}分からの標準報酬月額 健保 ${this.man(f.healthStandard ?? 0)}／厚年 ${this.man(f.pensionStandard ?? 0)}、資格取得時決定）。` +
+        '資格取得届を届け出てください。';
     } else if (mode === 'transfer') {
       const f = this.standardForm();
       errors = {
@@ -1232,7 +1271,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const f = this.multiOffice()
         ? { ...raw, ownRemuneration: raw.ownRemuneration ?? null, totalRemuneration: raw.totalRemuneration ?? null, selectedInsurerId: raw.selectedInsurerId ?? null }
         : { ...raw, ownRemuneration: null, totalRemuneration: null, selectedInsurerId: null };
-      errors = checkStandard(d.standardHistory.map((s) => s.validFrom), f, this.grades());
+      errors = checkStandard(d.standardHistory.map((s) => s.validFrom), f, this.grades(), d.qualifications);
       // 資格取得時決定で内訳を1つでも入れたら、内訳をチェックして一緒に保存する
       const b = this.breakdown();
       const useBreakdown = f.reason === 'acquisition' && BREAKDOWN_KEYS.some((k) => b[k] !== null);
@@ -1245,12 +1284,13 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const f = this.multiOffice()
         ? { ...raw, ownRemuneration: raw.ownRemuneration ?? null, totalRemuneration: raw.totalRemuneration ?? null, selectedInsurerId: raw.selectedInsurerId ?? null }
         : { ...raw, ownRemuneration: null, totalRemuneration: null, selectedInsurerId: null };
-      errors = checkStandard(d.standardHistory.filter((s) => s.id !== id).map((s) => s.validFrom), f, this.grades());
+      errors = checkStandard(d.standardHistory.filter((s) => s.id !== id).map((s) => s.validFrom), f, this.grades(), d.qualifications);
       const b = this.breakdown();
       const useBreakdown = f.reason === 'acquisition' && BREAKDOWN_KEYS.some((k) => b[k] !== null);
       if (useBreakdown) errors = { ...errors, ...checkBreakdown(b) };
       action = () => this.repo.updateStandard(d.id, id, f, this.remuneration(), useBreakdown ? b : null);
       message = `${yearMonthLabel(f.validFrom)}分からの標準報酬月額を直しました。確定済みの月に関わるときは、差額の画面にさかのぼる差額が出ます。`;
+      after = `${yearMonthLabel(f.validFrom)}からの標準報酬月額（健保 ${this.man(f.healthStandard ?? 0)}／厚年 ${this.man(f.pensionStandard ?? 0)}）`;
     } else if (mode === 'eligibility') {
       const f = this.eligForm();
       const date = this.date();
@@ -1262,7 +1302,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       message = r ? `加入対象の判定を更新しました（候補：${CANDIDATE_LABEL[r.candidate]}）。${this.eligibilityHint(r)}` : '';
     } else if (mode === 'birthDate') {
       const first = [...d.qualifications].map((q) => q.acquiredDate).sort()[0] ?? null;
-      errors = checkBirthDateChange(d.birthDate, this.date(), today(), first);
+      errors = checkBirthDateChange(d.birthDate, this.date(), today(), first, d.qualifications.map((q) => q.acquiredDate));
       const value = this.date();
       action = () => this.repo.updateBirthDate(d.id, value);
       message = `生年月日を${dateLabel(d.birthDate)}から${dateLabel(value)}に直しました。年齢による保険料の切り替え（40・65・70・75歳）は、新しい生年月日で計算し直します。`;
@@ -1270,8 +1310,18 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const id = this.editingId()!;
       const before = d.qualifications.find((q) => q.id === id)!;
       const f = this.qualForm();
-      const r = checkQualificationEdit(d.qualifications, id, f);
+      const r = checkQualificationEdit(d.qualifications, id, f, d.birthDate);
       errors = r.errors;
+      // 資格の期間を直すと、扶養に入った日が本人の資格の期間の外になる被扶養者がいれば止める（被扶養者の登録と同じ決まり）
+      if (!errors['acquiredDate'] && !errors['endDate']) {
+        const next = d.qualifications.map((q) => (q.id === id ? { acquiredDate: f.acquiredDate, lostDate: r.lostDate } : q));
+        const outside = dependentsLeftOutside(d.dependents, d.qualifications, next);
+        if (outside.length > 0)
+          errors = {
+            ...errors,
+            acquiredDate: `${outside.map((x) => `${x.name}さん（扶養に入った日 ${dateLabel(x.certifiedDate)}）`).join('・')}の扶養に入った日が、資格の期間の外になります。先に被扶養者の扶養に入った日を直してください`,
+          };
+      }
       const moves = dependentMoves(d.dependents, before.lostDate, r.lostDate);
       // 外れた日を合わせると、扶養に入った日より前になる被扶養者がいれば止める（外れた日が扶養に入った日より前のデータはルールでも入らない）
       const early = moves
@@ -1284,6 +1334,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
         (before.lostDate && !r.lostDate ? '退職（資格喪失）を取り消し、加入中に戻しました。' : '資格の期間を直しました。') +
         (moves.length ? `同じ日に扶養から外れていた被扶養者${moves.length}人も${r.lostDate ? '外れた日を合わせました' : '扶養に戻しました'}。` : '') +
         '届け出た内容と違うときは、資格取得届・資格喪失届の訂正（取消）も確かめてください。';
+      after = `資格の期間（${dateLabel(f.acquiredDate)}〜${r.lostDate ? dateLabel(r.lostDate) : '加入中'}）`;
     } else if (mode === 'dependentEdit') {
       const id = this.editingId()!;
       const f = this.dependentForm();
@@ -1295,6 +1346,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       }
       action = () => this.repo.updateDependent(d.id, id, { ...f, removedDate: removed || null });
       message = `被扶養者（${f.name.trim()}さん）を直しました。`;
+      after = `被扶養者の${f.name.trim()}さん（生年月日 ${dateLabel(f.birthDate)}・扶養に入った日 ${dateLabel(f.certifiedDate)}${removed ? `・外れた日 ${dateLabel(removed)}` : ''}）`;
     } else if (mode === 'assignmentEdit') {
       const id = this.editingId()!;
       const input = { validFrom: this.date(), officeId: this.officeId() };
@@ -1328,7 +1380,11 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const before = d.employeeNumber;
       const others = this.otherNumbers();
       const r = checkNumberChange(before, this.numberForm(), others ?? []);
-      errors = others === null ? { employeeNumber: 'ほかの従業員の社員番号を読み込んでいます。少し待ってから、もう一度保存してください' } : r.errors;
+      errors = this.otherNumbersFailed()
+        ? { employeeNumber: 'ほかの従業員の社員番号を読み込めなかったため、重なっていないかを確かめられません。通信を確かめ、開き直してからもう一度保存してください' }
+        : others === null
+          ? { employeeNumber: 'ほかの従業員の社員番号を読み込んでいます。少し待ってから、もう一度保存してください' }
+          : r.errors;
       action = () => this.repo.updateEmployeeNumber(d.id, r.number, before);
       message = `社員番号を「${before}」から「${r.number}」に変えました。給与ソフトのCSVを取り込むときは、新しい社員番号で照らし合わせます。`;
     } else if (mode === 'dependent') {
@@ -1396,6 +1452,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       }
       action = () => this.repo.confirmStandard(d.id, t!.id, f.healthStandard!, f.pensionStandard!);
       message = `${yearMonthLabel(t?.validFrom)}分からの標準報酬月額を、通知書の値で確定しました。`;
+      after = `${yearMonthLabel(t?.validFrom)}からの標準報酬月額（健保 ${this.man(f.healthStandard ?? 0)}／厚年 ${this.man(f.pensionStandard ?? 0)}）`;
     } else if (mode === 'leave') {
       const f = this.leaveForm();
       errors = { ...checkLeaveOverlap(d.leaves, f.startDate, f.endDate), ...checkLeave(f, d.qualifications, today()) };
@@ -1412,6 +1469,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       errors = { ...checkLeaveOverlap(d.leaves.filter((l) => l.id !== mode.leaveId), f.startDate, f.endDate), ...checkLeave(f, d.qualifications, today()) };
       action = () => this.repo.updateLeave(d.id, mode.leaveId, f);
       message = '休業を直しました。保険料の免除は、直した期間で計算し直します。';
+      after = `${f.type === 'maternity' ? '産前産後休業' : '育児休業'}（${dateLabel(f.startDate)}〜${f.endDate ? dateLabel(f.endDate) : '休業中'}${f.workedDays ? `・就業 ${f.workedDays}日` : ''}）`;
     }
 
     this.errors.set(errors);
@@ -1420,7 +1478,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     this.saving.set(true);
     try {
       // 登録・訂正と、その変更の記録（直す前の値つき）を同じ書き込みで残す
-      const logged = await this.repo.withLog(d.id, before ? `${message}（直す前：${before}）` : message, action);
+      const logged = await this.repo.withLog(d.id, before ? `${message}（直す前：${before}${after ? `／直したあと：${after}` : ''}）` : message, action);
       const again = this.continueAfterSave() && mode === 'dependent';
       this.continueAfterSave.set(false);
       this.mode.set(null);
@@ -1429,6 +1487,12 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       await this.reload();
     } catch (e) {
       console.error(e);
+      if (e instanceof HistoryConflictError) {
+        // 保存の直前に読み直した履歴と重なった。最新の履歴を出して、入力はそのまま残す
+        this.errors.set({ [e.field]: e.message });
+        await this.reload().catch(() => undefined);
+        return;
+      }
       this.errors.set(
         e instanceof EmployeeNumberTakenError
           ? { employeeNumber: 'この社員番号はほかの従業員が使っています（ほかの担当者が先に登録したか、担当外の事業所の人が使っています）' }

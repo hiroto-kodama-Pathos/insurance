@@ -89,11 +89,13 @@ export function calcMonthlyPremium(input: MonthlyPremiumInput): MonthlyPremium {
   if (!input.insured) return result;
 
   if (input.leaveExempt) {
+    // 免除の月も、かからない保険（75歳以上の健康保険・70歳以上の厚生年金・適用除外）は「0円」ではなく対象外（null）にする
     result.exempt = true;
-    result.health = ZERO;
-    result.childSupport = yearMonth >= CHILD_SUPPORT_START ? ZERO : null;
-    result.pension = isPensionAge(birthDate, yearMonth) ? ZERO : null;
-    result.care = careLabel === 'second' || careLabel === 'special' ? ZERO : null;
+    const healthAge = isHealthAge(birthDate, yearMonth) && !ex.health;
+    result.health = healthAge ? ZERO : null;
+    result.childSupport = healthAge && yearMonth >= CHILD_SUPPORT_START ? ZERO : null;
+    result.pension = isPensionAge(birthDate, yearMonth) && !ex.pension ? ZERO : null;
+    result.care = healthAge && (careLabel === 'second' || careLabel === 'special') && !ex.care ? ZERO : null;
     return result;
   }
 

@@ -193,6 +193,12 @@ function findRate(
  * 1人分の、ある年度の賞与をまとめて計算する
  * 上限は前の賞与から順に積み上げるので、同じ年度の賞与をすべて渡す（支給日の順に並べ替える）
  */
+/** 同じ月・同じ事業所・同じ保険者の支給の合算（C は二以上事業所勤務の全事業所の合計で数えたもの） */
+type MonthBonus = {
+  count: number; amount: number; standard: number; health: number; pension: number; premium: MonthlyPremium | null;
+  amountC: number; standardC: number; healthC: number; pensionC: number; decided: MonthlyPremium | null;
+};
+
 export function calcEmployeeBonuses(
   employee: EmployeeData,
   bonuses: BonusRecord[],
@@ -207,7 +213,7 @@ export function calcEmployeeBonuses(
   const pensionTotal = new Map<string, number>();
   // 同じ月・同じ事業所・同じ保険者の支給（設計書 2.4）：賞与額を合算してから1,000円未満を切り捨て、上限を当て、
   // 合算した額の保険料から前の支給で控除した保険料を引いた差額を、この支給で控除する（端数処理も合算した額で1回）
-  const months = new Map<string, { count: number; amount: number; standard: number; health: number; pension: number; premium: MonthlyPremium | null }>();
+  const months = new Map<string, MonthBonus>();
   // 二以上事業所勤務の決定（全事業所の合算）の上限の累計。合計を登録していない賞与は自社の額で数える
   const healthTotalC = new Map<string, number>();
   const pensionTotalC = new Map<string, number>();
@@ -253,7 +259,9 @@ export function calcEmployeeBonuses(
 
     // 同じ月・同じ事業所・同じ保険者の支給を合算した標準賞与額のうち、この支給で増えた分
     const monthKey = `${yearMonth}|${office.id}|${insurer.id}`;
-    const month = months.get(monthKey) ?? { count: 0, amount: 0, standard: 0, health: 0, pension: 0, premium: null };
+    const month: MonthBonus = months.get(monthKey) ?? {
+      count: 0, amount: 0, standard: 0, health: 0, pension: 0, premium: null, amountC: 0, standardC: 0, healthC: 0, pensionC: 0, decided: null,
+    };
     month.count++;
     month.amount += bonus.amount;
     const monthStandard = standardBonusOf(month.amount);
@@ -276,15 +284,21 @@ export function calcEmployeeBonuses(
     month.health += health;
     month.pension += pension;
 
-    // 全事業所の合計を登録した賞与は、合算した標準賞与額で上限を当てる
+    // 全事業所の合計を登録した賞与は、全事業所の合計で上限を当てる。同じ月の支給は、全事業所の合計も合算してから
+    // 1,000円未満を切り捨て、増えた分に上限を当てる（自社の額と同じ決まり。合計を登録していない支給は自社の額で数える）
     const total = multi && bonus.totalAmount && bonus.totalAmount > bonus.amount ? bonus.totalAmount : null;
-    const standardTotal = standardBonusOf(total ?? bonus.amount);
+    month.amountC += total ?? bonus.amount;
+    const standardTotal = standardBonusOf(month.amountC);
+    const incrementC = standardTotal - month.standardC;
+    month.standardC = standardTotal;
     const hcBefore = healthTotalC.get(hKey) ?? 0;
-    const healthC = Math.max(0, Math.min(standardTotal, HEALTH_BONUS_CAP - hcBefore));
+    const healthC = Math.max(0, Math.min(incrementC, HEALTH_BONUS_CAP - hcBefore));
     healthTotalC.set(hKey, hcBefore + healthC);
     const pcBefore = pensionTotalC.get(yearMonth) ?? 0;
-    const pensionC = Math.max(0, Math.min(standardTotal, PENSION_BONUS_CAP - pcBefore));
+    const pensionC = Math.max(0, Math.min(incrementC, PENSION_BONUS_CAP - pcBefore));
     pensionTotalC.set(yearMonth, pcBefore + pensionC);
+    month.healthC += healthC;
+    month.pensionC += pensionC;
 
     const exemption = bonusExemption(employee.leaves, bonus.paidDate);
     const common = {
@@ -322,13 +336,19 @@ export function calcEmployeeBonuses(
     const premium = month.premium ? diffPremium(cumulative, month.premium) : cumulative;
     month.premium = cumulative;
     const result: BonusResult = { ...common, status: premium.missingRates.length > 0 ? 'missingRate' : 'ok', premium, rates };
-    if (total !== null) {
-      // 合算した標準賞与額の保険料を、賞与額の割合（自社 ÷ 合計）で按分する（月額と同じく割り算は最後）
-      const decidedPremium = calcMonthlyPremium({
+    // 二以上事業所勤務の人は、同じ月の全事業所の合計で数えた保険料も積み上げる（合計を登録していない支給は、按分なしと同じ）
+    let decidedPremium: MonthlyPremium | null = null;
+    if (multi) {
+      // 合算した標準賞与額の保険料を、賞与額の割合（この月の自社の額の合計 ÷ 全事業所の合計）で按分する（割り算は最後）
+      const cumulativeC = calcMonthlyPremium({
         ...input,
-        standard: { health: healthC, pension: pensionC },
-        multiOffice: { own: bonus.amount, total },
+        standard: { health: month.healthC, pension: month.pensionC },
+        multiOffice: { own: month.amount, total: month.amountC },
       });
+      decidedPremium = month.decided ? diffPremium(cumulativeC, month.decided) : cumulativeC;
+      month.decided = cumulativeC;
+    }
+    if (total !== null && decidedPremium) {
       const sum = (p: MonthlyPremium) =>
         Number([p.health, p.care, p.childSupport, p.pension].reduce((t, x) => t + (x?.employeeYen ?? 0n), 0n));
       result.decided = { totalAmount: total, standardTotal, base: { health: healthC, pension: pensionC }, premium: decidedPremium };

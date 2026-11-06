@@ -174,6 +174,9 @@ await check('確定済みの月の賞与でも、全事業所の合計は登録�
 await check('全事業所の合計は、自社の賞与額より大きくないと登録できない', assertFails(updateDoc(doc(staff, `${SI}/bonuses/b1`), { totalAmount: 400000 })));
 await check('全事業所の合計と一緒に賞与額は変えられない', assertFails(updateDoc(doc(staff, `${SI}/bonuses/b1`), { totalAmount: 900000, amount: 1 })));
 
+// ---- 差額の精算の記録（精算はトランザクションで、今の記録を読み直してから書く） ----
+await check('まだない精算の記録も読める（ほかの担当者が先に記録していないかを確かめるため）', assertSucceeds(getDoc(doc(staff, `${SI}/adjustments/e1_2026-07_honsha`))));
+
 // ---- 給与（確定済みの月は登録・上書き・削除できない。2026-11 の本社は上で確定済み） ----
 const salary = (paidDate, office, fixed = 300000) => ({
   employeeId: 'e1', paidDate, yearMonth: paidDate.slice(0, 7), officeId: office,

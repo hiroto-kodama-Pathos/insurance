@@ -196,3 +196,17 @@ describe('エッジケース：料率と計算条件', () => {
     expect(r.pension).toBeNull();
   });
 });
+
+describe('免除の月の、かからない保険', () => {
+  it('75歳以上・70歳以上・適用除外の保険は、免除の月も「0円」ではなく対象外（null）', () => {
+    const old = calcMonthlyPremium(input({ birthDate: '1950-05-10', leaveExempt: true })); // 2026年10月に76歳
+    expect(old.exempt).toBe(true);
+    expect(old.health).toBeNull();
+    expect(old.childSupport).toBeNull();
+    expect(old.care).toBeNull();
+    expect(old.pension).toBeNull();
+    const excluded = calcMonthlyPremium(input({ leaveExempt: true, exclusions: { pension: true } }));
+    expect(excluded.health?.employeeYen).toBe(0n);
+    expect(excluded.pension).toBeNull();
+  });
+});

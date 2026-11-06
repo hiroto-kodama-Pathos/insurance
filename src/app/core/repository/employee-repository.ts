@@ -1,5 +1,6 @@
 // 従業員と、計算に使うサブコレクションの読み込み（設計書 4章 employees）
 import { isValidLeave } from '../calc/eligibility';
+import { checkLeaveOverlap } from '../calc/history-edit';
 import { isValidDependent } from '../calc/dependent';
 import { Auth } from '../auth/auth';
 import { employeeScopeWhere } from './scope';
@@ -56,6 +57,9 @@ export type EmployeeRecord = EmployeeData & {
 /** 変更の記録（誰が・いつ・何を変えたか。設計書 3.1・4章 changeLogs） */
 export type ChangeLog = { id: string; at: Date | null; by: string; text: string };
 
+/** CSVで従業員を取り込むとき、1回の書き込みにまとめる人数 */
+export const IMPORT_EMPLOYEES_PER_BATCH = 4;
+
 /** Firestore のドキュメントIDつき */
 export type WithId<T> = T & { id: string };
 
@@ -97,6 +101,26 @@ export const EMPLOYEE_CACHE_MS = 5 * 60 * 1000;
 export class EmployeeNumberTakenError extends Error {
   constructor(readonly numbers: string[]) {
     super(`employee number taken: ${numbers.join(',')}`);
+  }
+}
+
+/**
+ * 保存する直前に読み直した履歴と重なった（画面を開いたあとに、ほかの担当者が同じ人の休業・標準報酬月額を登録した、
+ * または二重に送った）。field は重なった入力欄
+ */
+/** 従業員のCSVの取り込みの結果 */
+export type ImportEmployeesResult = {
+  /** 登録できた人数 */
+  saved: number;
+  /** 途中で失敗して登録できなかった人数（失敗したまとまりと、その後ろ） */
+  failed: number;
+  error: unknown;
+};
+
+export class HistoryConflictError extends Error {
+  constructor(readonly field: string, message: string) {
+    super(message);
+    this.name = 'HistoryConflictError';
   }
 }
 
@@ -329,9 +353,10 @@ export class EmployeeRepository {
     const count = new Map<string, number>();
     for (const e of employees) count.set(e.employeeNumber, (count.get(e.employeeNumber) ?? 0) + 1);
     const missing = employees.filter((e) => e.employeeNumber && !have.has(e.employeeNumber) && count.get(e.employeeNumber) === 1);
-    for (let i = 0; i < missing.length; i += 400) {
+    // ルールが記録ごとに従業員を確かめ、1回の書き込みで確かめられるドキュメントは20件までなので、15件ずつ書く
+    for (let i = 0; i < missing.length; i += 15) {
       const batch = this.newBatch();
-      for (const e of missing.slice(i, i + 400)) batch.set(numberDoc(e.employeeNumber), { employeeId: e.id });
+      for (const e of missing.slice(i, i + 15)) batch.set(numberDoc(e.employeeNumber), { employeeId: e.id });
       await batch.commit();
     }
     return missing.length;
@@ -341,15 +366,22 @@ export class EmployeeRepository {
    * CSVで取り込んだ従業員をまとめて登録する（導入時。設計書 3.8）
    * 標準報酬月額は、標準報酬月額のCSVで別に取り込む。1人分は1回の書き込みにまとめ、途中で失敗しても一部だけにならない
    */
-  async importEmployees(list: EmployeeToImport[]): Promise<void> {
+  /**
+   * CSVで取り込んだ従業員をまとめて登録する。少人数ずつ書き、途中で失敗したらそこで止めて、登録できた人数と
+   * できなかった人数を返す（登録できた人は残る。同じファイルを取り込み直すと、その人は「登録済み」として飛ばすので、残りから再開できる）
+   */
+  async importEmployees(list: EmployeeToImport[]): Promise<ImportEmployeesResult> {
     return this.write(async () => {
       // 取り込む前に、社員番号の記録と重なる番号がないかを確かめる（あれば何も登録しない）
       const have = new Set((await getDocs(siCol('employeeNumbers'))).docs.map((d) => d.id));
       const taken = list.map((x) => x.employeeNumber).filter((n) => have.has(n));
       if (taken.length > 0) throw new EmployeeNumberTakenError(taken);
-      for (let i = 0; i < list.length; i += 50) {
+      // ルールが1人ごとに社員番号の記録・従業員・所属の事業所・支払区分を確かめ、1回の書き込みで確かめられるドキュメントは
+      // 20件までなので、少人数ずつ書く（1人で4件ほど）
+      const result: ImportEmployeesResult = { saved: 0, failed: 0, error: null };
+      for (let i = 0; i < list.length; i += IMPORT_EMPLOYEES_PER_BATCH) {
         const batch = this.newBatch();
-        const chunk = list.slice(i, i + 50);
+        const chunk = list.slice(i, i + IMPORT_EMPLOYEES_PER_BATCH);
         for (const x of chunk) {
           const ref = doc(siCol('employees'));
           batch.set(numberDoc(x.employeeNumber), { employeeId: ref.id });
@@ -365,8 +397,18 @@ export class EmployeeRepository {
           }
           this.logIn(batch, ref.id, `CSVで登録（${x.acquiredDate ? `資格取得日 ${dateLabel(x.acquiredDate)}` : '未加入'}）`);
         }
-        await this.commitNumbered(batch, chunk.map((x) => x.employeeNumber));
+        try {
+          await this.commitNumbered(batch, chunk.map((x) => x.employeeNumber));
+        } catch (e) {
+          // 最初のまとまりで、ほかの担当者が同じ番号を使った（何も登録していない）ときは、番号の重なりとして伝える
+          if (e instanceof EmployeeNumberTakenError && result.saved === 0) throw e;
+          result.failed = list.length - i;
+          result.error = e;
+          break;
+        }
+        result.saved += chunk.length;
       }
+      return result;
     });
   }
 
@@ -565,10 +607,21 @@ export class EmployeeRepository {
   }
 
   /** 再加入（新しい資格の期間を足す） */
-  async addQualification(employeeId: string, acquiredDate: string) {
+  /**
+   * 加入・再加入：資格と、資格取得時決定の標準報酬月額（資格取得月から）を同じ書き込みで足す
+   * （資格だけ登録されて標準報酬月額が抜け、保険料を計算できない状態にならないように）
+   */
+  async addQualification(employeeId: string, acquiredDate: string, standard?: { healthStandard: number; pensionStandard: number }) {
     return this.write(async () => {
       const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'qualifications')), { acquiredDate, lostDate: null, lostReason: null });
+      if (standard)
+        batch.set(doc(employeeSubCol(employeeId, 'standardRemunerations')), {
+          validFrom: monthOf(acquiredDate),
+          reason: 'acquisition',
+          healthStandard: standard.healthStandard,
+          pensionStandard: standard.pensionStandard,
+        });
       batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
       await batch.commit();
     });
@@ -599,6 +652,7 @@ export class EmployeeRepository {
   /** 標準報酬月額を足す。資格取得時決定で内訳を入れたときは、内訳も参考として保存する */
   async addStandard(employeeId: string, input: StandardInput, remuneration: number | null, breakdown: RemunerationBreakdown | null = null) {
     return this.write(async () => {
+      await this.assertNoStandardMonth(employeeId, null, input.validFrom);
       const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'standardRemunerations')), {
         ...input,
@@ -689,6 +743,7 @@ export class EmployeeRepository {
   /** 休業を足す */
   async addLeave(employeeId: string, input: LeaveInput) {
     return this.write(async () => {
+      await this.assertNoLeaveOverlap(employeeId, null, input);
       const batch = this.newBatch();
       batch.set(doc(employeeSubCol(employeeId, 'leaves')), {
         type: input.type,
@@ -703,6 +758,7 @@ export class EmployeeRepository {
 
   /** 休業を直す（延長・短縮・復帰と、種類・開始日の誤り） */
   async updateLeave(employeeId: string, leaveId: string, input: LeaveInput) {
+    await this.assertNoLeaveOverlap(employeeId, leaveId, input);
     return this.setSub(employeeId, 'leaves', leaveId, {
       type: input.type,
       startDate: input.startDate,
@@ -780,6 +836,26 @@ export class EmployeeRepository {
     });
   }
 
+  /**
+   * 保存の直前に休業を読み直し、ほかの休業と期間が重ならないかを確かめる（画面の一覧は開いたときのものなので、
+   * そのあとにほかの担当者が登録した休業・二重の送信と重なることがある。重なった休業は免除の判定と休業終了時改定を誤る）
+   */
+  private async assertNoLeaveOverlap(employeeId: string, selfId: string | null, input: LeaveInput): Promise<void> {
+    const snap = await getDocs(employeeSubCol(employeeId, 'leaves'));
+    const others = snap.docs
+      .filter((d) => d.id !== selfId)
+      .map((d) => ({ type: d.data()['type'], startDate: d.data()['startDate'], endDate: d.data()['endDate'] ?? null }));
+    const e = checkLeaveOverlap(others, input.startDate, input.endDate);
+    if (e['startDate']) throw new HistoryConflictError('startDate', `${e['startDate']}（ほかの担当者が先に登録した休業かもしれません。画面を読み込み直しました）`);
+  }
+
+  /** 保存の直前に標準報酬月額の履歴を読み直し、同じ適用開始月の履歴がないかを確かめる（同じ月が2つあると、どちらで計算するかが決まらない） */
+  private async assertNoStandardMonth(employeeId: string, selfId: string | null, validFrom: string): Promise<void> {
+    const snap = await getDocs(employeeSubCol(employeeId, 'standardRemunerations'));
+    if (snap.docs.some((d) => d.id !== selfId && d.data()['validFrom'] === validFrom))
+      throw new HistoryConflictError('validFrom', 'この月からの標準報酬月額はすでに登録されています（ほかの担当者が先に登録したかもしれません。画面を読み込み直しました）');
+  }
+
   /** 履歴の1件を消す */
   private async deleteSub(employeeId: string, sub: string, id: string, employee: DocumentData = {}) {
     return this.write(async () => {
@@ -834,6 +910,7 @@ export class EmployeeRepository {
 
   /** 標準報酬月額の履歴を直す（金額・適用開始月・理由の誤り） */
   async updateStandard(employeeId: string, standardId: string, input: StandardInput, remuneration: number | null, breakdown: RemunerationBreakdown | null = null) {
+    await this.assertNoStandardMonth(employeeId, standardId, input.validFrom);
     return this.setSub(employeeId, 'standardRemunerations', standardId, {
       validFrom: input.validFrom,
       reason: input.reason,

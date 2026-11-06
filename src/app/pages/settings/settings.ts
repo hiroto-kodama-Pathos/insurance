@@ -29,7 +29,7 @@ import {
 } from '../../core/calc/settings';
 import { MasterRepository } from '../../core/repository/master-repository';
 import { RateRecord, SettingsRepository } from '../../core/repository/settings-repository';
-import { checkPayrollGroup, checkTermsChange, PayrollGroup, PayrollGroupInput, PayrollTermsChange, sameTerms, termsAt, termsLabel, termsOf } from '../../core/calc/payroll-group';
+import { checkPayrollGroup, legacyGroup, checkTermsChange, PayrollGroup, PayrollGroupInput, PayrollTermsChange, sameTerms, termsAt, termsLabel, termsOf } from '../../core/calc/payroll-group';
 import { addMonths } from '../../core/calc/salary';
 import { BonusType, BonusTypeInput, checkBonusType } from '../../core/calc/bonus-type';
 import { parseNumberInput } from '../../core/calc/half-width';
@@ -213,7 +213,17 @@ export class Settings implements OnInit, HasUnsavedChanges {
     return this.guard(() => this.openPayrollGroupNow(g));
   }
   private openPayrollGroupNow(g: PayrollGroup | null): void {
-    this.groupForm.set(g ? { name: g.name, cutoffDay: g.cutoffDay, paidIn: g.paidIn, deductionTiming: g.deductionTiming, payDay: g.payDay, isDefault: g.isDefault ?? false } : { ...EMPTY_GROUP, isDefault: this.payrollGroups().length === 0 });
+    // 最初の区分は、これまでの会社の設定（締め日・支払月・控除する給与）を初期値にする。区分を割り当てていない人は
+    // 既定の区分で計算するので、違う値で作ると、その人たちの過去の月の計算まで黙って変わるため
+    const first = this.payrollGroups().length === 0;
+    const legacy = legacyGroup(this.settings());
+    this.groupForm.set(
+      g
+        ? { name: g.name, cutoffDay: g.cutoffDay, paidIn: g.paidIn, deductionTiming: g.deductionTiming, payDay: g.payDay, isDefault: g.isDefault ?? false }
+        : first
+          ? { ...EMPTY_GROUP, ...termsOf(legacy), isDefault: true }
+          : EMPTY_GROUP,
+    );
     this.openMode({ kind: 'payrollGroup', id: g?.id ?? null });
   }
   protected setGroup<K extends keyof PayrollGroupInput>(key: K, value: PayrollGroupInput[K]): void {
@@ -231,6 +241,19 @@ export class Settings implements OnInit, HasUnsavedChanges {
     this.errors.set(errors);
     if (Object.keys(errors).length > 0) return;
     const before = id ? this.payrollGroups().find((g) => g.id === id) : undefined;
+    // 最初の区分を、これまでの会社の設定と違う締め日などで作ると、区分を割り当てていない人の過去の月の計算が変わる
+    if (!id && this.payrollGroups().length === 0 && !sameTerms(legacyGroup(this.settings()), f)) {
+      const ok = await this.confirm.ask({
+        title: '最初の支払区分',
+        message:
+          `最初の支払区分は、区分を割り当てていない人すべての区分になります。これまでの会社の設定（${termsLabel(termsOf(legacyGroup(this.settings())))}）と違う締め日・支払月・控除する給与にすると、` +
+          'その人たちの過去の月の給与の計算期間・控除する月・定時決定と随時改定の判定が変わります（確定済みの月は差額の画面に出ます）。',
+        ok: 'この内容で作る',
+        cancel: '入力に戻る',
+        danger: true,
+      });
+      if (!ok) return;
+    }
     // 「直す」で締め日などを変えると、過去の月の計算も変わる。制度の変更なら「○年○月から変える」を使うよう確かめる
     if (before && !sameTerms(before, f)) {
       const ok = await this.confirm.ask({
@@ -655,6 +678,7 @@ export class Settings implements OnInit, HasUnsavedChanges {
     this.notice.set(null);
     this.saving.set(true);
     try {
+      this.employeeRepo.clearCache();
       const inUse = inUseMessage(label, name, await usage());
       if (typeof note !== 'string') noteText = await note();
       if (inUse) {
@@ -677,6 +701,15 @@ export class Settings implements OnInit, HasUnsavedChanges {
     if (!ok) return;
     this.saving.set(true);
     try {
+      // 確認を出しているあいだに、ほかの担当者が使い始めたかもしれないので、消す直前に読み直して確かめる
+      // （マスタの参照はルールでは確かめられないため。使われたまま消すと、参照先のない事業所・区分が残る）
+      this.employeeRepo.clearCache();
+      const now = inUseMessage(label, name, await usage());
+      if (now) {
+        this.notice.set(now);
+        await this.reload();
+        return;
+      }
       await remove();
       this.mode.set(null);
       this.notice.set(`${label}「${name}」を削除しました。`);

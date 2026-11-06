@@ -115,6 +115,9 @@
     @if (mode()?.kind === 'payrollGroup') {
       <form class="form" (submit)="savePayrollGroup($event)">
         <h3>{{ mode()?.id ? '支払区分を直す（登録の誤りの訂正）' : '支払区分を追加' }}</h3>
+        @if (!mode()?.id && payrollGroups().length === 0) {
+          <p class="help">最初の区分は、区分を割り当てていない人すべての区分（既定）になります。これまでの会社の設定の締め日・支払月・控除する給与を入れてあります。</p>
+        }
         @if (mode()?.id) {
           <p class="help">
             ここで締め日などを変えると、過去の月までさかのぼって変わります。会社の制度を変えたときは、やめて「○年○月から変える」を使ってください。

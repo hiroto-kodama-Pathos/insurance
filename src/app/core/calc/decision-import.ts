@@ -72,12 +72,21 @@ export function parseStandardLoose(value: string | undefined): number | null {
   return n < 10_000 ? n * 1000 : n;
 }
 
+/** 千円単位として読み替えたときの注意（読み替えていなければ null） */
+function thousandNote(label: string, raw: string | undefined, value: number | null): string | null {
+  const n = parseNumberLoose(raw?.replace(/千円$/, ''));
+  if (n === null || Number.isNaN(n) || n >= 10_000 || value === null || Number.isNaN(value)) return null;
+  return `${label}の「${(raw ?? '').trim()}」を千円単位として${value.toLocaleString('ja-JP')}円と読みました`;
+}
+
 export type DecisionEmployee = {
   id: string;
   employeeNumber: string;
   name: string;
   birthDate: string;
   standardHistory: StandardHistory[];
+  /** 資格の期間（渡したときは、適用年月に資格があるかを確かめる） */
+  qualifications?: { acquiredDate: string; lostDate: string | null }[];
 };
 
 /** 適用開始月ごとの見込み（随時改定の候補・休業終了時改定・定時決定の見込み） */
@@ -121,6 +130,8 @@ export type DecisionRow = {
   expected: DecisionExpectation | null;
   /** 見込みと違う（見込みがない人も含む） */
   differs: boolean;
+  /** 読み替えたこと（千円単位の数を円にした など）。取り込む前に確かめられるように出す */
+  notes?: string[];
 };
 
 const normalize = (s: string) => s.replace(/[\s　]/g, '');
@@ -158,6 +169,11 @@ export function buildDecisionPreview(
     if (!validFrom) errors.push(`適用年月を読み取れません（${rawFrom || '空欄'}）`);
     const health = parseStandardLoose(cell(r, m.healthStandard));
     const pensionRaw = parseStandardLoose(cell(r, m.pensionStandard));
+    // 1万未満の数は千円単位とみなして円にした。誤入力に気づけるよう、読み替えたことを出す
+    const notes = [
+      thousandNote('健康保険', cell(r, m.healthStandard), health),
+      thousandNote('厚生年金', cell(r, m.pensionStandard), pensionRaw),
+    ].filter((x): x is string => x !== null);
     if (health === null || Number.isNaN(health) || health <= 0 || health % 1000 !== 0) errors.push('健康保険の標準報酬月額を読み取れません');
     if (Number.isNaN(pensionRaw) || (pensionRaw !== null && (pensionRaw <= 0 || pensionRaw % 1000 !== 0)))
       errors.push('厚生年金の標準報酬月額を読み取れません');
@@ -174,8 +190,11 @@ export function buildDecisionPreview(
       const key = `${emp.id}|${validFrom}`;
       if (seen.has(key)) errors.push('同じ人・同じ適用年月の行がファイルの中に2つ以上あります');
       seen.add(key);
+      // 資格のない月の決定は取り込まない（標準報酬月額のCSVと同じ決まり。年の誤りに気づけるように）
+      if (emp.qualifications && !emp.qualifications.some((q) => q.acquiredDate.slice(0, 7) <= validFrom && (q.lostDate === null || q.lostDate.slice(0, 7) > validFrom)))
+        errors.push(`${Number(validFrom.slice(0, 4))}年${Number(validFrom.slice(5))}月に社会保険の資格がありません（適用年月の年・月を確かめてください）`);
     }
-    if (errors.length > 0 || !emp || !validFrom) return { ...base, status: 'error' as const, errors, save: null, expected: null, differs: false };
+    if (errors.length > 0 || !emp || !validFrom) return { ...base, status: 'error' as const, errors, save: null, expected: null, differs: false, notes };
 
     const sameMonth = emp.standardHistory.find((h) => h.validFrom === validFrom) ?? null;
     // 見込みは、候補・定時決定の見込み。なければ、通知書待ちで先に登録した額
@@ -195,14 +214,14 @@ export function buildDecisionPreview(
 
     if (sameMonth && !sameMonth.provisional) {
       if (sameMonth.healthStandard === health && sameMonth.pensionStandard === pension)
-        return { ...base, status: 'same' as const, errors: [], save: null, expected, differs };
+        return { ...base, status: 'same' as const, errors: [], save: null, expected, differs, notes };
       return {
         ...base, status: 'error' as const,
         errors: ['同じ適用開始月の履歴がすでにあり、値が違います（従業員の詳細で確かめてください）'],
-        save: null, expected, differs,
+        save: null, expected, differs, notes,
       };
     }
-    if (sameMonth?.provisional) return { ...base, status: 'confirm' as const, errors: [], save: { ...save, provisionalId: sameMonth.id ?? null }, expected, differs };
-    return { ...base, status: 'new' as const, errors: [], save, expected, differs };
+    if (sameMonth?.provisional) return { ...base, status: 'confirm' as const, errors: [], save: { ...save, provisionalId: sameMonth.id ?? null }, expected, differs, notes };
+    return { ...base, status: 'new' as const, errors: [], save, expected, differs, notes };
   });
 }

@@ -90,6 +90,9 @@
                     @for (e of r.errors; track e) {
                       <div class="err">{{ e }}</div>
                     }
+                    @for (n of r.notes ?? []; track n) {
+                      <div class="note">{{ n }}</div>
+                    }
                   </td>
                 </tr>
               } @empty {

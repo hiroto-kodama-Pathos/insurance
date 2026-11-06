@@ -211,6 +211,7 @@ export function buildEmployeeImport(rows: string[][], m: ColumnMapping, ctx: Emp
     const acquiredDate = date('acquiredDate', '資格取得日', false);
     if (!hireDate && !acquiredDate && !errors.some((e) => e.includes('入社日') || e.includes('資格取得日')))
       errors.push('入社日か資格取得日を入れてください');
+    if (hireDate && acquiredDate && acquiredDate < hireDate) errors.push('資格取得日が入社日より前です（資格取得日は、入社日か、加入の条件を満たした日です）');
     if (birthDate && acquiredDate && acquiredDate < birthDate) errors.push('資格取得日が生年月日より前です');
     else if (birthDate && acquiredDate && isValidDate(birthDate) && isValidDate(acquiredDate) && is75OrOlderOn(birthDate, acquiredDate))
       errors.push('資格取得日に75歳以上の人は、健康保険・厚生年金の被保険者になりません（資格取得日を空にし、入社日だけを入れて未加入として取り込んでください）');
@@ -240,7 +241,8 @@ export function buildEmployeeImport(rows: string[][], m: ColumnMapping, ctx: Emp
       line, label, summary, status: 'new' as const, errors: [],
       save: {
         employeeNumber: number, name, birthDate: birthDate!, officeId: office!.id,
-        startDate: (acquiredDate ?? hireDate)!, acquiredDate, insuredType: insuredType!,
+        // 所属・支払区分は入社日から（入社後しばらくして加入した人も、加入前の給与・賞与の事業所が決まるように）
+        startDate: (hireDate ?? acquiredDate)!, acquiredDate, insuredType: insuredType!,
         payrollGroupId: group && !group.isDefault ? group.id : null,
       },
     };
@@ -502,8 +504,10 @@ export function buildBonusImport(rows: string[][], m: ColumnMapping, ctx: BonusI
           ? `種類 ${ctx.types.find((t) => t.id === existing.bonusTypeId)?.name ?? 'なし'} → ${type?.name ?? 'なし'}`
           : '',
       ].filter((x) => x);
-      if (diffs.length === 0 || !existing.id)
+      if (diffs.length === 0)
         return { line, label, summary, status: 'same' as const, errors: ['同じ支給日の賞与が登録済みです（同じ内容）'], save: null };
+      if (!existing.id)
+        return { line, label, summary: diffs.join('・'), status: 'error' as const, errors: ['同じ支給日の賞与が登録済みで、内容が違います（賞与の画面で直してください）'], save: null };
       return { line, label, summary: diffs.join('・'), status: 'update' as const, errors: [], save: { ...save, existingId: existing.id } };
     }
     return { line, label, summary: isRemuneration ? `${summary}（報酬扱い）` : summary, status: 'new' as const, errors: [], save };

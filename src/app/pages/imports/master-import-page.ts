@@ -240,7 +240,21 @@ export class MasterImportPage implements OnInit {
       const saves = <T>(list: ImportRow<T>[]) => list.flatMap((r) => (r.save ? [r.save] : []));
       if (kind === 'employee') {
         try {
-          await this.employeeRepo.importEmployees(saves(this.employeePreview()));
+          const r = await this.employeeRepo.importEmployees(saves(this.employeePreview()));
+          if (r.failed > 0) {
+            // 途中まで登録できた。登録できた人を一覧に入れ直すので、同じファイルを取り込み直すと残りの人から再開できる
+            console.error(r.error);
+            this.employees.set(await this.employeeRepo.loadAll());
+            this.notice.set(
+              `従業員を${r.saved}人登録しました。${r.failed}人は、途中で書き込めなかったため登録できていません（` +
+                (r.error instanceof EmployeeNumberTakenError
+                  ? `社員番号 ${r.error.numbers.slice(0, 10).join('・')} はほかの従業員が使っています。CSVを直してください`
+                  : '権限・通信を確かめてください') +
+                '）。' +
+                '同じファイルを取り込み直すと、登録できた人は「登録済み」として飛ばし、残りの人だけを登録します。',
+            );
+            return;
+          }
         } catch (e) {
           if (!(e instanceof EmployeeNumberTakenError)) throw e;
           // 画面の一覧（担当範囲の人だけ・少し前に読んだもの）では分からなかった重なり。何も登録していない

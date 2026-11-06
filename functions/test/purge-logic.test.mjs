@@ -1,7 +1,7 @@
 // 退職者データの消去の判定のテスト（npm test で実行。lib にビルドしたものを読む）
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { addYears, anonymizeRows, anonymousId, findPurgeTargets, jstDate, lastClosedDates, purgeDueDate, retiredOn } from "../lib/purge-logic.js";
+import { addYears, anonymizeRows, idPrefixRange, anonymousId, findPurgeTargets, jstDate, lastClosedDates, purgeDueDate, retiredOn } from "../lib/purge-logic.js";
 
 test("退職・死亡で資格を失った人だけが対象（在籍中・未加入・加入の条件から外れた人は対象外）", () => {
   assert.equal(retiredOn([{ acquiredDate: "2020-04-01", lostDate: "2026-11-01", lostReason: "retirement" }]), "2026-11-01");
@@ -57,4 +57,14 @@ test("その人を含む最後の確定の日（日本時間）", () => {
   ]);
   assert.equal(map.get("a"), "2026-10-05");
   assert.equal(map.has("b"), false);
+});
+
+test("「従業員ID_…」の文書を取り出す範囲は、その従業員IDで始まるIDをすべて含み、ほかの従業員を含まない", () => {
+  const { start, end } = idPrefixRange("e1");
+  const inRange = (id) => id >= start && id <= end;
+  assert.ok(inRange("e1_2026-04_honsha"));
+  assert.ok(inRange("e1_2026-10_regular"));
+  assert.ok(!inRange("e10_2026-04_honsha")); // 前方一致する別の従業員（e10）は含まない
+  assert.ok(!inRange("e2_2026-04_honsha"));
+  assert.ok(!inRange("e1"));
 });

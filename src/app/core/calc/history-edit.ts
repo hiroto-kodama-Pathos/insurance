@@ -22,11 +22,21 @@ export function prevDay(date: string): string {
  * 生年月日の訂正。新規登録と同じく、今日より後の日と、資格取得日（入社日）以降の日は入れない
  * @param firstAcquired 最初の資格取得日（加入したことがない人は null）
  */
-export function checkBirthDateChange(current: string, value: string, today: string, firstAcquired: string | null): Errors {
+export function checkBirthDateChange(
+  current: string,
+  value: string,
+  today: string,
+  firstAcquired: string | null,
+  /** すべての資格取得日（新しい生年月日で、どれかの資格取得日に75歳以上になるなら止める） */
+  acquiredDates: string[] = [],
+): Errors {
   if (!isValidDate(value)) return { birthDate: '生年月日を正しく入力してください' };
   if (value > today) return { birthDate: '生年月日に、今日より後の日は入れられません' };
   if (value === current) return { birthDate: '今の生年月日と同じです' };
   if (firstAcquired && value >= firstAcquired) return { birthDate: '生年月日は、資格取得日（入社日）より前の日にしてください' };
+  const over75 = acquiredDates.filter((d) => is75OrOlderOn(value, d)).sort().at(-1);
+  if (over75)
+    return { birthDate: `この生年月日だと、資格取得日（${dateLabel(over75)}）に75歳以上になり、健康保険・厚生年金の被保険者になれません。生年月日の年を確かめてください` };
   return {};
 }
 

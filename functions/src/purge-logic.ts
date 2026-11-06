@@ -88,3 +88,13 @@ export function lastClosedDates(closings: { closedAt: string | null; rows?: Pers
   }
   return map;
 }
+
+/**
+ * ドキュメントIDが「従業員ID_…」の文書を、IDの順で取り出すときの範囲（adjustments は「従業員ID_対象月_事業所ID」、
+ * revisionCandidates は「従業員ID_変動月_種類」）。end は start で始まるIDより後ろに並ぶ文字を足す
+ * （start と end を同じにすると、IDがちょうど「従業員ID_」の文書しか取れず、消し残る）
+ */
+export function idPrefixRange(employeeId: string): { start: string; end: string } {
+  const start = `${employeeId}_`;
+  return { start, end: `${start}\uf8ff` };
+}

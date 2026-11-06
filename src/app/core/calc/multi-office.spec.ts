@@ -1,3 +1,4 @@
+import { calcPremium } from './premium-calculator';
 import { calcEmployeeBonuses } from './bonus-premium';
 import { checkStandard } from './employee-edit';
 import { calcEmployeeMonth, EmployeeData, Masters } from './employee-month';
@@ -77,6 +78,18 @@ describe('二以上事業所勤務', () => {
     expect(r.decided!.premium.health!.employeeYen).toBe(r.premium!.health!.employeeYen);
     expect(r.decidedDiff).toBe(68_625 - 91_500);
     expect(r.multiOfficeReview).toBe(false);
+  });
+
+  it('同じ月に2回支給：全事業所の合計も合算してから1,000円未満を切り捨て、合算した額の保険料との差額をその支給に出す', () => {
+    // 自社30万600円・合計60万600円を2回。1回ずつ切り捨てると60万円×2＝120万円、合算すると120万1,200円→120万1,000円
+    const b = (id: string, day: string) => ({ id, employeeId: 'e1', paidDate: `2026-12-${day}`, amount: 300_600, totalAmount: 600_600 });
+    const r = calcEmployeeBonuses(officer(), [b('b1', '10'), b('b2', '20')], masters);
+    expect(r[0].decided!.standardTotal).toBe(600_000);
+    expect(r[1].decided!.standardTotal).toBe(1_201_000);
+    expect(r[0].decided!.base.pension + r[1].decided!.base.pension).toBe(1_201_000);
+    // 2回の決定後の保険料の和 ＝ 合算した標準賞与額を、合算した賞与額の割合で按分した保険料
+    const whole = calcPremium(1_201_000, 18_300, 500, 601_200, 1_201_200).employeeYen;
+    expect(r[0].decided!.premium.pension!.employeeYen + r[1].decided!.premium.pension!.employeeYen).toBe(whole);
   });
 
   describe('エッジケース：月末の事業所異動', () => {
