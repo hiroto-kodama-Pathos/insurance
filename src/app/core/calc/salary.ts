@@ -45,6 +45,8 @@ export type PayMonth = {
   hourlyRate: number | null;
   /** 算定から除いた額（支払月・締め日の変更月。total からは除いてある） */
   excluded: number;
+  /** 算定から除く額を入れたか（0円と入れたときも true。未入力と0円を区別する） */
+  excludedEntered: boolean;
 };
 
 export function payMonths(salaries: SalaryRecord[]): PayMonth[] {
@@ -52,7 +54,7 @@ export function payMonths(salaries: SalaryRecord[]): PayMonth[] {
   for (const s of [...salaries].sort((a, b) => a.paidDate.localeCompare(b.paidDate))) {
     const ym = monthOf(s.paidDate);
     const retro = s.retroactiveDiff ?? 0;
-    const m = map.get(ym) ?? { yearMonth: ym, fixed: 0, nonFixed: 0, retroactive: 0, days: 0, total: 0, inKind: 0, hourlyRate: null, excluded: 0 };
+    const m = map.get(ym) ?? { yearMonth: ym, fixed: 0, nonFixed: 0, retroactive: 0, days: 0, total: 0, inKind: 0, hourlyRate: null, excluded: 0, excludedEntered: false };
     m.inKind += s.inKindWages ?? 0;
     if (s.hourlyRate !== null && s.hourlyRate !== undefined) m.hourlyRate = s.hourlyRate;
     m.fixed += s.fixedWages - retro;
@@ -60,6 +62,7 @@ export function payMonths(salaries: SalaryRecord[]): PayMonth[] {
     m.retroactive += retro;
     m.days += s.paymentBaseDays;
     m.excluded += s.excludedAmount ?? 0;
+    if (s.excludedAmount !== null && s.excludedAmount !== undefined) m.excludedEntered = true;
     m.total += s.fixedWages - retro + s.nonFixedWages - (s.excludedAmount ?? 0);
     map.set(ym, m);
   }

@@ -8,7 +8,7 @@ const s = (paidDate: string, fixed: number, nonFixed = 0, days = 30, retro: numb
 describe('payMonths・detectFixedWageChanges', () => {
   it('同じ月に2回払った給与は合算する', () => {
     const m = payMonths([s('2026-08-10', 100_000, 0, 15), s('2026-08-25', 100_000, 5_000, 16)]);
-    expect(m).toEqual([{ yearMonth: '2026-08', fixed: 200_000, nonFixed: 5_000, retroactive: 0, days: 31, total: 205_000, inKind: 0, hourlyRate: null, excluded: 0 }]);
+    expect(m).toEqual([{ yearMonth: '2026-08', fixed: 200_000, nonFixed: 5_000, retroactive: 0, days: 31, total: 205_000, inKind: 0, hourlyRate: null, excluded: 0, excludedEntered: false }]);
   });
 
   it('固定的賃金が前月から変わった月と向きを出す（遡及差額は除く）', () => {

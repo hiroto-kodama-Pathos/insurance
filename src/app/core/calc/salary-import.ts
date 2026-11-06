@@ -18,10 +18,17 @@ export type SalaryMapping = {
   workingHours?: string;
   /** 時給単価（任意。時給の人の随時改定に使う） */
   hourlyRate?: string;
+  /**
+   * 算定から除く額（任意の列。支払月・締め日の変更月に、随時改定・定時決定の平均から除く額。設計書 2.13）。
+   * 除く額が要る月の行では、この列に額（なければ0）が入っていないと取り込まない
+   */
+  excludedAmount?: string;
 };
 
 /** アプリ指定の形式（テンプレート）の列名。この形式のファイルは対応づけなしで取り込める */
 export const TEMPLATE_HEADERS = ['社員番号', '支払日', '支払基礎日数', '固定的賃金', '非固定的賃金', 'うち遡及差額', 'うち現物給与', '労働時間', '時給単価'];
+/** テンプレートの任意の列（前のテンプレートで作ったファイルでも、テンプレートの形式として読めるように、形式の判定には使わない） */
+export const TEMPLATE_OPTIONAL_HEADERS = ['算定から除く額'];
 
 export const TEMPLATE_MAPPING: SalaryMapping = {
   employeeNumber: '社員番号',
@@ -33,17 +40,18 @@ export const TEMPLATE_MAPPING: SalaryMapping = {
   inKindWages: 'うち現物給与',
   workingHours: '労働時間',
   hourlyRate: '時給単価',
+  excludedAmount: '算定から除く額',
 };
 
 export function templateCsv(): string {
-  return `${TEMPLATE_HEADERS.join(',')}\r\n0001,2026-10-25,31,340000,20000,,,,\r\n`;
+  return `${[...TEMPLATE_HEADERS, ...TEMPLATE_OPTIONAL_HEADERS].join(',')}\r\n0001,2026-10-25,31,340000,20000,,,,,\r\n`;
 }
 
 /** 対応づけが、このCSVの見出しで使えるか（使えない列名を返す） */
 export function missingColumns(mapping: SalaryMapping, headers: string[]): string[] {
   const required = [mapping.employeeNumber, mapping.paidDate, mapping.paymentBaseDays, ...mapping.fixedWages];
   const optional = [...mapping.nonFixedWages, mapping.retroactiveDiff, mapping.inKindWages].filter((c) => c !== '');
-  // 労働時間・時給単価の列はなくてもよい（ないときは取り込まない）
+  // 労働時間・時給単価・算定から除く額の列はなくてもよい（ないときは取り込まない。除く額が要る月の行はエラーになる）
   const missing = [...required, ...optional].filter((c) => !headers.includes(c));
   if (mapping.employeeNumber === '' || mapping.paidDate === '' || mapping.paymentBaseDays === '' || mapping.fixedWages.length === 0)
     missing.unshift('（必須の項目が未設定）');
@@ -74,6 +82,8 @@ export type PreviewContext = {
   existingIds: Set<string>;
   /** 担当範囲（'all' または事業所ID） */
   scope: string;
+  /** その人のその支払月が、算定から除く額の要る月（支払月・締め日の変更月）か。なければ確かめない */
+  needsExclusion?: (employeeId: string, yearMonth: string) => boolean;
 };
 
 /** 社員番号で従業員を探す。先頭の0が消えていても、登録済みの社員番号の桁数にそろえて照合する */
@@ -88,6 +98,24 @@ export function findByNumber(employees: ImportEmployee[], raw: string): ImportEm
 
 /** CSVの行（見出しを含む）から、取り込む内容とエラーを作る */
 export function buildPreview(rows: string[][], mapping: SalaryMapping, ctx: PreviewContext): PreviewRow[] {
+  const result = buildRows(rows, mapping, ctx);
+  // 算定から除く額が要る月（支払月・締め日の変更月）は、同じ人・同じ月の行のどれかに額（なければ0）が要る。
+  // 空のまま取り込むと、平均から除く額が引かれず、随時改定・定時決定を誤るため、その月の行は取り込まない
+  const need = ctx.needsExclusion;
+  if (!need) return result;
+  const entered = new Set<string>();
+  for (const r of result) if (r.salary && r.salary.excludedAmount !== null && r.salary.excludedAmount !== undefined) entered.add(`${r.salary.employeeId}|${r.salary.paidDate.slice(0, 7)}`);
+  return result.map((r) => {
+    if (!r.salary) return r;
+    const ym = r.salary.paidDate.slice(0, 7);
+    if (!need(r.salary.employeeId, ym)) return { ...r, salary: { ...r.salary, excludedAmount: null } };
+    if (entered.has(`${r.salary.employeeId}|${ym}`)) return r;
+    const msg = `${Number(ym.slice(5))}月は支払月・締め日の変更月のため、算定から除く額が要ります（「算定から除く額」の列に額を入れてください。除く額がなければ0）`;
+    return { ...r, status: 'error' as const, errors: [...r.errors.filter((e) => e !== '担当範囲外の事業所の従業員のため取り込みません' && e !== '確定済みのため取り込みません'), msg] };
+  });
+}
+
+function buildRows(rows: string[][], mapping: SalaryMapping, ctx: PreviewContext): PreviewRow[] {
   const [headers, ...body] = rows;
   const col = (name: string) => headers.indexOf(name);
   const cell = (r: string[], name: string) => (name === '' || col(name) < 0 ? undefined : r[col(name)]);
@@ -123,11 +151,13 @@ export function buildPreview(rows: string[][], mapping: SalaryMapping, ctx: Prev
     const inKind = parseNumberLoose(cell(r, mapping.inKindWages));
     const hours = parseHoursLoose(cell(r, mapping.workingHours ?? ''));
     const rate = parseNumberLoose(cell(r, mapping.hourlyRate ?? ''));
+    const excluded = parseNumberLoose(cell(r, mapping.excludedAmount ?? ''));
     if (Number.isNaN(days)) errors.push('支払基礎日数を数値として読み取れません');
     if (Number.isNaN(retro)) errors.push('うち遡及差額を数値として読み取れません');
     if (Number.isNaN(inKind)) errors.push('うち現物給与を数値として読み取れません');
     if (Number.isNaN(hours)) errors.push('労働時間を数値として読み取れません');
     if (Number.isNaN(rate)) errors.push('時給単価を数値として読み取れません');
+    if (Number.isNaN(excluded)) errors.push('算定から除く額を数値として読み取れません');
 
     const input = {
       paidDate: paidDate ?? '',
@@ -138,6 +168,7 @@ export function buildPreview(rows: string[][], mapping: SalaryMapping, ctx: Prev
       inKindWages: Number.isNaN(inKind) ? null : inKind,
       workingHours: Number.isNaN(hours) ? null : hours,
       hourlyRate: Number.isNaN(rate) ? null : rate,
+      excludedAmount: Number.isNaN(excluded) ? null : excluded,
     };
     if (paidDate) {
       const v = validateSalary(input);
@@ -168,6 +199,8 @@ export function buildPreview(rows: string[][], mapping: SalaryMapping, ctx: Prev
       inKindWages: input.inKindWages || null,
       workingHours: input.workingHours ?? null,
       hourlyRate: input.hourlyRate || null,
+      // 0円と入れたのは担当者の判断として残す（空欄と区別する）
+      excludedAmount: input.excludedAmount,
     };
     if (ctx.scope !== 'all' && officeId !== ctx.scope)
       return { ...base, status: 'outOfScope' as const, errors: ['担当範囲外の事業所の従業員のため取り込みません'], salary };

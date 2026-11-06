@@ -50,6 +50,9 @@ import { Auth } from '../../../core/auth/auth';
 import { MaintenanceRepository } from '../../../core/repository/maintenance-repository';
 import { FilingRepository } from '../../../core/repository/filing-repository';
 import { leaveFilingId } from '../../../core/calc/eligibility';
+import { deleteImpact, deleteImpactMessage } from '../../../core/calc/delete-impact';
+import { filingId } from '../../../core/calc/filing';
+import { ClosingRepository } from '../../../core/repository/closing-repository';
 import { monthOf } from '../../../core/calc/date';
 import {
   checkLeave,
@@ -190,6 +193,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   private readonly auth = inject(Auth);
   private readonly maintenanceRepo = inject(MaintenanceRepository);
   private readonly filingRepo = inject(FilingRepository);
+  private readonly closingRepo = inject(ClosingRepository);
 
   /**
    * 「← 元の画面へ戻る」の行き先（開く前の画面）。月次保険料一覧・要確認などから開いたときに、その画面へ戻れるようにする。
@@ -926,6 +930,101 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     }
   }
 
+  /** 削除する履歴の、始まりの日と終わりの日（影響を計算する月の範囲に使う） */
+  private deleteSpan(kind: DeleteKind, id: string): { start: string; end: string | null } | null {
+    const d = this.detail()!;
+    switch (kind) {
+      case 'qualification': { const q = d.qualifications.find((x) => x.id === id); return q ? { start: q.acquiredDate, end: q.lostDate } : null; }
+      case 'standard': { const s = d.standardHistory.find((x) => x.id === id); return s ? { start: `${s.validFrom}-01`, end: null } : null; }
+      case 'dependent': { const x = d.dependents.find((y) => y.id === id); return x ? { start: x.certifiedDate, end: x.removedDate } : null; }
+      case 'assignment': { const a = d.assignments.find((x) => x.id === id); return a ? { start: a.validFrom, end: null } : null; }
+      case 'insuredType': { const a = d.insuredTypes.find((x) => x.id === id); return a ? { start: a.validFrom, end: null } : null; }
+      case 'payrollGroup': { const a = d.payrollAssignments.find((x) => x.id === id); return a ? { start: a.validFrom, end: null } : null; }
+      case 'leave': { const l = d.leaves.find((x) => x.id === id); return l ? { start: l.startDate, end: l.endDate } : null; }
+      case 'absence': { const a = d.absences.find((x) => x.id === id); return a ? { start: a.startDate, end: a.endDate } : null; }
+      case 'exemption': { const x = d.exemptions.find((y) => y.id === id); return x ? { start: x.startDate, end: x.endDate } : null; }
+    }
+  }
+
+  /** その履歴を除いた従業員（削除後の計算に使う） */
+  private withoutRow(kind: DeleteKind, id: string): Detail {
+    const d = this.detail()!;
+    const drop = <T extends { id?: string }>(list: T[]) => list.filter((x) => x.id !== id);
+    switch (kind) {
+      case 'qualification': return { ...d, qualifications: drop(d.qualifications) };
+      case 'standard': return { ...d, standardHistory: drop(d.standardHistory) };
+      case 'dependent': return { ...d, dependents: drop(d.dependents) };
+      case 'assignment': return { ...d, assignments: drop(d.assignments) };
+      case 'insuredType': return { ...d, insuredTypes: drop(d.insuredTypes) };
+      case 'payrollGroup': return { ...d, payrollAssignments: drop(d.payrollAssignments) };
+      case 'leave': return { ...d, leaves: drop(d.leaves) };
+      case 'absence': return { ...d, absences: drop(d.absences) };
+      case 'exemption': return { ...d, exemptions: drop(d.exemptions) };
+    }
+  }
+
+  /** 保険料が変わらない履歴の、何に使うかの説明 */
+  private static readonly NO_PREMIUM_NOTE: Partial<Record<DeleteKind, string>> = {
+    insuredType: '被保険者区分は、随時改定・定時決定の支払基礎日数の基準と届出に使います（削除後は、前の区分で判断します）。',
+    payrollGroup: '支払区分は、保険料を控除する給与の月と、随時改定・定時決定の給与の計算期間に使います（削除後は、前の区分、なければ既定の区分で判断します）。',
+    absence: '休職は、随時改定・定時決定の要確認と、控除不足の説明に使います。',
+    dependent: '被扶養者は、保険料の額には関わりません（組合健保の特定被保険者の判定を除く）。',
+  };
+
+  /** 届出についての文（届出済みなら取消・訂正が要る。まだなら一覧から消える） */
+  private deleteFilingNote(kind: DeleteKind, id: string): string {
+    const d = this.detail()!;
+    const filed = (fid: string) => this.filedIds().has(fid);
+    const say = (name: string, fid: string) =>
+      filed(fid) ? `届け出た「${name}」は、取消（訂正）の届出が必要です。` : `「${name}」をまだ届け出ていないなら、届出の一覧から消えます。`;
+    switch (kind) {
+      case 'leave': {
+        const l = d.leaves.find((x) => x.id === id)!;
+        return say(l.type === 'maternity' ? '産前産後休業取得者申出書' : '育児休業等取得者申出書', leaveFilingId(d.id, l));
+      }
+      case 'exemption': {
+        const x = d.exemptions.find((y) => y.id === id)!;
+        return say('適用除外の届出', filingId(d.id, 'exemption', `${x.startDate}_${x.type}`));
+      }
+      case 'dependent': {
+        const x = d.dependents.find((y) => y.id === id)!;
+        return say('被扶養者異動届', filingId(d.id, 'dependent', `${x.certifiedDate}_in_${x.name}`));
+      }
+      case 'qualification': {
+        const q = d.qualifications.find((x) => x.id === id)!;
+        return say('資格取得届', filingId(d.id, 'acquisition', q.acquiredDate)) + (q.lostDate ? say('資格喪失届', filingId(d.id, 'loss', q.lostDate)) : '');
+      }
+      case 'standard':
+        return '決定通知書の額と違う登録を消すときは、届け出た算定基礎届・月額変更届の内容も確かめてください。';
+      default:
+        return '';
+    }
+  }
+
+  /** 削除の確認に出す、影響の文。計算できなければ、確かめられなかったことを出す */
+  private async deleteImpactText(kind: DeleteKind, id: string): Promise<string> {
+    const d = this.detail();
+    const m = this.masters();
+    const span = d ? this.deleteSpan(kind, id) : null;
+    if (!d || !m || !span) return '';
+    const thisMonth = monthOf(today());
+    // 影響を見る月：その履歴の始まりの月から、来月まで（終わりが来月より後なら、その月まで。さかのぼるのは5年まで）
+    const from = [monthOf(span.start), addMonths(thisMonth, -60)].sort().at(-1)!;
+    const to = [addMonths(thisMonth, 1), span.end ? monthOf(span.end) : ''].sort().at(-1)!;
+    let closedByOffice: Record<string, string[]> = {};
+    let closedNote = '';
+    try {
+      const officeIds = [...new Set(d.assignments.map((a) => a.officeId))];
+      const lists = await Promise.all(officeIds.map((o) => this.closingRepo.closedMonthsOf(o)));
+      closedByOffice = Object.fromEntries(officeIds.map((o, k) => [o, lists[k]]));
+    } catch (e) {
+      console.error(e);
+      closedNote = '（確定済みの月を確かめられませんでした）';
+    }
+    const impact = deleteImpact(d, this.withoutRow(kind, id), m, from, to, thisMonth, this.rounding(), closedByOffice);
+    return deleteImpactMessage(impact, thisMonth, EmployeeDetail.NO_PREMIUM_NOTE[kind] ?? '', this.deleteFilingNote(kind, id)) + closedNote;
+  }
+
   /**
    * 登録した履歴を消す（誤って登録したもの）。確認してから消す。
    * 消すと計算できなくなる場合は、理由を知らせて止める
@@ -938,11 +1037,14 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       this.notice.set(`${t.label}は削除できません。${t.block}`);
       return;
     }
+    // 削除の前と後で月ごとの保険料を計算し直し、影響する月・保険料・確定済みの月・届出・削除後の今月の状態を出す
+    this.saving.set(true);
+    const impact = await this.deleteImpactText(kind, id).finally(() => this.saving.set(false));
     const ok = await this.confirm.ask({
       title: '削除しますか',
       message:
         `${t.label}を削除します。元に戻せません。` +
-        '確定済みの月に関わる場合、確定した金額は変わらず、差額の画面にさかのぼる差額として出ます。' +
+        impact +
         (kind === 'assignment' ? '異動のときに一緒に登録した標準報酬月額は残ります（不要なら標準報酬月額の欄で削除してください）。' : ''),
       ok: '削除する',
       danger: true,

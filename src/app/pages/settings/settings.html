@@ -70,20 +70,40 @@
     <!-- 給与の支払区分 -->
     <h2 id="settings-groups" class="jump-target">給与の支払区分</h2>
     <p class="help">月給者・パートなど、締め日や支払月が違う区分ごとに、締め日・支払月・保険料を控除する給与を設定します。控除する給与の月は、その人の区分で決まります。</p>
+    <p class="help">
+      会社の制度を変えるとき（例：来月から15日締めにする）は「○年○月から変える」を使います。それより前の月は前の制度のまま計算するので、過去の給与・保険料・算定は変わりません。
+      「直す」は登録の誤りの訂正で、過去の月までさかのぼって変わります。
+    </p>
     <div class="table-wrap">
       <table class="list payroll-groups">
-        <thead><tr><th>区分</th><th>締め日</th><th>支払</th><th>保険料を控除する給与</th><th>新規登録の初期値</th><th></th></tr></thead>
+        <thead><tr><th>区分</th><th>締め日（今月）</th><th>支払</th><th>保険料を控除する給与</th><th>新規登録の初期値</th><th></th></tr></thead>
         <tbody>
-          @for (g of payrollGroups(); track g.id) {
+          @for (r of groupRows(); track r.group.id) {
             <tr>
-              <td>{{ g.name }}</td>
-              <td>{{ dayLabel(g.cutoffDay) }}</td>
-              <td>{{ g.paidIn === 'sameMonth' ? '当月' : '翌月' }}{{ dayLabel(g.payDay) }}払</td>
-              <td>{{ g.deductionTiming === 'nextMonth' ? '翌月の給与（翌月控除）' : 'その月の給与（当月控除）' }}</td>
-              <td>{{ g.isDefault ? '○' : '' }}</td>
+              <td>
+                {{ r.group.name }}
+                @if (r.history.length > 0) {
+                  <ul class="terms-history">
+                    @for (h of r.history; track $index) {
+                      <li>
+                        {{ h.from ? (h.from | ym) + '分' : '' }}〜{{ h.to ? (h.to | ym) + '分' : '' }}：{{ h.label }}
+                        @if ($last && h.from && h.from > thisMonth) { <span class="badge pending">予定</span> }
+                      </li>
+                    }
+                  </ul>
+                }
+              </td>
+              <td>{{ dayLabel(r.now.cutoffDay) }}</td>
+              <td>{{ r.now.paidIn === 'sameMonth' ? '当月' : '翌月' }}{{ dayLabel(r.now.payDay) }}払</td>
+              <td>{{ r.now.deductionTiming === 'nextMonth' ? '翌月の給与（翌月控除）' : 'その月の給与（当月控除）' }}</td>
+              <td>{{ r.group.isDefault ? '○' : '' }}</td>
               <td class="actions">
-                <button type="button" class="secondary" (click)="openPayrollGroup(g)">変更</button>
-                <button type="button" class="secondary danger" [disabled]="saving()" (click)="deletePayrollGroup(g)">削除</button>
+                <button type="button" class="secondary" (click)="openTermsChange(r.group)">○年○月から変える</button>
+                <button type="button" class="secondary" (click)="openPayrollGroup(r.group)">直す</button>
+                @if (r.history.length > 0) {
+                  <button type="button" class="secondary" [disabled]="saving()" (click)="undoTermsChange(r.group)">最後の変更を取り消す</button>
+                }
+                <button type="button" class="secondary danger" [disabled]="saving()" (click)="deletePayrollGroup(r.group)">削除</button>
               </td>
             </tr>
           } @empty {
@@ -94,7 +114,13 @@
     </div>
     @if (mode()?.kind === 'payrollGroup') {
       <form class="form" (submit)="savePayrollGroup($event)">
-        <h3>{{ mode()?.id ? '支払区分を変更' : '支払区分を追加' }}</h3>
+        <h3>{{ mode()?.id ? '支払区分を直す（登録の誤りの訂正）' : '支払区分を追加' }}</h3>
+        @if (mode()?.id) {
+          <p class="help">
+            ここで締め日などを変えると、過去の月までさかのぼって変わります。会社の制度を変えたときは、やめて「○年○月から変える」を使ってください。
+            @if (groupHasChanges()) { 制度の変更があるので、ここで直すのは最初の制度（最初の変更より前の月）です。 }
+          </p>
+        }
         <label>区分の名前
           <input name="groupName" [value]="groupForm().name" (input)="setGroup('name', $any($event.target).value)" />
         </label>
@@ -137,6 +163,54 @@
         </label>
         <div class="actions">
           <button type="submit" [disabled]="saving()">保存</button>
+          <button type="button" class="secondary" (click)="cancel()">やめる</button>
+        </div>
+      </form>
+    } @else if (termsGroup(); as g) {
+      <form class="form" (submit)="saveTermsChange($event)">
+        <h3>支払区分「{{ g.name }}」の制度を変える</h3>
+        <p class="help">
+          変える月（支払月）から、新しい締め日・支払月・控除する給与で計算します。それより前の月は前の制度のままです。
+          変える月の給与は、計算期間が1か月と違うことがあるので、給与の画面で「算定から除く額」を入れてください。
+        </p>
+        <label>変える月（この月に支払う給与から）
+          <input type="month" name="termsFrom" [value]="termsForm().validFrom" [min]="thisMonth" (input)="setTerms('validFrom', $any($event.target).value)" />
+        </label>
+        <span class="err">{{ errors()['validFrom'] }}</span>
+        <div class="row">
+          <label>締め日
+            <select name="termsCutoffDay" (change)="setTermsDay('cutoffDay', $any($event.target).value)">
+              <option value="end" [selected]="termsForm().cutoffDay === 'end'">末日</option>
+              @for (d of days; track d) {
+                <option [value]="'' + d" [selected]="d === termsForm().cutoffDay">{{ d }}日</option>
+              }
+            </select>
+          </label>
+          <label>支払月
+            <select name="termsPaidIn" (change)="setTerms('paidIn', $any($event.target).value)">
+              <option value="sameMonth" [selected]="termsForm().paidIn === 'sameMonth'">当月払</option>
+              <option value="nextMonth" [selected]="termsForm().paidIn === 'nextMonth'">翌月払</option>
+            </select>
+          </label>
+          <label>支払日
+            <select name="termsPayDay" (change)="setTermsDay('payDay', $any($event.target).value)">
+              <option value="end" [selected]="termsForm().payDay === 'end'">末日</option>
+              @for (d of days; track d) {
+                <option [value]="'' + d" [selected]="d === termsForm().payDay">{{ d }}日</option>
+              }
+            </select>
+          </label>
+        </div>
+        <span class="err">{{ errors()['cutoffDay'] }}{{ errors()['payDay'] }}</span>
+        <label>保険料を控除する給与
+          <select name="termsDeduction" (change)="setTerms('deductionTiming', $any($event.target).value)">
+            <option value="nextMonth" [selected]="termsForm().deductionTiming === 'nextMonth'">翌月の給与（翌月控除）</option>
+            <option value="sameMonth" [selected]="termsForm().deductionTiming === 'sameMonth'">その月の給与（当月控除）</option>
+          </select>
+        </label>
+        <span class="err">{{ errors()['form'] }}</span>
+        <div class="actions">
+          <button type="submit" [disabled]="saving()">{{ termsForm().validFrom ? (termsForm().validFrom | ym) + '分から変える' : '変える' }}</button>
           <button type="button" class="secondary" (click)="cancel()">やめる</button>
         </div>
       </form>

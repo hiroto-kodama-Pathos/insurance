@@ -172,7 +172,11 @@ export function estimateRegular(
   for (const c of changes) {
     const pay = byMonth.get(c.yearMonth);
     notes.push(periodChangeNote(c, pay?.excluded ?? 0));
-    if (needsExclusion(c) && !(pay && pay.excluded > 0)) needsReview = true;
+    // 算定から除く額が要る月で、まだ入れていない（0円と入れたのは担当者の判断として受け入れる）
+    if (needsExclusion(c) && !pay?.excludedEntered) {
+      needsReview = true;
+      notes.push(`${Number(c.yearMonth.slice(5))}月の算定から除く額が未入力（給与の画面で入れてください。除く額がなければ0円）`);
+    }
   }
   if (result.some((m) => m.pay && m.pay.inKind > 0)) notes.push('現物給与あり（届書に通貨・現物を分けて書く）');
 

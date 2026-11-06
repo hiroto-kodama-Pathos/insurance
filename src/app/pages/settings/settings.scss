@@ -31,3 +31,11 @@ fieldset.kumiai-rates {
 
 /* 使用中の適用事業所：保険者・都道府県を変えられない理由 */
 .office-lock { margin: 0; padding: 6px 8px; font-size: 13px; color: #92400e; background: #fffbeb; border-radius: 4px; }
+
+// 支払区分の制度の変更の履歴（設計書 2.10）
+.terms-history {
+  margin: 4px 0 0;
+  padding-left: 1.2em;
+  font-size: 0.85em;
+  color: var(--c-muted);
+}

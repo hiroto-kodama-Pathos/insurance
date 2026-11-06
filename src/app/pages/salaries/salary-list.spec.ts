@@ -291,6 +291,31 @@ describe('SalaryList', () => {
     expect(row('佐藤 花子').textContent).toContain('変更前の給与260,000円を除いて平均');
   });
 
+  it('算定から除く額が要る月は、空のままでは保存しない（除く額がなければ 0 で保存できる）', async () => {
+    const tr = row('佐藤 花子');
+    type(tr, 'fixedWages', '520000');
+    type(tr, 'paymentBaseDays', '31');
+    (tr.querySelector('button') as HTMLButtonElement).click();
+    await settle();
+    expect(store.find((x) => x.employeeId === 'e2')).toBeUndefined();
+    expect(row('佐藤 花子').textContent).toContain('この月は算定から除く額が必要です');
+    type(row('佐藤 花子'), 'excludedAmount', '0');
+    (row('佐藤 花子').querySelector('button') as HTMLButtonElement).click();
+    await settle();
+    expect(store.find((x) => x.employeeId === 'e2')?.excludedAmount).toBe(0);
+  });
+
+  it('CSVで取り込んだ（算定から除く額が空の）給与は、未入力として知らせ、その人だけを表示できる', async () => {
+    store = [...store, { ...sal('e2', '2026-10-31', 520_000), excludedAmount: null }];
+    await (fixture.componentInstance as unknown as { loadMonth(): Promise<void> }).loadMonth();
+    await settle();
+    expect(el().querySelector('.exclusion-missing')!.textContent).toContain('算定から除く額が未入力の人が1人');
+    expect(row('佐藤 花子').textContent).toContain('算定から除く額が未入力');
+    (el().querySelector('.exclusion-missing button') as HTMLButtonElement).click();
+    await settle();
+    expect([...el().querySelectorAll('table.salaries tbody tr')].map((r) => r.children[1]?.textContent?.trim())).toEqual(['佐藤 花子']);
+  });
+
   it('未加入の人も並べ、労働時間を一緒に保存する', async () => {
     const tr = row('未加入 パート');
     expect(tr.textContent).toContain('未加入');
@@ -378,6 +403,23 @@ describe('SalaryList', () => {
       await settle();
       expect(asked.at(-1)?.message).toContain('同じ月のほかの支払い（1回）は残ります');
       expect(payments()).toEqual([['2026-10-15', 200_000]]);
+    });
+
+    it('2回目以降の支払いは、一覧を開かなくてもその人の行の下に出し、この月の合計も出す。その行から直せる', async () => {
+      store = [...store, { ...sal('e1', '2026-10-31', 50_000), nonFixedWages: 3_000, paymentBaseDays: 16 }];
+      await (fixture.componentInstance as unknown as { loadMonth(): Promise<void> }).loadMonth();
+      await settle();
+      expect(panel()).toBeNull();
+      const extra = el().querySelector('tr.extra-payment') as HTMLElement;
+      expect(extra.textContent).toContain('2回目');
+      expect(extra.textContent).toContain('2026年10月31日');
+      expect(extra.textContent).toContain('50,000');
+      const total = [...el().querySelectorAll('tr.payments-total td')].map((td) => td.textContent!.trim());
+      expect(total.slice(1, 6)).toEqual(['この月の合計', '2回', '250,000', '3,000', '46']);
+      button(extra, '直す').click();
+      await settle();
+      expect((panel().querySelector('input[name="payment-fixedWages"]') as HTMLInputElement).value).toBe('50000');
+      expect(el().querySelector('tr.extra-payment')!.classList.contains('editing')).toBe(true);
     });
 
     it('支払日を、ほかの支払いと同じ日に変えようとすると、上書きせずにエラー（一覧の行・支払日ごとの欄のどちらも）', async () => {

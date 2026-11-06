@@ -29,7 +29,8 @@ import {
 } from '../../core/calc/settings';
 import { MasterRepository } from '../../core/repository/master-repository';
 import { RateRecord, SettingsRepository } from '../../core/repository/settings-repository';
-import { checkPayrollGroup, PayrollGroup, PayrollGroupInput } from '../../core/calc/payroll-group';
+import { checkPayrollGroup, checkTermsChange, PayrollGroup, PayrollGroupInput, PayrollTermsChange, sameTerms, termsAt, termsLabel, termsOf } from '../../core/calc/payroll-group';
+import { addMonths } from '../../core/calc/salary';
 import { BonusType, BonusTypeInput, checkBonusType } from '../../core/calc/bonus-type';
 import { parseNumberInput } from '../../core/calc/half-width';
 import { YearMonthPipe } from '../../core/ui/year-month.pipe';
@@ -45,6 +46,7 @@ type Mode =
   | { kind: 'kumiai'; id: string | null }
   | { kind: 'rate'; id: string | null }
   | { kind: 'payrollGroup'; id: string | null }
+  | { kind: 'termsChange'; id: string }
   | { kind: 'bonusType'; id: string | null };
 
 const EMPTY_OFFICE: OfficeInput = { name: '', prefecture: '', insurerId: '', isDefault: false };
@@ -93,6 +95,22 @@ export class Settings implements OnInit, HasUnsavedChanges {
   protected readonly rates = signal<RateRecord[]>([]);
   protected readonly payrollGroups = signal<PayrollGroup[]>([]);
   protected readonly groupForm = signal<PayrollGroupInput>(EMPTY_GROUP);
+  /** 「○年○月から変える」の入力（支払区分の制度の変更。設計書 2.10） */
+  protected readonly termsForm = signal<PayrollTermsChange>({ validFrom: '', cutoffDay: 'end', paidIn: 'nextMonth', deductionTiming: 'nextMonth', payDay: 25 });
+  /** 今月（'YYYY-MM'。日本時間） */
+  protected readonly thisMonth = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()).slice(0, 7);
+  /** 区分ごとの、今月の制度と変更の履歴（表に出す） */
+  protected readonly groupRows = computed(() =>
+    this.payrollGroups().map((g) => {
+      const changes = g.changes ?? [];
+      const steps = [{ from: null as string | null, terms: termsOf(g) }, ...changes.map((c) => ({ from: c.validFrom as string | null, terms: termsOf(c) }))];
+      return {
+        group: g,
+        now: termsAt(g, this.thisMonth),
+        history: changes.length === 0 ? [] : steps.map((s, i) => ({ from: s.from, to: i + 1 < steps.length ? addMonths(steps[i + 1].from!, -1) : null, label: termsLabel(s.terms) })),
+      };
+    }),
+  );
   protected readonly bonusTypes = signal<BonusType[]>([]);
   protected readonly bonusTypeForm = signal<BonusTypeInput>({ name: '', isRemuneration: false, validFrom: '' });
   protected readonly days = Array.from({ length: 30 }, (_, i) => i + 1);
@@ -212,10 +230,83 @@ export class Settings implements OnInit, HasUnsavedChanges {
     const errors = checkPayrollGroup(f, this.payrollGroups().filter((g) => g.id !== id).map((g) => g.name));
     this.errors.set(errors);
     if (Object.keys(errors).length > 0) return;
+    const before = id ? this.payrollGroups().find((g) => g.id === id) : undefined;
+    // 「直す」で締め日などを変えると、過去の月の計算も変わる。制度の変更なら「○年○月から変える」を使うよう確かめる
+    if (before && !sameTerms(before, f)) {
+      const ok = await this.confirm.ask({
+        title: '登録の誤りを直す',
+        message:
+          `「直す」は登録の誤りの訂正で、${before.changes?.length ? `最初の制度（${yearMonthLabel(before.changes[0].validFrom)}分より前）` : 'この区分'}の締め日・支払月・控除する給与を、過去の月までさかのぼって変えます。` +
+          'この区分の人の、過去の月の給与の計算期間・控除する月・定時決定と随時改定の判定が変わります（確定済みの月は差額の画面に出ます）。' +
+          '会社の制度を変えた（例：来月から15日締めにした）ときは、やめて「○年○月から変える」を使ってください。',
+        ok: '直す',
+        cancel: '入力に戻る',
+        danger: true,
+      });
+      if (!ok) return;
+    }
     // 最初の区分は既定にする（既定の区分がないと、区分を割り当てていない人の区分が決まらないため）
-    const input = { ...f, isDefault: f.isDefault || !this.payrollGroups().some((g) => g.isDefault && g.id !== id) };
+    const input = { ...f, changes: before?.changes ?? [], isDefault: f.isDefault || !this.payrollGroups().some((g) => g.isDefault && g.id !== id) };
     await this.run(() => this.repo.savePayrollGroup(id, input, this.payrollGroups()), `支払区分「${f.name.trim()}」を保存しました。`);
   }
+
+  /** 「○年○月から変える」：変える月は来月を初めにし、制度は今の制度から変えてもらう */
+  protected openTermsChange(g: PayrollGroup): void | Promise<void> {
+    return this.guard(() => {
+      const validFrom = addMonths(this.thisMonth, 1);
+      this.termsForm.set({ validFrom, ...termsAt(g, validFrom) });
+      this.openMode({ kind: 'termsChange', id: g.id });
+    });
+  }
+  protected setTerms<K extends keyof PayrollTermsChange>(key: K, value: PayrollTermsChange[K]): void {
+    this.termsForm.update((f) => ({ ...f, [key]: value }));
+  }
+  protected setTermsDay(key: 'cutoffDay' | 'payDay', value: string): void {
+    this.termsForm.update((f) => ({ ...f, [key]: value === 'end' ? 'end' : Number(value) }));
+  }
+  /** 変える区分（「○年○月から変える」のフォームを開いているとき） */
+  protected readonly termsGroup = computed(() => {
+    const m = this.mode();
+    return m?.kind === 'termsChange' ? (this.payrollGroups().find((g) => g.id === m.id) ?? null) : null;
+  });
+  protected async saveTermsChange(event: Event): Promise<void> {
+    event.preventDefault();
+    const g = this.termsGroup();
+    if (!g) return;
+    const f = this.termsForm();
+    const errors = checkTermsChange(g, f, this.thisMonth);
+    this.errors.set(errors);
+    if (Object.keys(errors).length > 0) return;
+    await this.run(
+      () => this.repo.savePayrollTermsChanges(g.id, [...(g.changes ?? []), { ...f }]),
+      `支払区分「${g.name}」を${yearMonthLabel(f.validFrom)}分から「${termsLabel(f)}」にしました。それより前の月は、これまでの制度のままです。`,
+    );
+  }
+
+  /** 最後の「○年○月から変える」を取り消す（その月以降も前の制度に戻る） */
+  protected async undoTermsChange(g: PayrollGroup): Promise<void> {
+    const last = g.changes?.at(-1);
+    if (!last) return;
+    const prev = termsAt(g, addMonths(last.validFrom, -1));
+    const started = last.validFrom <= this.thisMonth;
+    const ok = await this.confirm.ask({
+      title: '制度の変更を取り消す',
+      message:
+        `支払区分「${g.name}」の、${yearMonthLabel(last.validFrom)}分からの変更（${termsLabel(last)}）を取り消し、その月以降も「${termsLabel(prev)}」に戻します。` +
+        (started
+          ? `${yearMonthLabel(last.validFrom)}分〜今月分は、すでにこの制度で計算しています。取り消すと、この区分の人のその月の給与の計算期間・控除する月が変わります（確定済みの月は差額の画面に出ます）。`
+          : 'まだ始まっていない変更なので、過去の月の計算は変わりません。'),
+      ok: '取り消す',
+      danger: started,
+    });
+    if (!ok) return;
+    await this.run(() => this.repo.savePayrollTermsChanges(g.id, (g.changes ?? []).slice(0, -1)), `支払区分「${g.name}」の${yearMonthLabel(last.validFrom)}分からの変更を取り消しました。`);
+  }
+  /** 「直す」で開いた区分に制度の変更があるか */
+  protected readonly groupHasChanges = computed(() => {
+    const m = this.mode();
+    return m?.kind === 'payrollGroup' && !!m.id && (this.payrollGroups().find((g) => g.id === m.id)?.changes?.length ?? 0) > 0;
+  });
 
   protected openBonusType(t: BonusType | null): void | Promise<void> {
     return this.guard(() => this.openBonusTypeNow(t));
@@ -383,7 +474,7 @@ export class Settings implements OnInit, HasUnsavedChanges {
   /** 会社の設定（読み込んだとき・保存したときの値と比べる） */
   private readonly settingsSnapshot = new FormSnapshot(() => this.settings());
   /** 追加・変更のフォーム（開いたときの値と比べる） */
-  private readonly formSnapshot = new FormSnapshot(() => [this.groupForm(), this.bonusTypeForm(), this.officeForm(), this.kumiaiForm(), this.kumiaiRatesForm(), this.rateForm()]);
+  private readonly formSnapshot = new FormSnapshot(() => [this.groupForm(), this.termsForm(), this.bonusTypeForm(), this.officeForm(), this.kumiaiForm(), this.kumiaiRatesForm(), this.rateForm()]);
   /** 画面を移る前の確認に使う（unsavedChangesGuard）。会社の設定・開いているフォームのうち、変えたものの数 */
   unsavedCount(): number {
     return (this.settingsSnapshot.changed() ? 1 : 0) + (this.mode() !== null && this.formSnapshot.changed() ? 1 : 0);

@@ -101,6 +101,7 @@ describe('Settings', () => {
             deleteOffice: record('deleteOffice'),
             saveBonusType: record('saveBonusType'),
             savePayrollGroup: record('savePayrollGroup'),
+            savePayrollTermsChanges: record('savePayrollTermsChanges'),
           },
         },
       ],
@@ -378,6 +379,80 @@ describe('Settings', () => {
     const inputs = form().querySelectorAll('input[inputmode=decimal]') as NodeListOf<HTMLInputElement>;
     expect(inputs[0].value).toBe('10');
     expect(inputs[1].value).toBe('4.5');
+  });
+
+  describe('支払区分の制度の変更（○年○月から変える・直す）', () => {
+    const thisMonth = () => new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()).slice(0, 7);
+    const next = (ym: string, n: number) => {
+      const d = new Date(Number(ym.slice(0, 4)), Number(ym.slice(5, 7)) - 1 + n, 1);
+      return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+    };
+    beforeEach(async () => {
+      groups = [{ id: 'g1', name: '月給', cutoffDay: 'end', paidIn: 'nextMonth', deductionTiming: 'nextMonth', payDay: 25, isDefault: true, changes: [] }];
+      fixture = TestBed.createComponent(Settings);
+      await fixture.whenStable();
+      fixture.detectChanges();
+    });
+    const rowButton = async (text: string) => {
+      const row = el().querySelector('table.payroll-groups tbody tr')!;
+      ([...row.querySelectorAll('button')].find((b) => b.textContent!.trim() === text) as HTMLButtonElement).click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+    };
+
+    it('「○年○月から変える」は変更の履歴に足す（区分の最初の制度は変えない）', async () => {
+      await rowButton('○年○月から変える');
+      expect(form().textContent).toContain('それより前の月は前の制度のままです');
+      const from = next(thisMonth(), 2);
+      type('変える月', from);
+      type('締め日', '15');
+      type('支払月', 'sameMonth');
+      await submit(form());
+      expect(calls[0][0]).toBe('savePayrollTermsChanges');
+      expect(calls[0][1]).toBe('g1');
+      expect(calls[0][2]).toEqual([{ validFrom: from, cutoffDay: 15, paidIn: 'sameMonth', deductionTiming: 'nextMonth', payDay: 25 }]);
+      expect(calls.some((c) => c[0] === 'savePayrollGroup')).toBe(false);
+    });
+
+    it('過去の月からは変えられない', async () => {
+      await rowButton('○年○月から変える');
+      type('変える月', next(thisMonth(), -1));
+      type('締め日', '15');
+      await submit(form());
+      expect(calls).toEqual([]);
+      expect(form().textContent).toContain('過去の月からは変えられません');
+    });
+
+    it('「直す」で締め日を変えるときは、過去の月まで変わることを確かめる', async () => {
+      const ask = vi.spyOn(TestBed.inject(Confirm), 'ask').mockResolvedValue(false);
+      await rowButton('直す');
+      type('締め日', '15');
+      await submit(form());
+      expect(ask.mock.calls.at(-1)![0].message).toContain('過去の月までさかのぼって変えます');
+      expect(calls).toEqual([]);
+      // 名前だけを直すときは確かめない
+      ask.mockClear();
+      type('締め日', 'end');
+      type('区分の名前', '月給者');
+      await submit(form());
+      expect(ask).not.toHaveBeenCalled();
+      expect(calls[0][0]).toBe('savePayrollGroup');
+      expect(calls[0][2]).toMatchObject({ name: '月給者', cutoffDay: 'end', changes: [] });
+    });
+
+    it('変更の履歴を表に出し、最後の変更を取り消せる', async () => {
+      const from = next(thisMonth(), 2);
+      groups = [{ ...(groups[0] as object), changes: [{ validFrom: from, cutoffDay: 15, paidIn: 'sameMonth', deductionTiming: 'sameMonth', payDay: 25 }] }];
+      fixture = TestBed.createComponent(Settings);
+      await fixture.whenStable();
+      fixture.detectChanges();
+      const history = el().querySelector('.terms-history')!.textContent!;
+      expect(history).toContain('末日締め・翌月25日払・翌月控除');
+      expect(history).toContain('15日締め・当月25日払・当月控除');
+      expect(history).toContain('予定');
+      await rowButton('最後の変更を取り消す');
+      expect(calls[0]).toEqual(['savePayrollTermsChanges', 'g1', []]);
+    });
   });
 
   describe('削除（給与の支払区分・賞与の種類・適用事業所）', () => {

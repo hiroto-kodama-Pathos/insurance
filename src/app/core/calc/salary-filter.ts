@@ -2,7 +2,7 @@
 // 給与の行から絞り込みに使う事実だけを取り出して判定するので、画面とは別に確かめられる。
 import { matchesPerson } from './person-search';
 
-export type SalaryStatusFilter = '' | 'empty' | 'entered' | 'changed' | 'attention' | 'uninsured';
+export type SalaryStatusFilter = '' | 'empty' | 'entered' | 'changed' | 'attention' | 'exclusionMissing' | 'uninsured';
 export type SalarySortKey = 'employeeNumber' | 'name' | 'office' | 'fixedDesc';
 
 export const SALARY_STATUS_LABEL: Record<Exclude<SalaryStatusFilter, ''>, string> = {
@@ -10,6 +10,7 @@ export const SALARY_STATUS_LABEL: Record<Exclude<SalaryStatusFilter, ''>, string
   entered: '入力済みの人',
   changed: '固定的賃金の変動ありの人',
   attention: '要確認の人（遡及の可能性・支払月や締め日の変更月）',
+  exclusionMissing: '算定から除く額が未入力の人（支払月・締め日の変更月）',
   uninsured: '未加入の人（労働時間を入れる人）',
 };
 
@@ -48,6 +49,8 @@ export type SalaryFacts = {
   changed: boolean;
   /** 遡及の可能性・支払月や締め日の変更月 */
   attention: boolean;
+  /** 算定から除く額が要る月なのに、給与は入っていて除く額が未入力（CSVで取り込んだときなど） */
+  exclusionMissing?: boolean;
   uninsured: boolean;
 };
 
@@ -64,6 +67,8 @@ function matchesStatus(f: SalaryFacts, status: SalaryStatusFilter): boolean {
       return f.changed;
     case 'attention':
       return f.attention;
+    case 'exclusionMissing':
+      return !!f.exclusionMissing;
     case 'uninsured':
       return f.uninsured;
   }

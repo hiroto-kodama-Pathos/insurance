@@ -11,7 +11,7 @@ import { CompanySettings, DEFAULT_SETTINGS, KumiaiInput, OfficeInput } from '../
 import { SalaryMapping } from '../calc/salary-import';
 import { DecisionMapping } from '../calc/decision-import';
 import { BonusType, BonusTypeInput } from '../calc/bonus-type';
-import { legacyGroup, PayrollGroup, PayrollGroupInput } from '../calc/payroll-group';
+import { legacyGroup, PayrollGroup, PayrollGroupInput, PayrollTermsChange, termsOf } from '../calc/payroll-group';
 
 export type RateRecord = InsurerRate & { id: string };
 
@@ -65,6 +65,9 @@ export class SettingsRepository {
         deductionTiming: x['deductionTiming'] ?? 'nextMonth',
         payDay: x['payDay'] ?? 25,
         isDefault: x['isDefault'] === true,
+        changes: ((x['changes'] ?? []) as PayrollTermsChange[])
+          .map((c) => ({ validFrom: c.validFrom, ...termsOf(c) }))
+          .sort((a, b) => a.validFrom.localeCompare(b.validFrom)),
       };
     });
   }
@@ -79,11 +82,21 @@ export class SettingsRepository {
   async savePayrollGroup(id: string | null, input: PayrollGroupInput, groups: PayrollGroup[]): Promise<void> {
     const batch = writeBatch(db);
     const ref = id ? siDoc('payrollGroups', id) : siDocNew('payrollGroups');
-    batch.set(ref, { ...input, name: input.name.trim(), isDefault: input.isDefault === true });
+    batch.set(ref, { ...termsOf(input), name: input.name.trim(), isDefault: input.isDefault === true, changes: input.changes ?? [] });
     if (input.isDefault) {
       for (const g of groups) if (g.id !== ref.id && g.isDefault) batch.update(siDoc('payrollGroups', g.id), { isDefault: false });
     }
     await batch.commit();
+  }
+
+  /**
+   * 給与の制度の変更の履歴を保存する（「○年○月から変える」の追加・最後の変更の取り消し。設計書 2.10）。
+   * 区分の名前・既定は変えない
+   */
+  async savePayrollTermsChanges(id: string, changes: PayrollTermsChange[]): Promise<void> {
+    await updateDoc(siDoc('payrollGroups', id), {
+      changes: [...changes].sort((a, b) => a.validFrom.localeCompare(b.validFrom)).map((c) => ({ validFrom: c.validFrom, ...termsOf(c) })),
+    });
   }
 
   /** 給与のCSVの列の対応づけ（設計書 3.8）。保存されていなければ null */
@@ -101,6 +114,7 @@ export class SettingsRepository {
       inKindWages: m['inKindWages'] ?? '',
       workingHours: m['workingHours'] ?? '',
       hourlyRate: m['hourlyRate'] ?? '',
+      excludedAmount: m['excludedAmount'] ?? '',
     };
   }
 

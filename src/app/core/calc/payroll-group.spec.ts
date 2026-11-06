@@ -1,7 +1,8 @@
 import {
   checkPayrollAssignment, checkPayrollGroup, cutoffOf, cutoffResolver, defaultGroup, groupLabel,
-  legacyGroup, PayrollGroup, payDateOf, payrollGroupAt,
+  legacyGroup, PayrollGroup, payDateOf, payrollGroupAt, checkTermsChange, termsAt, termsLabel,
 } from './payroll-group';
+import { periodChange, needsExclusion } from './pay-period-change';
 import { DEFAULT_SETTINGS } from './settings';
 
 const monthly: PayrollGroup = { id: 'g1', name: '月給者', cutoffDay: 'end', paidIn: 'nextMonth', deductionTiming: 'nextMonth', payDay: 25, isDefault: true };
@@ -62,5 +63,38 @@ describe('支払区分', () => {
     expect(checkPayrollAssignment(existing, '2026-13-01', 'g1', 'g2')['payrollDate']).toBeTruthy();
     expect(checkPayrollAssignment(existing, '2026-10-01', 'g1', 'g2')['payrollDate']).toBeTruthy();
     expect(checkPayrollAssignment(existing, '2026-11-01', 'g2', 'g2')['payrollDate']).toBeTruthy();
+  });
+
+  describe('制度の変更（○年○月から変える）', () => {
+    // 2027年1月支払分から、末日締め翌月25日払 → 15日締め当月25日払・当月控除に変える
+    const changed: PayrollGroup = {
+      ...monthly,
+      changes: [{ validFrom: '2027-01', cutoffDay: 15, paidIn: 'sameMonth', deductionTiming: 'sameMonth', payDay: 25 }],
+    };
+    const assignments = [{ validFrom: '2024-04-01', payrollGroupId: 'g1' }];
+
+    it('変える月より前は前の制度、変える月からは新しい制度で計算する（過去の月は変わらない）', () => {
+      expect(cutoffOf(payrollGroupAt([changed], assignments, '2026-12-25'))).toEqual(cutoffOf(monthly));
+      const after = payrollGroupAt([changed], assignments, '2027-01-25');
+      expect(after).toMatchObject({ id: 'g1', name: '月給者', cutoffDay: 15, paidIn: 'sameMonth', deductionTiming: 'sameMonth' });
+      expect(termsAt(changed, '2027-06')).toMatchObject({ cutoffDay: 15 });
+      expect(termsLabel(termsAt(changed, '2026-12'))).toBe('末日締め・翌月25日払・翌月控除');
+    });
+
+    it('変えた月は、支払月・締め日の変更月として「算定から除く額」が要る', () => {
+      const resolve = cutoffResolver([changed], [{ id: 'e1', payrollAssignments: assignments }]);
+      const c = periodChange('2027-01', (ym) => resolve('e1', ym));
+      expect(c).not.toBeNull();
+      expect(needsExclusion(c)).toBe(true);
+      expect(periodChange('2026-12', (ym) => resolve('e1', ym))).toBeNull();
+    });
+
+    it('過去の月からは変えられない。後ろの変更があるとき・同じ制度のときも受け付けない', () => {
+      const c = { validFrom: '2026-10', cutoffDay: 15 as const, paidIn: 'sameMonth' as const, deductionTiming: 'sameMonth' as const, payDay: 25 as const };
+      expect(checkTermsChange(monthly, c, '2026-11').validFrom).toContain('過去の月からは変えられません');
+      expect(checkTermsChange(monthly, { ...c, validFrom: '2026-11' }, '2026-11')).toEqual({});
+      expect(checkTermsChange(changed, { ...c, validFrom: '2026-12' }, '2026-11').validFrom).toContain('この月以降の変更がすでにあります');
+      expect(checkTermsChange(monthly, { ...termsAt(monthly, '2027-01'), validFrom: '2027-01' }, '2026-11').validFrom).toContain('同じです');
+    });
   });
 });

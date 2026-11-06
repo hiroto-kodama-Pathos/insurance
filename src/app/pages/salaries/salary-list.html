@@ -17,7 +17,7 @@
       <p class="help">
         給与計算が終わったら、その月に支払った給与を入れます。給与は随時改定の候補と定時決定の見込みを出すためだけに使い、保険料は変わりません（保険料は標準報酬月額で計算します）。
       </p>
-      <p class="help">同じ月に2回以上払った人（月2回払い・臨時の支払いなど）は、1回目を表の行に入れて保存し、「支払いの一覧・追加」から2回目以降を追加します。同じ月の支払いは、随時改定・定時決定では合算します。支払いごとに直す・削除もここからできます。</p>
+      <p class="help">同じ月に2回以上払った人（月2回払い・臨時の支払いなど）は、1回目を表の行に入れて保存し、「支払いの一覧・追加」から2回目以降を追加します。2回目以降の支払いは、その人の行のすぐ下に支払日ごとの行で出し、最後に「この月の合計」を出します。同じ月の支払いは、随時改定・定時決定では合算します。2回目以降の行の「直す」「削除」で、支払いごとに直せます。</p>
       <p class="help">時給の人は時給単価も入れます。前月と時給単価が同じ月は、労働時間で額が変わっても「変動あり」にしません。<br />未加入の人（パート・アルバイトなど）は、この給与の計算期間に実際に働いた時間も入れます（加入の可能性は、働いた月で数えます）。2か月続けて週20時間以上になると、トップに「加入の可能性」が出ます。</p>
     </details>
     <p><a routerLink="/salaries/import">CSVで取り込む</a>（給与ソフトの出力をまとめて取り込めます）</p>
@@ -26,6 +26,13 @@
         <a routerLink="/revisions">随時改定の候補を見る</a>
       }
     </p>
+    @if (exclusionMissingCount() > 0) {
+      <p class="exclusion-missing" role="alert">
+        支払月・締め日の変更月で、<strong>算定から除く額が未入力の人が{{ exclusionMissingCount() }}人</strong>います（支払区分の締め日・支払月をあとから変えた・この確認を入れる前に保存した給与など）。
+        入れないと、随時改定・定時決定の平均を誤ります。除く額がなければ 0 を入れて保存してください。
+        <button type="button" class="link" (click)="setCriteria('status', 'exclusionMissing')">その人だけを表示</button>
+      </p>
+    }
     @if (unsavedIds().length > 0) {
       <div class="unsaved-bar" role="status">
         <span><strong>保存していない入力が {{ unsavedIds().length }}人分</strong>あります（「未保存」の印がある行）。ほかの画面に移る・支払月を変える前に保存してください。</span>
@@ -132,6 +139,9 @@
                     }
                   </div>
                 }
+                @if (exclusionMissing(row)) {
+                  <span class="badge warn">算定から除く額が未入力</span>
+                }
                 @if (row.retroactive; as r) {
                   <span class="badge warn">遡及の可能性あり（{{ r.yearMonth | ym }}：{{ yen(r.before) }}→{{ yen(r.paid) }}→{{ yen(r.after) }}円。遡及差額を確かめる）</span>
                 }
@@ -151,7 +161,7 @@
                   <span class="badge info">未加入</span>
                 }
                 @if (row.others > 0) {
-                  <span class="badge info" title="この行は支払日の早い1回目です。2回目以降は「支払いの一覧・追加」で直す・削除できます">この月は{{ row.payments.length }}回払い（合算。この行は1回目）</span>
+                  <span class="badge info" title="この行は支払日の早い1回目です。2回目以降は下の行で直す・削除できます">この月は{{ row.payments.length }}回払い（合算。この行は1回目）</span>
                 }
               </td>
               <td class="actions">
@@ -179,6 +189,36 @@
                 }
               </td>
             </tr>
+            @if (row.payments.length > 1) {
+              <!-- 同じ月の2回目以降の支払い（見るだけ。直す・削除は下の入力欄で）と、この月の合計 -->
+              @for (s of row.payments.slice(1); track s.id; let i = $index) {
+                <tr class="extra-payment" [class.editing]="paymentEdit()?.salaryId === s.id">
+                  <td></td>
+                  <td class="sub">{{ i + 2 }}回目</td>
+                  <td>{{ s.paidDate | ymd }}</td>
+                  @for (k of paymentKeys; track k) { <td class="num">{{ yen($any(s)[k]) }}</td> }
+                  <td></td>
+                  <td class="status"><span class="badge info">同じ月の{{ i + 2 }}回目の支払い</span></td>
+                  <td class="actions">
+                    @if (!row.closed) {
+                      <button type="button" class="secondary" [disabled]="saving() !== null" (click)="openPaymentEdit(row, s)">直す</button>
+                      <button type="button" class="secondary" [disabled]="saving() !== null" (click)="removePayment(row, s)">削除</button>
+                    }
+                  </td>
+                </tr>
+              }
+              <tr class="payments-total">
+                <td></td>
+                <td class="sub">この月の合計</td>
+                <td>{{ row.payments.length }}回</td>
+                @for (k of paymentKeys; track k) { <td class="num">{{ yen(paymentTotal(row, k)) }}</td> }
+                <td></td>
+                <td class="status">
+                  <span class="help">随時改定・定時決定ではこの合計で判定します@if (isUnsaved(row.employee.id)) {（1回目の保存していない入力は含みません）}</span>
+                </td>
+                <td></td>
+              </tr>
+            }
             @if (paymentsFor() === row.employee.id) {
               <tr class="payments-panel">
                 <td colspan="13">

@@ -199,7 +199,11 @@ export function findRevisionCandidates(
       if (!c) continue;
       const pay = byMonth.get(ym);
       notes.push(periodChangeNote(c, pay?.excluded ?? 0));
-      if (needsExclusion(c) && !(pay && pay.excluded > 0)) needsReview = true;
+      // 算定から除く額が要る月で、まだ入れていない（0円と入れたのは担当者の判断として受け入れる）
+      if (needsExclusion(c) && !pay?.excludedEntered) {
+        needsReview = true;
+        notes.push(`${Number(ym.slice(5))}月の算定から除く額が未入力（給与の画面で入れてください。除く額がなければ0円）`);
+      }
       // 締め日の変更で固定的賃金が動いて見えるだけの月は、変動月にできない（変更後の月を起算月として改定しない）
       if (ym === change.yearMonth) {
         needsReview = true;

@@ -91,6 +91,10 @@ describe('estimateRegular（定時決定の見込み）', () => {
     const before = estimateRegular(employee(), rows, grades, thresholds, 2026, cutoff)!;
     expect(before.needsReview).toBe(true);
     expect(before.notes.join()).toContain('「算定から除く額」に入れる');
+    expect(before.notes.join()).toContain('5月の算定から除く額が未入力');
+    // 0円と入れたら（除く額がない）、担当者の判断として要確認を外す
+    rows[1].excludedAmount = 0;
+    expect(estimateRegular(employee(), rows, grades, thresholds, 2026, cutoff)!.notes.join()).not.toContain('未入力');
     rows[1].excludedAmount = 50_000;
     const after = estimateRegular(employee(), rows, grades, thresholds, 2026, cutoff)!;
     expect(after.average).toBe(300_000);

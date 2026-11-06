@@ -412,7 +412,9 @@ service cloud.firestore {
         allow read: if isSiUser();
         allow delete: if isSiAdmin() && resource.data.get('isDefault', false) != true;
         allow create, update: if isSiAdmin()
-          && request.resource.data.keys().hasOnly(['name', 'cutoffDay', 'paidIn', 'deductionTiming', 'payDay', 'isDefault'])
+          && request.resource.data.keys().hasOnly(['name', 'cutoffDay', 'paidIn', 'deductionTiming', 'payDay', 'isDefault', 'changes'])
+          // 給与の制度の変更（「○年○月から変える」の履歴。設計書 2.10）。各項目の形は画面で確かめる
+          && (!('changes' in request.resource.data) || (request.resource.data.changes is list && request.resource.data.changes.size() <= 120))
           && request.resource.data.name is string && request.resource.data.name.size() > 0
           && isPayDay(request.resource.data.cutoffDay) && isPayDay(request.resource.data.payDay)
           && request.resource.data.paidIn in ['sameMonth', 'nextMonth']

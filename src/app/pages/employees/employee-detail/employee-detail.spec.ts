@@ -1,3 +1,4 @@
+import { ClosingRepository } from '../../../core/repository/closing-repository';
 import { FilingRepository } from '../../../core/repository/filing-repository';
 import { signal } from '@angular/core';
 import { Auth } from '../../../core/auth/auth';
@@ -59,6 +60,8 @@ describe('EmployeeDetail', () => {
   let logs: string[];
   /** 変更の記録を残せない・読み込めない（記録の失敗を画面に出すか） */
   let logWriteFails: boolean;
+  /** 確定済みの月（事業所ID → 月） */
+  let closedMonths: Record<string, string[]>;
   let logLoadFails: boolean;
   /** yamada() の一部を差し替えて読み込ませる（reload() で画面を作り直す） */
   let detailOverride: Record<string, unknown> = {};
@@ -67,6 +70,7 @@ describe('EmployeeDetail', () => {
     calls = [];
     logs = [];
     logWriteFails = false;
+    closedMonths = {};
     logLoadFails = false;
     detailOverride = {};
     const record = (name: string) => async (...args: unknown[]) => {
@@ -82,6 +86,8 @@ describe('EmployeeDetail', () => {
           provide: FilingRepository,
           useValue: { loadFiledIds: async () => new Set<string>(), setFiled: record('setFiled'), unsetFiled: record('unsetFiled') },
         },
+        // 削除の影響に使う、確定済みの月（事業所ごと）
+        { provide: ClosingRepository, useValue: { closedMonthsOf: async (officeId: string) => closedMonths[officeId] ?? [] } },
         { provide: ActivatedRoute, useValue: { snapshot: { paramMap: convertToParamMap({ id: 'e1' }) } } },
         {
           provide: EmployeeRepository,

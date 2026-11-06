@@ -43,7 +43,7 @@ describe('buildPreview', () => {
     expect(p.map((r) => r.status)).toEqual(['new', 'new']);
     expect(p[0].salary).toEqual({
       employeeId: 'e1', paidDate: '2026-10-25', fixedWages: 335_000, nonFixedWages: 20_000,
-      paymentBaseDays: 31, retroactiveDiff: null, inKindWages: null, workingHours: null, hourlyRate: null,
+      paymentBaseDays: 31, retroactiveDiff: null, inKindWages: null, workingHours: null, hourlyRate: null, excludedAmount: null,
     });
     expect(p[1].salary!.paidDate).toBe('2026-10-25');
     expect(p[1].officeId).toBe('osaka');
@@ -86,5 +86,36 @@ describe('missingColumns', () => {
     expect(missingColumns(SOFT_MAPPING, parseCsv(SOFT_CSV)[0])).toEqual([]);
     expect(missingColumns(TEMPLATE_MAPPING, parseCsv(SOFT_CSV)[0])).toContain('社員番号');
     expect(missingColumns({ ...SOFT_MAPPING, fixedWages: [] }, parseCsv(SOFT_CSV)[0])[0]).toBe('（必須の項目が未設定）');
+  });
+});
+
+describe('算定から除く額（支払月・締め日の変更月）', () => {
+  const head = [...TEMPLATE_HEADERS, '算定から除く額'].join(',');
+  const rows = (lines: string[]) => parseCsv([head, ...lines].join('\n'));
+  const ctx2 = (need: boolean) => ({
+    employees: [{ id: 'e1', employeeNumber: '0001', name: '山田', assignments: [{ validFrom: '2020-04-01', officeId: 'honsha' }] }],
+    offices: [{ id: 'honsha', name: '本社', prefecture: '東京都', insurerId: 'kyokai' }],
+    closed: new Set<string>(), existingIds: new Set<string>(), scope: 'all',
+    needsExclusion: (_id: string, ym: string) => need && ym === '2026-10',
+  });
+
+  it('除く額が要る月の行は、額（0を含む）がなければ取り込まない', () => {
+    const empty = buildPreview(rows(['0001,2026-10-25,31,340000,20000,,,,,']), TEMPLATE_MAPPING, ctx2(true));
+    expect(empty[0].status).toBe('error');
+    expect(empty[0].errors.join()).toContain('10月は支払月・締め日の変更月のため、算定から除く額が要ります');
+    const zero = buildPreview(rows(['0001,2026-10-25,31,340000,20000,,,,,0']), TEMPLATE_MAPPING, ctx2(true));
+    expect(zero[0].status).toBe('new');
+    expect(zero[0].salary?.excludedAmount).toBe(0);
+  });
+
+  it('同じ人・同じ月の行のどれかに額があればよい。除く額が要らない月は、入っていても残さない', () => {
+    const two = buildPreview(rows(['0001,2026-10-10,31,170000,0,,,,,50000', '0001,2026-10-25,31,170000,0,,,,,']), TEMPLATE_MAPPING, ctx2(true));
+    expect(two.map((r) => r.status)).toEqual(['new', 'new']);
+    const notNeeded = buildPreview(rows(['0001,2026-10-25,31,340000,20000,,,,,5000']), TEMPLATE_MAPPING, ctx2(false));
+    expect(notNeeded[0].salary?.excludedAmount).toBeNull();
+  });
+
+  it('前のテンプレート（算定から除く額の列なし）も、テンプレートの形式として読める', () => {
+    expect(missingColumns(TEMPLATE_MAPPING, TEMPLATE_HEADERS)).toEqual([]);
   });
 });

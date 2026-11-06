@@ -76,7 +76,7 @@
             <thead>
               <tr>
                 <th>行</th><th>社員番号</th><th>氏名</th><th>支払日</th><th>固定的賃金</th><th>非固定的賃金</th>
-                <th>支払基礎日数</th><th>うち遡及差額</th><th>うち現物給与</th><th>労働時間</th><th>時給単価</th><th>状態</th>
+                <th>支払基礎日数</th><th>うち遡及差額</th><th>うち現物給与</th><th>労働時間</th><th>時給単価</th><th>算定から除く額</th><th>状態</th>
               </tr>
             </thead>
             <tbody>
@@ -93,6 +93,7 @@
                   <td class="num">{{ yen(r.salary?.inKindWages) }}</td>
                   <td class="num">{{ r.salary?.workingHours ?? '' }}</td>
                   <td class="num">{{ yen(r.salary?.hourlyRate) }}</td>
+                  <td class="num">{{ yen(r.salary?.excludedAmount) }}</td>
                   <td>
                     <span class="badge">{{ statusLabel[r.status] }}</span>
                     @for (e of r.errors; track e) {

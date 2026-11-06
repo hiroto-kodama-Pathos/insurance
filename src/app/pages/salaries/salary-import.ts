@@ -23,6 +23,8 @@ import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employ
 import { MasterRepository } from '../../core/repository/master-repository';
 import { SalaryRepository } from '../../core/repository/salary-repository';
 import { SettingsRepository } from '../../core/repository/settings-repository';
+import { needsExclusion, periodChange } from '../../core/calc/pay-period-change';
+import { cutoffOf, PayrollGroup, payrollGroupAt } from '../../core/calc/payroll-group';
 
 export const STATUS_LABEL: Record<PreviewStatus, string> = {
   new: '新規',
@@ -36,7 +38,7 @@ const EMPTY_MAPPING: SalaryMapping = {
   employeeNumber: '', paidDate: '', paymentBaseDays: '', fixedWages: [], nonFixedWages: [], retroactiveDiff: '', inKindWages: '', workingHours: '', hourlyRate: '',
 };
 
-type SingleKey = 'employeeNumber' | 'paidDate' | 'paymentBaseDays' | 'retroactiveDiff' | 'inKindWages' | 'workingHours' | 'hourlyRate';
+type SingleKey = 'employeeNumber' | 'paidDate' | 'paymentBaseDays' | 'retroactiveDiff' | 'inKindWages' | 'workingHours' | 'hourlyRate' | 'excludedAmount';
 type MultiKey = 'fixedWages' | 'nonFixedWages';
 
 @Component({
@@ -62,6 +64,7 @@ export class SalaryImport implements OnInit {
     { key: 'inKindWages', label: 'うち現物給与', required: false },
     { key: 'workingHours', label: '労働時間（未加入の人の加入の可能性に使う）', required: false },
     { key: 'hourlyRate', label: '時給単価（時給の人の随時改定に使う）', required: false },
+    { key: 'excludedAmount', label: '算定から除く額（支払月・締め日の変更月だけ。その月は必須）', required: false },
   ];
   protected readonly multiFields: { key: MultiKey; label: string; hint: string }[] = [
     { key: 'fixedWages', label: '固定的賃金（必須）', hint: '基本給・役職手当・家族手当・通勤手当など' },
@@ -103,7 +106,22 @@ export class SalaryImport implements OnInit {
       closed: this.closed(),
       existingIds: this.existingIds(),
       scope: this.auth.user()?.siScope ?? 'all',
+      needsExclusion: this.needsExclusionFn(),
     });
+  });
+
+  /** 支払区分（支払月・締め日の変更月を見分ける） */
+  private readonly groups = signal<PayrollGroup[] | null>(null);
+  /** その人のその支払月が、算定から除く額の要る月か（支払区分を読めなければ確かめない） */
+  private readonly needsExclusionFn = computed(() => {
+    const groups = this.groups();
+    if (!groups) return undefined;
+    const byId = new Map(this.employees().map((e) => [e.id, e]));
+    return (employeeId: string, ym: string) => {
+      const e = byId.get(employeeId);
+      if (!e) return false;
+      return needsExclusion(periodChange(ym, (x) => cutoffOf(payrollGroupAt(groups, e.payrollAssignments, `${x}-01`))));
+    };
   });
 
   /** エラー・注意の行（登録しない行と、登録済みを上書きする行）だけを表示するか */
@@ -128,6 +146,8 @@ export class SalaryImport implements OnInit {
         this.masterRepo.loadMasters(),
         this.settingsRepo.loadSalaryMapping(),
       ]);
+      // 支払区分を読めなくても取り込みは使える（算定から除く額の要る月を確かめないだけ）
+      this.groups.set(await Promise.resolve().then(() => this.settingsRepo.loadPayrollGroups()).catch(() => null));
       this.employees.set(employees);
       this.offices.set(masters.offices);
       this.savedMapping.set(mapping);
@@ -219,7 +239,14 @@ export class SalaryImport implements OnInit {
     try {
       await this.salaryRepo.saveMany(rows.map((r) => ({ salary: r.salary!, officeId: r.officeId! })));
       const skipped = this.preview().length - rows.length;
-      this.notice.set(`${rows.length}件の給与を取り込みました。${skipped > 0 ? `取り込まなかった行は${skipped}件です。` : ''}`);
+      // 算定から除く額がなくて取り込まなかった行（支払月・締め日の変更月）は、別に知らせる
+      const noExclusion = this.preview().filter((r) => r.errors.some((e) => e.includes('算定から除く額が要ります'))).length;
+      this.notice.set(
+        `${rows.length}件の給与を取り込みました。${skipped > 0 ? `取り込まなかった行は${skipped}件です。` : ''}` +
+          (noExclusion > 0
+            ? `このうち${noExclusion}件は、支払月・締め日の変更月の給与で「算定から除く額」がないため取り込んでいません。CSVの「算定から除く額」の列に額（なければ0）を入れて取り込み直すか、給与の画面で入れてください。`
+            : ''),
+      );
       this.csvRows.set([]);
       this.fileName.set('');
     } catch (e) {

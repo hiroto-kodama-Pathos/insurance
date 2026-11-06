@@ -67,3 +67,13 @@ tr.payments-panel > td {
   .payment-form label { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
   .payment-form .actions { display: flex; gap: 8px; }
 }
+
+// 算定から除く額が未入力の人がいるときの知らせ
+.exclusion-missing { margin: 8px 0; padding: 8px 12px; border: 1px solid #f0c27b; border-radius: 6px; background: var(--c-warn-weak); color: var(--c-warn); }
+
+// 同じ月の2回目以降の支払いと、この月の合計（その人の行のすぐ下に出す）
+.list tbody tr.extra-payment > td { background: #f8fafc; font-size: 13px; border-top-style: dashed; }
+.list tbody tr.extra-payment.editing > td { background: #eef4ff; }
+.list tbody tr.payments-total > td { background: #f1f5f9; font-size: 13px; font-weight: bold; }
+.list tbody tr.payments-total .help { font-weight: normal; }
+td.sub { padding-left: 1.5em; color: var(--c-muted); }

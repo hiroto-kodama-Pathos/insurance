@@ -256,6 +256,7 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
       fixed: r.existing ? r.existing.fixedWages : null,
       changed: r.change !== null || r.manual !== null,
       attention: r.retroactive !== null || r.periodChange !== null,
+      exclusionMissing: this.exclusionMissing(r),
       uninsured: r.uninsured,
     };
   }
@@ -268,6 +269,14 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
   }
 
   protected readonly enteredCount = computed(() => this.rows().filter((r) => r.existing).length);
+  /**
+   * 算定から除く額が要る月（支払月・締め日の変更月）なのに、給与は登録済みで除く額が未入力の人
+   * （CSVの取り込みには除く額の列がないため。未入力のままだと、随時改定・定時決定の平均を誤る）
+   */
+  protected exclusionMissing(r: SalaryRow): boolean {
+    return needsExclusion(r.periodChange) && r.payments.length > 0 && r.payments.every((s) => s.excludedAmount === null || s.excludedAmount === undefined);
+  }
+  protected readonly exclusionMissingCount = computed(() => this.rows().filter((r) => this.exclusionMissing(r)).length);
   protected readonly changedCount = computed(() => this.rows().filter((r) => r.change).length);
 
   async ngOnInit(): Promise<void> {
@@ -392,6 +401,9 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     // ほかの支払い（同じ月の2回目以降）と同じ支払日にすると、その給与を上書きしてしまう
     if (!errors.paidDate && row.payments.some((s) => s.id !== row.existing?.id && s.paidDate === input.paidDate))
       errors.paidDate = `${dateLabel(input.paidDate)}の支払いはすでに登録されています（直すときは「支払いの一覧・追加」から）`;
+    // 支払月・締め日の変更月で、算定から除く額が要る月は必須（入れないと、随時改定・定時決定の平均を誤るため）。除く額がなければ0円
+    if (!errors.excludedAmount && needsExclusion(row.periodChange) && (input.excludedAmount === null || input.excludedAmount === undefined))
+      errors.excludedAmount = 'この月は算定から除く額が必要です（説明を見て入れてください。除く額がなければ 0）';
     if (!row.officeId) errors.form = 'この月に所属している適用事業所がありません';
     if (row.closed) errors.form = 'この月は確定済みです。月次保険料一覧で確定を解除してから入力してください';
     this.errors.update((e) => ({ ...e, [id]: errors }));
@@ -415,8 +427,8 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
           inKindWages: input.inKindWages || null,
           workingHours: input.workingHours ?? null,
           hourlyRate: input.hourlyRate ?? null,
-          // 算定から除く額は、除く必要がある変更月だけ保存する
-          excludedAmount: needsExclusion(row.periodChange) ? input.excludedAmount || null : null,
+          // 算定から除く額は、除く必要がある変更月だけ保存する（0円も「入れた」として残す。未入力と区別するため）
+          excludedAmount: needsExclusion(row.periodChange) ? (input.excludedAmount ?? null) : null,
         },
         row.officeId!,
       );
@@ -563,10 +575,21 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     });
   }
 
-  /** 支払日ごとの一覧の「直す」 */
+  /**
+   * この月の支払いの合計（保存した支払いを合算。表の「この月の合計」の行）。
+   * 時給単価は合計せず、最後の支払いの単価（随時改定の判定と同じ。core/calc/salary.ts の payMonths）
+   */
+  protected paymentTotal(row: SalaryRow, key: keyof SalaryInput): number | null {
+    const values = row.payments.map((s) => (s as unknown as Record<string, number | null | undefined>)[key]).filter((v): v is number => typeof v === 'number');
+    if (values.length === 0) return null;
+    return key === 'hourlyRate' ? values.at(-1)! : values.reduce((t, v) => t + v, 0);
+  }
+
+  /** 2回目以降の行・支払日ごとの一覧の「直す」（入力欄はその人の行の下に開く） */
   protected openPaymentEdit(row: SalaryRow, s: SalaryRecord): void | Promise<void> {
     return afterDiscardCheck(this.confirm, this.paymentChanged(), () => {
       this.paymentErrors.set({});
+      this.paymentsFor.set(row.employee.id);
       if (this.blockedByRow(row)) return;
       const str = (v: number | null | undefined) => (v === null || v === undefined ? '' : String(v));
       this.paymentEdit.set({ employeeId: row.employee.id, salaryId: s.id });

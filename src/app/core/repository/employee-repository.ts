@@ -431,6 +431,7 @@ export class EmployeeRepository {
     });
   }
 
+
   /** 固定的賃金の変動として登録する（同じ月は1件。ドキュメントIDは変動月） */
   async setFixedWageChange(employeeId: string, change: ManualWageChange) {
     return this.write(async () => {
