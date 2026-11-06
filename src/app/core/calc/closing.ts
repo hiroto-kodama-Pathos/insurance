@@ -82,33 +82,43 @@ const toStored = (p: PremiumResult | null): StoredPremium | null =>
 const fromStored = (p: StoredPremium | null): PremiumResult | null =>
   p ? { fullSen: BigInt(p.fullSen), employeeYen: BigInt(p.employeeYen), employerSen: BigInt(p.employerSen) } : null;
 
+/** 確定できない理由の1件。人に関係する理由は、その人（社員番号・氏名）を持つ。事業所全体の理由は employeeId が null */
+export type CloseBlocker = { employeeId: string | null; employeeNumber: string; name: string; reason: string };
+
 /**
- * 確定できない理由。料率の未登録・標準報酬月額の未登録の人がいる事業所は確定させない
+ * 確定できない理由（表で出す形）。料率の未登録・標準報酬月額の未登録の人がいる事業所は確定させない
  * @returns 理由の一覧（空なら確定できる）
  */
-export function closeBlockers(
+export function closeBlockerList(
   yearMonth: string,
   officeId: string,
   rows: RowInput[],
   bonuses: BonusRowInput[] = [],
-): string[] {
+): CloseBlocker[] {
   const label: Partial<Record<EmployeeMonthResult['status'], string>> = {
     noStandard: '標準報酬月額が未登録',
     missingRate: '料率が未登録',
   };
+  const person = (e: RowInput['employee'], reason: string): CloseBlocker => ({
+    employeeId: e.id, employeeNumber: e.employeeNumber, name: e.name, reason,
+  });
   const mine = rows.filter((r) => r.result.yearMonth === yearMonth && r.result.officeId === officeId);
-  const problems = mine
-    .filter((r) => label[r.result.status])
-    .map((r) => `${r.employee.employeeNumber} ${r.employee.name}：${label[r.result.status]}`);
+  const problems = mine.filter((r) => label[r.result.status]).map((r) => person(r.employee, label[r.result.status]!));
   const myBonuses = bonuses.filter((b) => b.result.yearMonth === yearMonth && b.result.officeId === officeId);
   for (const b of myBonuses) {
-    if (b.result.status === 'missingRate')
-      problems.push(`${b.employee.employeeNumber} ${b.employee.name}：賞与（${dateLabel(b.result.bonus.paidDate)}）の料率が未登録`);
+    if (b.result.status === 'missingRate') problems.push(person(b.employee, `賞与（${dateLabel(b.result.bonus.paidDate)}）の料率が未登録`));
   }
   if (mine.filter((r) => r.result.status === 'ok').length === 0 && myBonuses.length === 0 && problems.length === 0) {
-    problems.push('この月に保険料がかかる従業員がいません');
+    problems.push({ employeeId: null, employeeNumber: '', name: '', reason: 'この月に保険料がかかる従業員がいません' });
   }
   return problems;
+}
+
+/** 確定できない理由（文の形。「0143 藤井 翔太：標準報酬月額が未登録」） */
+export function closeBlockers(yearMonth: string, officeId: string, rows: RowInput[], bonuses: BonusRowInput[] = []): string[] {
+  return closeBlockerList(yearMonth, officeId, rows, bonuses).map((b) =>
+    b.employeeId === null ? b.reason : `${b.employeeNumber} ${b.name}：${b.reason}`,
+  );
 }
 
 /** 事業所1つ分の確定の内容を作る（保存はしない） */

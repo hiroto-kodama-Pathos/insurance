@@ -3,7 +3,7 @@
 import { inject, Service } from '@angular/core';
 import { Auth } from '../auth/auth';
 import { scopeWhere } from './scope';
-import { getDocs, query, serverTimestamp, setDoc } from 'firebase/firestore';
+import { deleteDoc, getDocs, query, serverTimestamp, setDoc, updateDoc } from 'firebase/firestore';
 import { Diffs, SettlementRecord, TrackedAdjustment } from '../calc/adjustment';
 import { siCol, siDoc } from '../firestore-paths';
 
@@ -32,5 +32,15 @@ export class AdjustmentRepository {
       entries: [...(previous?.entries ?? []), { settledMonth, diffs: a.remaining }],
       updatedAt: serverTimestamp(),
     });
+  }
+
+  /**
+   * 精算済みを取り消す（精算した給与の月の誤りなど）。最後に記録した精算だけを取り消し、残りの差額は未精算に戻る。
+   * 精算の記録が1つもなくなったら、文書ごと消す
+   */
+  async unsettle(id: string, previous: SettlementRecord): Promise<void> {
+    const entries = previous.entries.slice(0, -1);
+    if (entries.length === 0) await deleteDoc(siDoc('adjustments', id));
+    else await updateDoc(siDoc('adjustments', id), { entries, updatedAt: serverTimestamp() });
   }
 }

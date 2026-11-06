@@ -56,11 +56,13 @@ function yamada(): Detail {
 describe('EmployeeDetail', () => {
   let fixture: ComponentFixture<EmployeeDetail>;
   let calls: unknown[][];
+  let logs: string[];
   /** yamada() の一部を差し替えて読み込ませる（reload() で画面を作り直す） */
   let detailOverride: Record<string, unknown> = {};
 
   beforeEach(async () => {
     calls = [];
+    logs = [];
     detailOverride = {};
     const record = (name: string) => async (...args: unknown[]) => {
       calls.push([name, ...args]);
@@ -99,10 +101,31 @@ describe('EmployeeDetail', () => {
             removeDependent: record('removeDependent'),
             updateName: record('updateName'),
             setDependentCareExemptions: record('setDependentCareExemptions'),
-            updateExemptionEnd: record('updateExemptionEnd'),
+            updateExemption: record('updateExemption'),
+            deleteExemption: record('deleteExemption'),
+            deleteAbsence: record('deleteAbsence'),
+            updateEligibility: record('updateEligibility'),
             setRefundStatus: record('setRefundStatus'),
             addAbsence: record('addAbsence'),
             updateAbsence: record('updateAbsence'),
+            updateBirthDate: record('updateBirthDate'),
+            addChangeLog: async (_id: string, text: string) => {
+              logs.push(text);
+            },
+            loadChangeLogs: async () => [{ id: 'g1', at: new Date(2026, 10, 5, 9, 3), by: 'tanto@example.com', text: '新規登録（資格取得日 2024年4月1日）' }],
+            updateQualification: record('updateQualification'),
+            deleteQualification: record('deleteQualification'),
+            updateStandard: record('updateStandard'),
+            deleteStandard: record('deleteStandard'),
+            updateDependent: record('updateDependent'),
+            deleteDependent: record('deleteDependent'),
+            updateAssignment: record('updateAssignment'),
+            deleteAssignment: record('deleteAssignment'),
+            updateInsuredType: record('updateInsuredType'),
+            deleteInsuredType: record('deleteInsuredType'),
+            updatePayrollAssignment: record('updatePayrollAssignment'),
+            deletePayrollAssignment: record('deletePayrollAssignment'),
+            deleteLeave: record('deleteLeave'),
           },
         },
         {
@@ -114,7 +137,7 @@ describe('EmployeeDetail', () => {
         },
         {
           provide: MasterRepository,
-          useValue: { loadMasters: async () => masters, loadGrades: async () => buildKyokaiGrades('2020-09') },
+          useValue: { loadMasters: async () => masters, loadGrades: async () => buildKyokaiGrades('2020-09'), loadEligibilityRules: async () => [{ validFrom: '2016-10-01', fullTimeRatio: 750, weeklyHours: 20, companySize: null, contractMonths: 2, studentExcluded: true }] },
         },
       ],
     }).compileComponents();
@@ -510,5 +533,236 @@ describe('EmployeeDetail', () => {
     await submit();
     expect(calls[0][0]).toBe('addStandard');
     expect(calls[0][2]).toMatchObject({ validFrom: '2026-11', ownRemuneration: 200_000, totalRemuneration: 300_000, selectedInsurerId: sel.options[1].value });
+  });
+
+  // ---- 登録した情報の訂正・削除（設計書 3.1） ----
+  const rowButton = (tableSelector: string, rowText: string, label: string) => {
+    const row = [...el().querySelectorAll(`${tableSelector} tbody tr`)].find((r) => r.textContent?.includes(rowText))!;
+    return [...row.querySelectorAll('button')].find((b) => b.textContent?.trim() === label) as HTMLButtonElement;
+  };
+  async function answer(ok: boolean) {
+    await fixture.whenStable();
+    TestBed.inject(Confirm).answer(ok);
+    await fixture.whenStable();
+    fixture.detectChanges();
+  }
+
+  it('生年月日を直せる。今日より後の日と、資格取得日以降の日は入れない', async () => {
+    button('生年月日を直す').click();
+    fixture.detectChanges();
+    expect((el().querySelector('input[name=birthDateEdit]') as HTMLInputElement).value).toBe('1980-05-10');
+    input('input[name=birthDateEdit]', '2023-07-01');
+    await submit();
+    expect(el().textContent).toContain('生年月日は、資格取得日（入社日）より前の日にしてください');
+    input('input[name=birthDateEdit]', '1980-06-10');
+    await submit();
+    expect(calls).toEqual([['updateBirthDate', 'e1', '1980-06-10']]);
+    expect(el().textContent).toContain('生年月日を1980年5月10日から1980年6月10日に直しました');
+  });
+
+  it('退職を取り消すと加入中に戻り、退職と同じ日に扶養から外れた被扶養者も扶養に戻す', async () => {
+    detailOverride = {
+      qualifications: [{ id: 'q1', acquiredDate: '2024-04-01', lostDate: '2026-04-01', lostReason: 'retirement' }],
+      dependents: [{ id: 'd1', name: '山田 花子', birthDate: '1982-03-03', certifiedDate: '2024-04-01', removedDate: '2026-04-01' }],
+    };
+    await reload();
+    rowButton('table', '2024年4月1日', '直す').click();
+    fixture.detectChanges();
+    // 退職は、資格喪失日の前日（退職日）で出す
+    expect((el().querySelector('input[name=qualEnd]') as HTMLInputElement).value).toBe('2026-03-31');
+    const sel = el().querySelector('select[name=qualReason]') as HTMLSelectElement;
+    sel.value = '';
+    sel.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    await submit();
+    expect(calls).toEqual([['updateQualification', 'e1', 'q1', { acquiredDate: '2024-04-01', lostDate: null, lostReason: null }, [{ id: 'd1', removedDate: null }]]]);
+    expect(el().textContent).toContain('退職（資格喪失）を取り消し、加入中に戻しました');
+  });
+
+  it('資格の期間を直すとき、ほかの資格の期間と重なる日は入れない', async () => {
+    rowButton('table', '2024年4月1日', '直す').click();
+    fixture.detectChanges();
+    input('input[name=qualAcquired]', '2023-06-10');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('ほかの資格の期間（2023年6月5日〜2023年6月21日）と重なっています');
+  });
+
+  it('標準報酬月額の履歴を直せる（直している行の月は重なりとみなさない。ほかの行の月とは重ねない）', async () => {
+    rowButton('#card-standard table', '資格取得時決定', '直す').click();
+    fixture.detectChanges();
+    expect(el().textContent).toContain('標準報酬月額を直す');
+    const health = [...el().querySelectorAll('#card-standard form label')].find((l) => l.textContent?.includes('健康保険の標準報酬月額'))!.querySelector('input')!;
+    health.value = '320000';
+    health.dispatchEvent(new Event('input'));
+    await submit();
+    expect(calls[0].slice(0, 3)).toEqual(['updateStandard', 'e1', 's1']);
+    expect(calls[0][3]).toMatchObject({ validFrom: '2024-04', reason: 'acquisition', healthStandard: 320_000, pensionStandard: 300_000 });
+
+    calls = [];
+    rowButton('#card-standard table', '資格取得時決定', '直す').click();
+    fixture.detectChanges();
+    input('#card-standard form input[type=month]', '2027-03');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('この月からの標準報酬月額はすでに登録されています');
+  });
+
+  it('直す入力を開くと、選ぶ欄にも登録してある値が選ばれている（決定の理由・支払区分など）', async () => {
+    rowButton('#card-standard table', '随時改定', '直す').click();
+    fixture.detectChanges();
+    await fixture.whenStable();
+    const sel = el().querySelector('#card-standard form select') as HTMLSelectElement;
+    expect(sel.options[sel.selectedIndex].text).toBe('随時改定');
+  });
+
+  it('標準報酬月額の履歴は、確かめてから削除する。資格がある人の最後の1件は削除しない', async () => {
+    rowButton('#card-standard table', '随時改定', '削除').click();
+    await answer(true);
+    expect(calls).toEqual([['deleteStandard', 'e1', 's2']]);
+
+    detailOverride = { standardHistory: [yamada().standardHistory[0]] };
+    await reload();
+    calls = [];
+    rowButton('#card-standard table', '資格取得時決定', '削除').click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(calls).toEqual([]);
+    expect(TestBed.inject(Confirm).current()).toBeNull();
+    expect(el().textContent).toContain('資格がある人の標準報酬月額は、1件は残してください');
+  });
+
+  it('削除の確認で「やめる」を選んだら消さない', async () => {
+    rowButton('table.dependents', '山田 花子', '削除').click();
+    await answer(false);
+    expect(calls).toEqual([]);
+  });
+
+  it('被扶養者の氏名・生年月日を直せる。扶養から外れた日を空にすると扶養中に戻る', async () => {
+    rowButton('table.dependents', '山田 花子', '直す').click();
+    fixture.detectChanges();
+    input('input[name=dependentEditName]', '山田 華子');
+    input('input[name=dependentEditBirth]', '1982-03-04');
+    await submit();
+    expect(calls).toEqual([['updateDependent', 'e1', 'd1', { name: '山田 華子', birthDate: '1982-03-04', certifiedDate: '2024-04-01', removedDate: null }]]);
+  });
+
+  it('休業は種類・開始日も直せる。ほかの休業と期間が重なる直し方は入れない', async () => {
+    detailOverride = {
+      leaves: [
+        { id: 'l1', type: 'maternity', startDate: '2022-01-01', endDate: '2022-03-31', workedDays: null },
+        { id: 'l2', type: 'childcare', startDate: '2022-04-01', endDate: '2022-09-30', workedDays: null },
+      ],
+    };
+    await reload();
+    rowButton('#card-leave table', '育児休業', '直す').click();
+    fixture.detectChanges();
+    input('input[name=leaveStart]', '2022-03-15');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('ほかの休業（産前産後休業 2022年1月1日〜2022年3月31日）と期間が重なっています');
+    input('input[name=leaveStart]', '2022-04-02');
+    await submit();
+    expect(calls).toEqual([['updateLeave', 'e1', 'l2', { type: 'childcare', startDate: '2022-04-02', endDate: '2022-09-30', workedDays: null }]]);
+  });
+
+  it('所属の履歴は全担当だけが直せる。1件だけの所属は削除しない', async () => {
+    rowButton('#card-qual table:last-of-type', '本社', '削除').click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('所属が1件だけのときは削除できません');
+
+    detailOverride = { assignments: [{ id: 'a1', validFrom: '2020-04-01', officeId: 'honsha' }, { id: 'a2', validFrom: '2025-04-01', officeId: 'osaka' }] };
+    await reload();
+    rowButton('#card-qual table:last-of-type', '大阪支店', '削除').click();
+    await answer(true);
+    expect(calls).toEqual([['deleteAssignment', 'e1', 'a2', ['honsha']]]);
+  });
+
+  it('支払区分・被保険者区分の履歴を直せる（ほかの行と同じ日にはしない）', async () => {
+    detailOverride = { payrollAssignments: [{ id: 'p1', validFrom: '2025-04-01', payrollGroupId: 'part' }] };
+    await reload();
+    rowButton('table.payroll-assignments', 'パート', '直す').click();
+    fixture.detectChanges();
+    input('input[name=payrollEditDate]', '2025-05-01');
+    await submit();
+    expect(calls).toEqual([['updatePayrollAssignment', 'e1', 'p1', { validFrom: '2025-05-01', payrollGroupId: 'part' }]]);
+
+    calls = [];
+    rowButton('table.insured-types', '2024年4月1日', '削除').click();
+    await answer(true);
+    expect(calls).toEqual([['deleteInsuredType', 'e1', 't1']]);
+  });
+
+  it('休職・適用除外も直す・削除ができる（適用除外は種類・該当年月日も直せる）', async () => {
+    detailOverride = { exemptions: [{ id: 'x1', type: 'care', startDate: '2025-04-01', endDate: null }] };
+    await reload();
+    rowButton('table.exemptions', '2025年4月1日', '直す').click();
+    fixture.detectChanges();
+    input('input[name=exemptionEditStart]', '2025-05-01');
+    await submit();
+    expect(calls).toEqual([['updateExemption', 'e1', 'x1', { type: 'care', startDate: '2025-05-01', endDate: '' }]]);
+
+    calls = [];
+    rowButton('table.absences', '2023年1月10日', '削除').click();
+    await answer(true);
+    expect(calls).toEqual([['deleteAbsence', 'e1', 'ab1']]);
+  });
+
+  it('契約が変わったら加入対象の判定を入れ直せる。候補が今の状態と違えば、次に登録することを知らせる', async () => {
+    button('契約の変更を登録').click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    const sel = el().querySelector('select[name=eligEmploymentType]') as HTMLSelectElement;
+    sel.value = 'partTime';
+    sel.dispatchEvent(new Event('change'));
+    input('input[name=eligibilityDate]', '2026-10-01');
+    input('input[name=eligWeeklyHours]', '15');
+    input('input[name=eligMonthlyDays]', '12');
+    fixture.detectChanges();
+    expect(el().textContent).toContain('候補：加入しない');
+    await submit();
+    expect(calls[0][0]).toBe('updateEligibility');
+    expect(calls[0][2]).toMatchObject({ employmentType: 'partTime', weeklyHours: 15, monthlyDays: 12, candidate: 'none', changedDate: '2026-10-01' });
+    expect(el().textContent).toContain('「退職以外の資格喪失」（理由：加入の条件から外れた）を登録してください');
+  });
+
+  it('変更の記録：誰が・いつ・何をしたかを出し、直したときは直す前の値も残す', async () => {
+    const log = el().querySelector('table.change-logs tbody tr')!.textContent!;
+    expect(log).toContain('2026年11月5日 09:03');
+    expect(log).toContain('tanto@example.com');
+    expect(log).toContain('新規登録（資格取得日 2024年4月1日）');
+
+    rowButton('#card-standard table', '資格取得時決定', '直す').click();
+    fixture.detectChanges();
+    const health = [...el().querySelectorAll('#card-standard form label')].find((l) => l.textContent?.includes('健康保険の標準報酬月額'))!.querySelector('input')!;
+    health.value = '320000';
+    health.dispatchEvent(new Event('input'));
+    await submit();
+    expect(logs[0]).toContain('標準報酬月額を直しました');
+    expect(logs[0]).toContain('（直す前：2024年4月からの標準報酬月額（健保 30万円／厚年 30万円））');
+
+    rowButton('table.dependents', '山田 花子', '削除').click();
+    await answer(true);
+    expect(logs[1]).toBe('被扶養者の山田 花子さん（生年月日 1982年3月3日・扶養に入った日 2024年4月1日）を削除');
+  });
+
+  it('被扶養者は「保存して続けて追加」で、保存したあとも入力を開いたままにできる', async () => {
+    button('被扶養者を追加').click();
+    fixture.detectChanges();
+    input('input[name=dependentName]', '山田 一郎');
+    input('input[name=dependentBirth]', '2015-05-05');
+    input('input[name=dependentCertified]', '2024-04-01');
+    fixture.detectChanges();
+    const again = button('保存して続けて追加');
+    // 押すと、続けて追加する印を付けてからフォームを送信する
+    again.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(calls[0][0]).toBe('addDependent');
+    expect(el().querySelector('input[name=dependentName]')).not.toBeNull();
+    expect((el().querySelector('input[name=dependentName]') as HTMLInputElement).value).toBe('');
+    expect(el().textContent).toContain('続けて次の人を入れてください');
   });
 });

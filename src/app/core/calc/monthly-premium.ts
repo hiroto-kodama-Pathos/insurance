@@ -161,3 +161,14 @@ export function calcMonthlyPremium(input: MonthlyPremiumInput): MonthlyPremium {
 
   return result;
 }
+
+/**
+ * 介護保険の欄に出す、かからない理由（月次の一覧・賞与の一覧で同じ表示にする）
+ * 介護保険料がかかる人・計算していない人は空
+ */
+export function careNote(p: Pick<MonthlyPremium, 'care' | 'careLabel'> | null | undefined): string {
+  if (!p || p.care) return '';
+  if (p.careLabel === 'first') return '第1号（65歳以上）';
+  if (p.careLabel === 'none') return '対象外（40歳未満）';
+  return '';
+}

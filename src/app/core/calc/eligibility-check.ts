@@ -65,7 +65,12 @@ export const EMPTY_ELIGIBILITY: EligibilityInput = {
 export type EligibilityCandidate = 'general' | 'shortTime' | 'none';
 
 /** 保存する判定（入力と、示した候補・理由） */
-export type StoredEligibility = EligibilityInput & { candidate: EligibilityCandidate; reasons: string[] };
+export type StoredEligibility = EligibilityInput & {
+  candidate: EligibilityCandidate;
+  reasons: string[];
+  /** 契約が変わって判定し直した日（入社時の判定のままなら無い） */
+  changedDate?: string | null;
+};
 
 export const CANDIDATE_LABEL: Record<EligibilityCandidate, string> = {
   general: '一般の被保険者',

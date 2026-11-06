@@ -15,7 +15,7 @@ import {
 } from './master-import';
 import { parseCsv } from './csv';
 
-const offices = [{ id: 'honsha', name: '本社' }, { id: 'osaka', name: '大阪支店' }];
+const offices = [ { id: 'honsha', name: '本社' }, { id: 'osaka', name: '大阪支店' }];
 
 describe('CSV取り込みのテンプレートと対応づけ', () => {
   it('テンプレートの見出しなら、対応づけなしで取り込める', () => {

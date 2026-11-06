@@ -1,4 +1,7 @@
 // 従業員一覧と新規登録（設計書 3.1）
+import { saveTableCsv } from '../../../core/ui/table-csv';
+import { PageState } from '../../../core/ui/page-state';
+import { focusFormSoon } from '../../../core/ui/form-focus';
 import { NoticeMessage } from '../../../core/ui/notice-message';
 import { SalaryRepository } from '../../../core/repository/salary-repository';
 import { addMonths, SalaryRecord } from '../../../core/calc/salary';
@@ -15,14 +18,16 @@ import { defaultGroup, groupLabel, legacyGroup, PayrollGroup } from '../../../co
 import { DEFAULT_SETTINGS } from '../../../core/calc/settings';
 import { SettingsRepository } from '../../../core/repository/settings-repository';
 import { INSURED_TYPE_LABEL, InsuredType } from '../../../core/calc/insured-type';
-import { Component, computed, HostListener, inject, OnInit, signal } from '@angular/core';
+import { Component, computed, HostListener, inject, OnInit, signal, ElementRef } from '@angular/core';
 import { FormSnapshot, HasUnsavedChanges } from '../../../core/ui/unsaved-guard';
 import { RouterLink } from '@angular/router';
 import { monthOf } from '../../../core/calc/date';
 import { isInsuredInMonth } from '../../../core/calc/eligibility';
 import { findEffective } from '../../../core/calc/employee-month';
-import { GradeRow, GradeSuggestion, suggestStandards } from '../../../core/calc/grade-suggest';
-import { childLaborNotice, hoursOptional, isValidDate, NewEmployeeErrors, NewEmployeeInput, similarRemuneration, validateNewEmployee } from '../../../core/calc/new-employee';
+import { GradeRow, GradeSuggestion, gradeTableAt, suggestStandards } from '../../../core/calc/grade-suggest';
+import { addDays, FILING_LOOKBACK_DAYS } from '../../../core/calc/filing';
+import { Confirm } from '../../../core/ui/confirm';
+import { canOnboard, childLaborNotice, defaultOnboardingFrom, hoursOptional, isValidDate, NewEmployeeErrors, NewEmployeeInput, similarRemuneration, validateNewEmployee } from '../../../core/calc/new-employee';
 import { defaultOfficeId, findOffice, Office } from '../../../core/calc/office';
 import { Auth } from '../../../core/auth/auth';
 import { scopedOffice } from '../../../core/repository/scope';
@@ -67,6 +72,12 @@ const toYen = (value: string): number | null => parseNumberInput(value);
   templateUrl: './employee-list.html',
 })
 export class EmployeeList implements OnInit, HasUnsavedChanges {
+  private readonly host = inject(ElementRef<HTMLElement>).nativeElement as HTMLElement;
+  /** 表示している一覧（絞り込み・並び替えのあと）を、画面と同じ列でCSVに保存する（core/ui/table-csv.ts） */
+  protected saveCsv(selector: string, fileName: string): void {
+    saveTableCsv(this.host, selector, fileName);
+  }
+
   private readonly employeeRepo = inject(EmployeeRepository);
   private readonly masterRepo = inject(MasterRepository);
   private readonly salaryRepo = inject(SalaryRepository);
@@ -107,7 +118,7 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
     const avg = this.similar().average;
     if (avg === null) return;
     this.form.update((f) => ({ ...f, breakdown: { basic: avg, allowances: null, commuting: null, overtime: null } }));
-    this.suggestion.set(null);
+    this.autoSuggest();
   }
 
   /** 今日、休職中か（設計書 2.26） */
@@ -120,6 +131,7 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
   protected readonly employees = signal<EmployeeRecord[]>([]);
   protected readonly offices = signal<Office[]>([]);
   private readonly auth = inject(Auth);
+  protected readonly isAdmin = computed(() => this.auth.user()?.siRole === 'admin');
   /**
    * 新規登録で選べる適用事業所。特定の事業所の担当者は、自分の担当事業所だけ
    * （セキュリティルールでも、担当者はほかの事業所の人を登録できない。選べてしまうと、登録を押したときに断られる）
@@ -192,6 +204,14 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
   protected readonly statusFilter = signal<'all' | EmployeeRow['status']>('all');
   protected readonly query = signal('');
   protected readonly officeFilter = signal('');
+
+  /** 一覧の絞り込み・対象月を覚え、詳細から戻ってきたときに元に戻す（core/ui/page-state.ts） */
+  private readonly pageStateKept = ((pageState: PageState) => {
+    pageState.keep('employees.statusFilter', this.statusFilter);
+    pageState.keep('employees.query', this.query);
+    pageState.keep('employees.officeFilter', this.officeFilter);
+    return true;
+  })(inject(PageState));
   protected readonly statusTabs: ('all' | EmployeeRow['status'])[] = ['all', '在籍中', '退職済み', '未加入'];
 
   /** 絞り込んだ一覧 */
@@ -263,7 +283,35 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
       healthStandard: null,
       pensionStandard: null,
       dependents: [],
+      onboarding: null,
     };
+  }
+
+  // ---- 導入時の登録（以前から在籍している人。設計書 3.1） ----
+  private readonly confirm = inject(Confirm);
+  /** 導入時の登録を選べるか（資格取得月が今月より前） */
+  protected readonly onboardingAvailable = computed(() => this.form().insured && canOnboard(this.form().acquiredDate, today()));
+  /** 資格取得月に使える等級表がない（入社時の額を提案できないので、導入時の登録にする） */
+  protected readonly noGradeTableAtAcquisition = computed(() => {
+    const d = this.form().acquiredDate;
+    return isValidDate(d) && this.grades().length > 0 && gradeTableAt(this.grades(), monthOf(d)).length === 0;
+  });
+  protected setOnboarding(on: boolean): void {
+    this.form.update((f) => ({ ...f, onboarding: on ? { validFrom: defaultOnboardingFrom(f.acquiredDate, today()) } : null }));
+    this.suggestion.set(null);
+    this.suggestMessage.set(null);
+  }
+  protected setOnboardingFrom(v: string): void {
+    this.form.update((f) => ({ ...f, onboarding: { validFrom: v } }));
+  }
+  /**
+   * 資格取得日を変えたら、導入時の登録を合わせる：今月の入社なら外し、
+   * 資格取得月に等級表がない（入社時の額を決められない）なら導入時の登録にする
+   */
+  private syncOnboarding(): void {
+    const f = this.form();
+    if (f.onboarding && !canOnboard(f.acquiredDate, today())) this.form.update((x) => ({ ...x, onboarding: null }));
+    else if (!f.onboarding && canOnboard(f.acquiredDate, today()) && this.noGradeTableAtAcquisition()) this.setOnboarding(true);
   }
 
   // ---- 被扶養者（入社時にまとめて登録する。設計書 3.1） ----
@@ -311,7 +359,12 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
     }
   }
 
+  /** 登録したばかりの人（知らせの下に、詳細を開くリンクを出す。被扶養者・休業などの続きを入れやすいように） */
+  protected readonly created = signal<{ id: string; name: string } | null>(null);
+
   protected openForm(): void {
+    this.created.set(null);
+    focusFormSoon('app-employee-list');
     this.form.set(this.emptyForm());
     this.snapshot.take();
     this.errors.set({});
@@ -357,6 +410,7 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
 
   protected setText(key: TextKey, value: string): void {
     this.form.update((f) => ({ ...f, [key]: value }));
+    if (key === 'acquiredDate') this.syncOnboarding();
   }
 
   protected setInsured(insured: boolean): void {
@@ -371,6 +425,24 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
   /** 報酬月額の内訳を入れる（合計は remuneration で表示） */
   protected setBreakdown(key: BreakdownKey, value: string): void {
     this.form.update((f) => ({ ...f, breakdown: { ...f.breakdown, [key]: toYen(value) } }));
+    this.autoSuggest();
+  }
+
+  /**
+   * 内訳を入れたら、標準報酬月額を自動で入れる（「提案を入力」の押し忘れで空のまま登録しようとしないように）
+   * 標準報酬月額が空のときと、前に自動で入れた値のままのときだけ。担当者が自分で入れた値は書き換えない
+   */
+  private autoSuggest(): void {
+    const f = this.form();
+    const untouched = (f.healthStandard === null && f.pensionStandard === null) || this.suggestion() !== null;
+    const remuneration = breakdownTotal(f.breakdown);
+    if (!untouched || remuneration === null || !(remuneration > 0)) return;
+    const ym = isValidDate(f.acquiredDate) ? monthOf(f.acquiredDate) : monthOf(today());
+    const s = suggestStandards(remuneration, this.grades(), ym, isValidDate(f.birthDate) ? f.birthDate : '');
+    if (!s) return;
+    this.form.update((x) => ({ ...x, healthStandard: s.healthStandard, pensionStandard: s.pensionStandard }));
+    this.suggestion.set(s);
+    this.suggestMessage.set(null);
   }
 
   /** 内訳の合計（報酬月額） */
@@ -393,6 +465,18 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
     }
     this.form.update((x) => ({ ...x, healthStandard: s.healthStandard, pensionStandard: s.pensionStandard }));
     this.suggestion.set(s);
+  }
+
+  /** 導入時の登録のあとの知らせ（計算する月、届出、続けて登録するもの） */
+  private onboardingNotice(input: NewEmployeeInput): string {
+    const from = input.onboarding!.validFrom;
+    const deps = (input.dependents ?? []).length;
+    return (
+      `導入時の登録として、標準報酬月額を${yearMonthLabel(from)}分から登録しました（それより前の月は計算しません）。` +
+      `資格取得届${deps ? '・被扶養者異動届' : ''}は導入前に届出済みとして「対応不要」にしました。` +
+      '休業中の人・70歳以上の人・二以上事業所勤務の人などは、詳細画面で休業・被保険者区分などを登録してください。' +
+      '随時改定を見落とさないよう直近3か月分の給与を、賞与の上限を正しく数えるよう今年度に支給した賞与を、CSV取り込みで入れてください。'
+    );
   }
 
   /** 加入する人の、控除する給与の月と資格取得届の期限（設計書 1章 入社時） */
@@ -423,15 +507,29 @@ export class EmployeeList implements OnInit, HasUnsavedChanges {
       input,
       this.employees().map((e) => e.employeeNumber),
       today(),
+      this.grades(),
     );
     this.errors.set(errors);
     this.formError.set(null);
     if (Object.keys(errors).length > 0) return;
+    // 導入時の登録は資格取得届を「対応不要」にするので、最近の入社なら本当に以前から在籍しているかを確かめる
+    if (input.insured && input.onboarding && input.acquiredDate >= addDays(today(), -FILING_LOOKBACK_DAYS)) {
+      const ok = await this.confirm.ask({
+        title: '導入時の登録で登録しますか',
+        message:
+          `資格取得日（${dateLabel(input.acquiredDate)}）が最近です。導入時の登録では、資格取得届${(input.dependents ?? []).length ? '・被扶養者異動届' : ''}を届出済みとみなして「対応不要」にし、` +
+          '入社時の報酬月額から標準報酬月額を決める手順を省きます。このアプリを使い始める前に入社し、届出も済んでいる人だけにしてください。' +
+          '最近入社して、まだ届け出ていない人は「やめる」を押し、導入時の登録を外して登録してください。',
+        ok: '導入時の登録で登録する',
+      });
+      if (!ok) return;
+    }
 
     this.saving.set(true);
     try {
-      await this.employeeRepo.create(input, today());
-      this.notice.set(`${input.name.trim()}さんを登録しました。${this.enrollmentNotice(input)}`);
+      const id = await this.employeeRepo.create(input, today());
+      this.notice.set(`${input.name.trim()}さんを登録しました。${input.insured && input.onboarding ? this.onboardingNotice(input) : this.enrollmentNotice(input)}`);
+      this.created.set({ id, name: input.name.trim() });
       this.showForm.set(false);
       await this.reload();
     } catch (e) {

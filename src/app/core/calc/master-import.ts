@@ -6,7 +6,7 @@ import { parseDateLoose, parseNumberLoose } from './csv';
 import { checkDependent, Dependent } from './dependent';
 import { parseStandardLoose, parseYearMonthLoose } from './decision-import';
 import { Qualification } from './eligibility';
-import { GradeRow } from './grade-suggest';
+import { GradeRow, gradeTableAt } from './grade-suggest';
 import { INSURED_TYPE_LABEL, InsuredType } from './insured-type';
 import { isValidDate } from './new-employee';
 import { Assignment } from './office';
@@ -334,10 +334,7 @@ export type StandardImportEmployee = {
 };
 
 /** その月に使う等級表（適用開始がその月以前で最も新しいもの） */
-function gradesAt(grades: GradeRow[], ym: string): GradeRow[] {
-  const from = [...new Set(grades.map((g) => g.validFrom))].filter((v) => v <= ym).sort().at(-1);
-  return grades.filter((g) => g.validFrom === from);
-}
+const gradesAt = gradeTableAt;
 
 /** 健康保険の標準報酬月額を、厚生年金の等級の範囲に収める（厚生年金の欄が空のとき） */
 export function pensionFromHealth(health: number, table: GradeRow[]): number {

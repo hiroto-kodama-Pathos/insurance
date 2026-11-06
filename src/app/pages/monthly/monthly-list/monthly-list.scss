@@ -3,7 +3,10 @@
 .warn { background: #fff4e5; }
 .closing { margin: 8px 0 16px; }
 .closing h3 { margin: 4px 0; }
-.blockers { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
+/* 確定できない理由の表（長いときは枠の中でスクロールする） */
+.office-card .table-wrap:has(> .list.blockers) { max-height: 320px; margin: 4px 0 8px; }
+.blocker-count, .blocker-note { margin: 4px 0; font-size: 13px; }
+.blocker-count { color: var(--c-muted); }
 .closed td { background: #f7f9fc; }
 .deduction { font-size: 12px; }
 .badge.shortage { background: #ffc9c9; font-weight: bold; }

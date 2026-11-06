@@ -2,7 +2,7 @@
 // 協会けんぽの保険者・料率、厚生年金の料率、等級表はシステム共通マスタのため、ここからは書き込まない（ルールでも拒否する）
 import { ColumnMapping, IMPORT_FIELDS, ImportKind } from '../calc/master-import';
 import { Service } from '@angular/core';
-import { addDoc, doc, getDoc, getDocs, serverTimestamp, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { addDoc, deleteDoc, doc, getDoc, getDocs, limit, query, serverTimestamp, setDoc, updateDoc, where, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { siCol, siDoc } from '../firestore-paths';
 import { Office } from '../calc/office';
@@ -31,6 +31,7 @@ export class SettingsRepository {
       retentionYears: d['retentionYears'] ?? DEFAULT_SETTINGS.retentionYears,
       fullTimeWeeklyHours: d['fullTimeWeeklyHours'] ?? DEFAULT_SETTINGS.fullTimeWeeklyHours,
       fullTimeMonthlyDays: d['fullTimeMonthlyDays'] ?? DEFAULT_SETTINGS.fullTimeMonthlyDays,
+      startDate: d['startDate'] ?? null,
     };
   }
 
@@ -44,6 +45,7 @@ export class SettingsRepository {
         payrollCutoff: s.payrollCutoff,
         fullTimeWeeklyHours: s.fullTimeWeeklyHours,
         fullTimeMonthlyDays: s.fullTimeMonthlyDays,
+        startDate: s.startDate ?? null,
         updatedAt: serverTimestamp(),
       },
       { merge: true },
@@ -115,7 +117,41 @@ export class SettingsRepository {
       .sort((a, b) => a.name.localeCompare(b.name));
   }
 
-  /** 賞与の種類の追加・変更（管理者だけ。賞与が参照するので削除はさせない） */
+  /** その種類の賞与が1件でも登録されているか（削除の前に確かめる。設計書 3.10） */
+  async isBonusTypeUsed(id: string): Promise<boolean> {
+    const snap = await getDocs(query(siCol('bonuses'), where('bonusTypeId', '==', id), limit(1)));
+    return !snap.empty;
+  }
+
+  /** 賞与の種類の削除（管理者だけ。使用中でないことを画面で確かめてから呼ぶ） */
+  async deleteBonusType(id: string): Promise<void> {
+    await deleteDoc(siDoc('bonusTypes', id));
+  }
+
+  /** 給与の支払区分の削除（管理者だけ。使用中・初期値でないことを画面で確かめてから呼ぶ） */
+  async deletePayrollGroup(id: string): Promise<void> {
+    await deleteDoc(siDoc('payrollGroups', id));
+  }
+
+  /** 組合健保の料率の削除（管理者だけ。誤って追加した行。消した月は、ほかに有効な料率がなければ「未登録」になる） */
+  async deleteRate(id: string): Promise<void> {
+    await deleteDoc(siDoc('insurerRates', id));
+  }
+
+  /** 健康保険組合の削除（管理者だけ。使用中でないことを画面で確かめてから呼ぶ）。その組合の料率もまとめて消す */
+  async deleteKumiai(id: string, rateIds: string[]): Promise<void> {
+    const batch = writeBatch(db);
+    for (const r of rateIds) batch.delete(siDoc('insurerRates', r));
+    batch.delete(siDoc('insurers', id));
+    await batch.commit();
+  }
+
+  /** 適用事業所の削除（管理者だけ。使用中・初期値でないことを画面で確かめてから呼ぶ） */
+  async deleteOffice(id: string): Promise<void> {
+    await deleteDoc(siDoc('offices', id));
+  }
+
+  /** 賞与の種類の追加・変更（管理者だけ） */
   async saveBonusType(id: string | null, input: BonusTypeInput): Promise<void> {
     const data = { name: input.name.trim(), isRemuneration: input.isRemuneration, validFrom: input.validFrom };
     if (id) await setDoc(siDoc('bonusTypes', id), data);
@@ -207,6 +243,18 @@ export class SettingsRepository {
     const data = { type: 'kumiai', name: input.name.trim(), specialInsuredEnabled: input.specialInsuredEnabled };
     if (id) await setDoc(siDoc('insurers', id), data);
     else await addDoc(siCol('insurers'), data);
+  }
+
+  /**
+   * 健康保険組合を、料率と一緒に追加する（1つの書き込みにまとめ、組合だけができて料率がない状態を作らない）
+   * @param rates 登録する料率（insurerId は、ここで作る組合のID を入れる）
+   */
+  async addKumiaiWithRates(input: KumiaiInput, rates: Omit<InsurerRate, 'insurerId'>[]): Promise<void> {
+    const batch = writeBatch(db);
+    const insurer = siDocNew('insurers');
+    batch.set(insurer, { type: 'kumiai', name: input.name.trim(), specialInsuredEnabled: input.specialInsuredEnabled });
+    for (const r of rates) batch.set(siDocNew('insurerRates'), { ...r, insurerId: insurer.id });
+    await batch.commit();
   }
 
   /** 組合健保の料率の追加・変更 */

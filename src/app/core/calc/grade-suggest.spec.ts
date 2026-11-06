@@ -1,4 +1,4 @@
-import { buildKyokaiGrades, suggestStandards } from './grade-suggest';
+import { buildKyokaiGrades, gradeTableAt, standardGradeError, suggestStandards } from './grade-suggest';
 
 const grades = buildKyokaiGrades('2020-09');
 
@@ -49,5 +49,31 @@ describe('報酬月額からの標準報酬月額の提案', () => {
     );
     expect(suggestStandards(300_000, [...grades, ...newer], '2027-08', '1990-01-01')?.healthStandard).toBe(300_000);
     expect(suggestStandards(300_000, [...grades, ...newer], '2027-09', '1990-01-01')?.healthStandard).toBe(999_000);
+  });
+});
+
+describe('標準報酬月額が等級の額かのチェック', () => {
+  it('健康保険：等級表にない額（299,000円など）は、近い等級を添えてエラー', () => {
+    const e = standardGradeError(grades, '2026-10', 'health', 299_000);
+    expect(e).toContain('299,000円は健康保険の等級の額ではありません');
+    expect(e).toContain('28万円（21等級）・30万円（22等級）');
+    expect(standardGradeError(grades, '2026-10', 'health', 300_000)).toBeNull();
+    // 健康保険の上限・下限（139万円・5.8万円）は等級の額
+    expect(standardGradeError(grades, '2026-10', 'health', 1_390_000)).toBeNull();
+    expect(standardGradeError(grades, '2026-10', 'health', 58_000)).toBeNull();
+    expect(standardGradeError(grades, '2026-10', 'health', 1_400_000)).toContain('139万円（50等級）');
+  });
+
+  it('厚生年金：等級の範囲（8.8万円〜65万円）の外の額はエラー', () => {
+    expect(standardGradeError(grades, '2026-10', 'pension', 650_000)).toBeNull();
+    expect(standardGradeError(grades, '2026-10', 'pension', 88_000)).toBeNull();
+    expect(standardGradeError(grades, '2026-10', 'pension', 1_390_000)).toContain('厚生年金');
+    expect(standardGradeError(grades, '2026-10', 'pension', 58_000)).toContain('8.8万円（1等級）');
+  });
+
+  it('その月の等級表がなければ確かめない。適用開始月で表を選ぶ', () => {
+    expect(standardGradeError([], '2026-10', 'health', 299_000)).toBeNull();
+    expect(standardGradeError(grades, '2019-10', 'health', 299_000)).toBeNull();
+    expect(gradeTableAt(grades, '2026-10').length).toBe(50);
   });
 });

@@ -8,6 +8,7 @@ import { DEFAULT_SETTINGS } from '../../core/calc/settings';
 import { BonusRepository } from '../../core/repository/bonus-repository';
 import { EmployeeRecord, EmployeeRepository } from '../../core/repository/employee-repository';
 import { FilingRepository } from '../../core/repository/filing-repository';
+import { Confirm } from '../../core/ui/confirm';
 import { MasterRepository } from '../../core/repository/master-repository';
 import { RevisionRepository } from '../../core/repository/revision-repository';
 import { SalaryRepository } from '../../core/repository/salary-repository';
@@ -25,13 +26,18 @@ const person = (id: string, no: string, name: string, acquired: string, office: 
 describe('FilingList', () => {
   let fixture: ComponentFixture<FilingList>;
   let filed: Set<string>;
+  let notNeeded: Set<string>;
   let scope: string;
+  let confirmAnswer: boolean;
+  let batches: string[][];
+  let startDate: string | null;
 
   async function setup() {
     await TestBed.configureTestingModule({
       imports: [FilingList],
       providers: [
         provideRouter([]),
+        { provide: Confirm, useValue: { ask: async () => confirmAnswer } },
         { provide: Auth, useValue: { user: signal({ uid: 'u1', email: 'staff@example.com', siRole: 'staff', siScope: scope }), isAdmin: signal(false) } },
         {
           provide: EmployeeRepository,
@@ -48,13 +54,19 @@ describe('FilingList', () => {
         { provide: BonusRepository, useValue: { loadRange: async () => [] } },
         { provide: SalaryRepository, useValue: { loadRange: async () => [] } },
         { provide: RevisionRepository, useValue: { loadStatuses: async () => [] } },
-        { provide: SettingsRepository, useValue: { loadPayrollGroups: async () => [legacyGroup(DEFAULT_SETTINGS)] } },
+        { provide: SettingsRepository, useValue: { loadPayrollGroups: async () => [legacyGroup(DEFAULT_SETTINGS)], loadSettings: async () => ({ ...DEFAULT_SETTINGS, startDate }) } },
         {
           provide: FilingRepository,
           useValue: {
             loadFiledIds: async () => filed,
+            loadResolutions: async () => new Map([...filed].map((id) => [id, notNeeded.has(id) ? 'notNeeded' : 'filed'])),
             setFiled: async (f: { id: string }) => { filed.add(f.id); },
-            unsetFiled: async (id: string) => { filed.delete(id); },
+            setNotNeeded: async (f: { id: string }) => { filed.add(f.id); notNeeded.add(f.id); },
+            unsetFiled: async (id: string) => { filed.delete(id); notNeeded.delete(id); },
+            setFiledMany: async (list: { id: string }[]) => {
+              batches.push(list.map((f) => f.id));
+              list.forEach((f) => filed.add(f.id));
+            },
           },
         },
       ],
@@ -67,13 +79,28 @@ describe('FilingList', () => {
 
   beforeEach(() => {
     filed = new Set();
+    notNeeded = new Set();
     scope = 'all';
+    confirmAnswer = true;
+    batches = [];
+    startDate = null;
   });
 
   const el = () => fixture.nativeElement as HTMLElement;
   // 届出の行だけ（期限の月の見出しの行は除く）
   const rows = () => [...el().querySelectorAll('table.filings tbody tr:not(.month-head)')] as HTMLElement[];
   const heads = () => [...el().querySelectorAll('table.filings tr.month-head')].map((h) => h.textContent!.trim());
+
+  it('利用開始日より前に期限が来た届出は、導入前に届け出たものとして出さない。未設定なら設定を案内する', async () => {
+    await setup();
+    expect(el().querySelector('.start-date')?.textContent).toContain('「利用開始日」');
+    TestBed.resetTestingModule();
+    startDate = '2026-10-10';
+    await setup();
+    // 山田さんの資格取得届（期限 10月6日）は導入前なので出さない。高橋さん（期限 11月1日）は出す
+    expect(rows().map((r) => r.textContent?.includes('高橋 美咲'))).toEqual([true]);
+    expect(el().querySelector('.start-date')?.textContent).toContain('利用開始日（2026年10月10日）より前に期限が来た届出は');
+  });
 
   it('資格取得届を期限つきで並べ、期限切れ・3日以内を強調する', async () => {
     await setup();
@@ -145,6 +172,62 @@ describe('FilingList', () => {
     (rows()[0].querySelector('button') as HTMLButtonElement).click();
     await fixture.whenStable();
     expect(filed.size).toBe(0);
+  });
+
+  it('届け出なくてよいものは「対応不要」にでき、届出済みのタブに「対応不要」と出る。未対応に戻せる', async () => {
+    await setup();
+    const btn = [...rows()[0].querySelectorAll('button')].find((b) => b.textContent?.trim() === '対応不要') as HTMLButtonElement;
+    btn.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(notNeeded.has('e1_acquisition_2026-10-01')).toBe(true);
+    expect(rows()).toHaveLength(1);
+    const tab = (text: string) => [...el().querySelectorAll('button.tab')].find((b) => b.textContent!.includes(text)) as HTMLButtonElement;
+    tab('届出済み・対応不要').click();
+    fixture.detectChanges();
+    expect(rows()[0].textContent).toContain('対応不要');
+    (rows()[0].querySelector('button') as HTMLButtonElement).click();
+    await fixture.whenStable();
+    expect(filed.size).toBe(0);
+    expect(notNeeded.size).toBe(0);
+  });
+
+  it('届出をチェックで選び、まとめて届出済みにする（見出しのチェックで表示中をすべて選ぶ。絞り込みで見えないものは対象にしない）', async () => {
+    await setup();
+    const bulk = () => el().querySelector('.bulk button') as HTMLButtonElement;
+    const pick = (i: number) => rows()[i].querySelector('input.pick') as HTMLInputElement;
+    const click = async (x: HTMLElement) => {
+      x.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+    };
+    expect(bulk().textContent!.trim()).toBe('選択した0件を届出済みにする');
+    expect(bulk().disabled).toBe(true);
+    await click(pick(0));
+    expect(bulk().textContent!.trim()).toBe('選択した1件を届出済みにする');
+    expect(rows()[0].classList.contains('picked')).toBe(true);
+    // 見出しのチェック：表示している2件をすべて選ぶ
+    await click(el().querySelector('thead input.pick') as HTMLInputElement);
+    expect(bulk().textContent!.trim()).toBe('選択した2件を届出済みにする');
+    // 事業所で絞ると、見えている1件だけが対象
+    const office = el().querySelector('select[name=office]') as HTMLSelectElement;
+    office.value = 'honsha';
+    office.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    expect(bulk().textContent!.trim()).toBe('選択した1件を届出済みにする');
+    office.value = '';
+    office.dispatchEvent(new Event('change'));
+    fixture.detectChanges();
+    // 確認で「やめる」なら何もしない
+    confirmAnswer = false;
+    await click(bulk());
+    expect(batches).toEqual([]);
+    confirmAnswer = true;
+    await click(bulk());
+    expect(batches).toEqual([['e1_acquisition_2026-10-01', 'e2_acquisition_2026-10-27']]);
+    expect(rows().map((r) => r.textContent!.trim())).toEqual(['未対応の届出はありません。']);
+    expect(el().querySelector('app-notice .text')!.textContent).toBe('2件を届出済みにしました。');
+    expect(el().querySelector('.bulk')).toBeNull();
   });
 
   it('特定の事業所の担当者には、その事業所の分だけを出す。適用事業所の選択肢も担当事業所だけ（随時改定と同じ）', async () => {

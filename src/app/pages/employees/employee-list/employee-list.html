@@ -8,7 +8,10 @@
   </header>
 
   @if (notice()) {
-    <app-notice [message]="notice()!" (closed)="notice.set(null)" />
+    <app-notice [message]="notice()!" (closed)="notice.set(null); created.set(null)" />
+  }
+  @if (created(); as c) {
+    <p class="created-link"><a [routerLink]="['/employees', c.id]">{{ c.name }}さんの詳細を開く</a>（被扶養者・休業・標準報酬月額の続きを入れるとき）</p>
   }
 
   @if (showForm()) {
@@ -41,6 +44,11 @@
             <option [value]="o.id" [selected]="form().officeId === o.id">{{ o.name }}</option>
           }
         </select>
+        @if (newOffices().length === 0) {
+          <span class="err no-office">
+            適用事業所が登録されていません。@if (isAdmin()) {先に<a routerLink="/settings">設定</a>の「適用事業所」で登録してください。} @else {管理者に登録を依頼してください。}
+          </span>
+        }
         <span class="help">料率は従業員の住所ではなく、働く事業所の所在地で決まります。</span>
         @if (officeScoped()) { <span class="help office-scope">担当している事業所の従業員だけを登録できます。</span> }
         @if (errors().officeId) { <span class="err">{{ errors().officeId }}</span> }
@@ -123,11 +131,35 @@
           被保険者区分
           <select name="insuredType" [value]="form().insuredType ?? 'general'" (change)="setInsuredType($any($event.target).value)">
             @for (t of insuredTypes; track t) {
-              <option [value]="t">{{ insuredTypeLabel[t] }}</option>
+              <option [value]="t" [selected]="t === (form().insuredType ?? 'general')">{{ insuredTypeLabel[t] }}</option>
             }
           </select>
           <span class="help">雇用形態ではなく、届出上の区分です。随時改定・定時決定の支払基礎日数の基準に使います。</span>
         </label>
+        @if (onboardingAvailable()) {
+          <fieldset class="onboarding">
+            <legend>導入時の登録</legend>
+            <label class="check">
+              <input type="checkbox" name="onboarding" [checked]="!!form().onboarding" (change)="setOnboarding($any($event.target).checked)" />
+              このアプリを使い始める前から在籍している人（今の標準報酬月額を、決定通知書から登録する）
+            </label>
+            @if (noGradeTableAtAcquisition()) {
+              <p class="help">資格取得月には使える等級表がないため、入社時の報酬月額から標準報酬月額を決められません。導入時の登録で、今の標準報酬月額を登録してください。</p>
+            }
+            @if (form().onboarding; as ob) {
+              <label>
+                <span>標準報酬月額の適用開始月 <span class="req">必須</span></span>
+                <input type="month" name="onboardingFrom" aria-required="true" [value]="ob.validFrom" (input)="setOnboardingFrom($any($event.target).value)" />
+                @if (errors().onboardingFrom) { <span class="err">{{ errors().onboardingFrom }}</span> }
+              </label>
+              <p class="help">
+                手元にある決定通知書のうち、いちばん新しいもの（9月の定時決定のあとに随時改定があれば、その通知書）の適用年月と額を入れます。
+                この月より前の月の保険料は計算しません。資格取得届{{ (form().dependents ?? []).length ? '・被扶養者異動届' : '' }}は導入前に届出済みとして「対応不要」にします。
+              </p>
+            }
+          </fieldset>
+        }
+        @if (!form().onboarding) {
         <fieldset class="breakdown">
           <legend>報酬月額の内訳（見込み）</legend>
           @for (k of breakdownKeys; track k) {
@@ -144,7 +176,7 @@
             報酬月額（合計） {{ remuneration() === null ? '―' : remuneration()!.toLocaleString('ja-JP') + '円' }}
             <button type="button" (click)="suggest()">提案を入力</button>
           </p>
-          <span class="help">合計が資格取得届に書く報酬月額です。食事・社宅などの現物給与があれば、その価額も諸手当に含めます。</span>
+          <span class="help">合計が資格取得届に書く報酬月額です。食事・社宅などの現物給与があれば、その価額も諸手当に含めます。内訳を入れると、下の標準報酬月額に保険料額表の等級で自動で入ります（自分で直した値は変えません。「提案を入力」で入れ直せます）。</span>
           <details class="similar">
             <summary>日給・時給の人：同じような仕事をする人の前月（{{ similarMonth() | ym }}）の報酬の平均を使う</summary>
             <p class="help">日給・時給の人は、同じ事業所で同じような仕事をする人の前月の報酬の平均を報酬月額にします。比べる人を選んでください。</p>
@@ -173,21 +205,24 @@
           </details>
           @if (suggestMessage()) { <span class="err">{{ suggestMessage() }}</span> }
         </fieldset>
+        }
         <label>
-          <span>標準報酬月額（健康保険） <span class="req">必須</span></span>
+          <span>標準報酬月額（健康保険）{{ form().onboarding ? '（決定通知書の額）' : '' }} <span class="req">必須</span></span>
           <input inputmode="numeric" name="healthStandard" aria-required="true" [value]="form().healthStandard ?? ''" (input)="setAmount('healthStandard', $any($event.target).value)" />
           @if (suggestion(); as s) { <span class="help">健康保険 {{ s.healthGrade }}等級</span> }
           @if (errors().healthStandard) { <span class="err">{{ errors().healthStandard }}</span> }
         </label>
         <label>
-          <span>標準報酬月額（厚生年金） <span class="req">必須</span></span>
+          <span>標準報酬月額（厚生年金）{{ form().onboarding ? '（決定通知書の額）' : '' }} <span class="req">必須</span></span>
           <input inputmode="numeric" name="pensionStandard" aria-required="true" [value]="form().pensionStandard ?? ''" (input)="setAmount('pensionStandard', $any($event.target).value)" />
           @if (suggestion(); as s) {
             <span class="help">
               厚生年金 {{ s.pensionGrade }}等級@if (s.pensionIsEquivalent) {（70歳以上のため相当額。保険料はかかりません）}
             </span>
           }
-          <span class="help">提案は入力の補助です。等級を確かめて登録し、決定通知書が届いたら値を確かめてください。</span>
+          @if (!form().onboarding) {
+            <span class="help">提案は入力の補助です。等級を確かめて登録し、決定通知書が届いたら値を確かめてください。</span>
+          }
           @if (errors().pensionStandard) { <span class="err">{{ errors().pensionStandard }}</span> }
         </label>
         <fieldset class="dependents">
@@ -241,11 +276,12 @@
         <select id="employee-office" [value]="officeFilter()" (change)="officeFilter.set($any($event.target).value)">
           <option value="">すべて</option>
           @for (o of offices(); track o.id) {
-            <option [value]="o.id">{{ o.name }}</option>
+            <option [value]="o.id" [selected]="o.id === (officeFilter())">{{ o.name }}</option>
           }
         </select>
       </label>
       <span class="count">{{ filteredRows().length }}人を表示</span>
+      <button type="button" class="secondary small" (click)="saveCsv('table.employees', '従業員一覧_' + todayDate + '.csv')">CSVで保存</button>
     </div>
     <div class="table-wrap">
       <table class="list employees sticky-head">

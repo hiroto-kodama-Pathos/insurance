@@ -115,7 +115,7 @@ export class DecisionImport implements OnInit {
 
   protected readonly preview = computed<DecisionRow[]>(() => {
     if (this.csvRows().length < 2 || this.missing().length > 0) return [];
-    return buildDecisionPreview(this.csvRows(), this.mapping(), this.employees(), this.expectations());
+    return buildDecisionPreview(this.csvRows(), this.mapping(), this.employees(), this.expectations(), this.grades());
   });
 
   /** 表に出す行（見込みと違う人だけ、またはすべて。エラー行はいつも出す） */

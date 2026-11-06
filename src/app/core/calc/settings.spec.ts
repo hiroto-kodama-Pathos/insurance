@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import { Insurer, InsurerRate } from './rate';
 import {
   checkKumiai,
+  checkKumiaiRates,
+  EMPTY_KUMIAI_RATES,
   checkOffice,
   checkRate,
   checkSettings,
@@ -103,7 +105,49 @@ describe('checkRate', () => {
 describe('checkSettings', () => {
   it('締め日は1〜30日か末日', () => {
     expect(checkSettings(DEFAULT_SETTINGS)).toEqual({});
+    // 利用開始日：空（null）か、正しい日付
+    expect(checkSettings({ ...DEFAULT_SETTINGS, startDate: '2026-11-01' })).toEqual({});
+    expect(checkSettings({ ...DEFAULT_SETTINGS, startDate: '2026-02-30' })).toHaveProperty('startDate');
     expect(checkSettings({ ...DEFAULT_SETTINGS, payrollCutoff: { day: 25, paidIn: 'sameMonth' } })).toEqual({});
     expect(checkSettings({ ...DEFAULT_SETTINGS, payrollCutoff: { day: 31, paidIn: 'sameMonth' } })).toHaveProperty('cutoffDay');
+  });
+});
+
+describe('健康保険組合の追加と一緒に登録する料率（checkKumiaiRates）', () => {
+  const base = { ...EMPTY_KUMIAI_RATES, validFrom: '2026-04', health: { rate: '9.5', employeeRate: '' } };
+
+  it('健康保険だけ入れれば登録できる。空欄の介護保険・支援金は登録しない種類として返す', () => {
+    const r = checkKumiaiRates(base);
+    expect(r.errors).toEqual({});
+    expect(r.rates).toEqual([{ rateType: 'health', prefecture: null, validFrom: '2026-04', rate: 9500, employeeShare: 500 }]);
+    expect(r.skipped).toEqual(['care', 'childSupport']);
+  });
+
+  it('3つとも入れると、同じ適用開始月で3件。本人の料率から負担割合を求める', () => {
+    const r = checkKumiaiRates({
+      ...base,
+      health: { rate: '10', employeeRate: '4.5' },
+      care: { rate: '1.8', employeeRate: '' },
+      childSupport: { rate: '0.23', employeeRate: '' },
+    });
+    expect(r.errors).toEqual({});
+    expect(r.rates.map((x) => [x.rateType, x.rate, x.employeeShare])).toEqual([
+      ['health', 10000, 450], ['care', 1800, 500], ['childSupport', 230, 500],
+    ]);
+    expect(r.skipped).toEqual([]);
+  });
+
+  it('健康保険の料率がない・適用開始月がない・本人の料率が全体より大きいときはエラー。エラーがあれば何も登録しない', () => {
+    const r = checkKumiaiRates({ ...EMPTY_KUMIAI_RATES, care: { rate: '1.8', employeeRate: '2' } });
+    expect(r.errors['kumiaiFrom']).toContain('適用開始月');
+    expect(r.errors['healthRate']).toContain('料率を%で');
+    expect(r.errors['careEmployeeRate']).toContain('全体の料率以下');
+    expect(r.rates).toEqual([]);
+  });
+
+  it('2026年3月以前からの登録で支援金を入れると、支援金の欄にエラーを出す（空欄ならよい）', () => {
+    const early = { ...base, validFrom: '2026-03' };
+    expect(checkKumiaiRates({ ...early, childSupport: { rate: '0.23', employeeRate: '' } }).errors['childSupportRate']).toContain('2026年4月分から');
+    expect(checkKumiaiRates(early).errors).toEqual({});
   });
 });

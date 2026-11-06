@@ -5,8 +5,12 @@ import { Absence, AbsenceInput } from '../calc/absence';
 import { DependentToImport, EmployeeToImport } from '../calc/master-import';
 import { inject, Service } from '@angular/core';
 import {
+  addDoc,
   arrayUnion,
   doc,
+  limit,
+  orderBy,
+  Timestamp,
   DocumentData,
   getDoc,
   getDocs,
@@ -16,8 +20,10 @@ import {
   writeBatch,
 } from 'firebase/firestore';
 import { monthOf } from '../calc/date';
+import { dateLabel, yearMonthLabel } from '../calc/year-month';
 import { LeaveInput, StandardInput } from '../calc/employee-edit';
-import { BreakdownKey, breakdownTotal, isValidDate, NewEmployeeInput, normalizeBreakdown, RemunerationBreakdown } from '../calc/new-employee';
+import { BreakdownKey, breakdownTotal, isValidDate, NewEmployeeInput, normalizeBreakdown, RemunerationBreakdown, standardReasonFor } from '../calc/new-employee';
+import { onboardingFilings } from '../calc/filing';
 import { StoredEligibility } from '../calc/eligibility-check';
 import { ManualWageChange } from '../calc/salary';
 import type { DecisionToSave } from '../calc/decision-import';
@@ -41,6 +47,9 @@ export type EmployeeRecord = EmployeeData & {
   /** 担当者が「固定的賃金の変動として登録」した変動（設計書 2.13） */
   fixedWageChanges?: ManualWageChange[];
 };
+
+/** 変更の記録（誰が・いつ・何を変えたか。設計書 3.1・4章 changeLogs） */
+export type ChangeLog = { id: string; at: Date | null; by: string; text: string };
 
 /** Firestore のドキュメントIDつき */
 export type WithId<T> = T & { id: string };
@@ -112,6 +121,11 @@ export class EmployeeRepository {
     return list;
   }
 
+  /** 同じ書き込み（バッチ）の中で、変更の記録を1件足す */
+  private logIn(batch: ReturnType<typeof writeBatch>, employeeId: string, text: string): void {
+    batch.set(doc(employeeSubCol(employeeId, 'changeLogs')), { at: serverTimestamp(), by: this.auth.user()?.email ?? '', text });
+  }
+
   /** 書き込みの前と後に、使い回している一覧を捨てる（書き込み中に読んだ古い一覧も残さない） */
   private async write<T>(action: () => Promise<T>): Promise<T> {
     this.cache.clear();
@@ -167,24 +181,51 @@ export class EmployeeRepository {
           validFrom: input.acquiredDate,
           type: input.insuredType ?? 'general',
         });
-        batch.set(doc(employeeSubCol(ref.id, 'standardRemunerations')), {
-          validFrom: monthOf(input.acquiredDate),
-          reason: 'acquisition',
-          remuneration: breakdownTotal(input.breakdown),
-          remunerationBreakdown: normalizeBreakdown(input.breakdown),
-          healthStandard: input.healthStandard,
-          pensionStandard: input.pensionStandard,
-        });
+        const ob = input.onboarding ?? null;
+        batch.set(
+          doc(employeeSubCol(ref.id, 'standardRemunerations')),
+          ob
+            ? {
+                // 導入時の登録：いちばん新しい決定通知書の額を、その適用開始月から（報酬月額の内訳はない）
+                validFrom: ob.validFrom,
+                reason: standardReasonFor(ob.validFrom, input.acquiredDate),
+                remuneration: null,
+                healthStandard: input.healthStandard,
+                pensionStandard: input.pensionStandard,
+              }
+            : {
+                validFrom: monthOf(input.acquiredDate),
+                reason: 'acquisition',
+                remuneration: breakdownTotal(input.breakdown),
+                remunerationBreakdown: normalizeBreakdown(input.breakdown),
+                healthStandard: input.healthStandard,
+                pensionStandard: input.pensionStandard,
+              },
+        );
         // 被扶養者も同じ書き込みで登録する（本人だけ登録されて、被扶養者が漏れることがない）
-        for (const d of input.dependents ?? []) {
-          batch.set(doc(employeeSubCol(ref.id, 'dependents')), {
-            name: d.name.trim(),
-            birthDate: d.birthDate,
-            certifiedDate: d.certifiedDate || input.acquiredDate,
-            removedDate: null,
-          });
+        const deps = (input.dependents ?? []).map((d) => ({ name: d.name.trim(), birthDate: d.birthDate, certifiedDate: d.certifiedDate || input.acquiredDate }));
+        for (const d of deps) {
+          batch.set(doc(employeeSubCol(ref.id, 'dependents')), { ...d, removedDate: null });
+        }
+        // 導入時の登録：資格取得届・扶養に入った被扶養者異動届は導入前に届け出ているので、対応不要として記録する
+        if (ob) {
+          for (const f of onboardingFilings(ref.id, input.acquiredDate, input.officeId, deps)) {
+            batch.set(siDoc('filings', f.id), {
+              employeeId: f.employeeId, kind: f.kind, trigger: f.trigger, officeId: f.officeId,
+              resolution: 'notNeeded', note: '導入時の登録（導入前に届出済み）', filedAt: serverTimestamp(), filedBy: this.auth.user()?.email ?? '',
+            });
+          }
         }
       }
+      const man = (v: number | null) => `${((v ?? 0) / 10_000).toLocaleString('ja-JP')}万円`;
+      this.logIn(
+        batch,
+        ref.id,
+        input.insured
+          ? `新規登録（${input.onboarding ? '導入時の登録・' : ''}資格取得日 ${dateLabel(input.acquiredDate)}・標準報酬月額${input.onboarding ? ` ${yearMonthLabel(input.onboarding.validFrom)}分から` : ''} 健保 ${man(input.healthStandard)}／厚年 ${man(input.pensionStandard)}` +
+              `${input.dependents?.length ? `・被扶養者${input.dependents.length}人` : ''}）`
+          : `新規登録（未加入・入社日 ${dateLabel(input.acquiredDate)}）`,
+      );
       await batch.commit();
       return ref.id;
     });
@@ -210,6 +251,7 @@ export class EmployeeRepository {
             batch.set(doc(employeeSubCol(ref.id, 'qualifications')), { acquiredDate: x.acquiredDate, lostDate: null, lostReason: null });
             batch.set(doc(employeeSubCol(ref.id, 'insuredTypes')), { validFrom: x.acquiredDate, type: x.insuredType });
           }
+          this.logIn(batch, ref.id, `CSVで登録（${x.acquiredDate ? `資格取得日 ${dateLabel(x.acquiredDate)}` : '未加入'}）`);
         }
         await batch.commit();
       }
@@ -219,11 +261,13 @@ export class EmployeeRepository {
   /** CSVで取り込んだ被扶養者をまとめて登録する（導入時。設計書 3.8） */
   async importDependents(list: DependentToImport[]): Promise<void> {
     return this.write(async () => {
-      for (let i = 0; i < list.length; i += 200) {
+      // 1回の書き込みは500件まで（被扶養者・変更の記録・従業員の更新日時で、1件につき最大3つ）
+      for (let i = 0; i < list.length; i += 150) {
         const batch = writeBatch(db);
         const touched = new Set<string>();
-        for (const { employeeId, ...d } of list.slice(i, i + 200)) {
+        for (const { employeeId, ...d } of list.slice(i, i + 150)) {
           batch.set(doc(employeeSubCol(employeeId, 'dependents')), d);
+          this.logIn(batch, employeeId, `CSVで被扶養者を登録（${d.name}さん・扶養に入った日 ${dateLabel(d.certifiedDate)}）`);
           touched.add(employeeId);
         }
         for (const id of touched) batch.update(siDoc('employees', id), { updatedAt: serverTimestamp() });
@@ -463,9 +507,15 @@ export class EmployeeRepository {
    */
   async saveDecisions(items: DecisionToSave[]) {
     return this.write(async () => {
-      for (let i = 0; i < items.length; i += 200) {
+      // 1回の書き込みは500件まで（標準報酬月額・変更の記録・従業員の更新日時で、1件につき3つ）
+      for (let i = 0; i < items.length; i += 150) {
         const batch = writeBatch(db);
-        for (const x of items.slice(i, i + 200)) {
+        for (const x of items.slice(i, i + 150)) {
+          this.logIn(
+            batch,
+            x.employeeId,
+            `決定通知書の取り込みで標準報酬月額を${x.provisionalId ? '確定' : '登録'}（${yearMonthLabel(x.validFrom)}から 健保 ${(x.healthStandard / 10_000).toLocaleString('ja-JP')}万円／厚年 ${(x.pensionStandard / 10_000).toLocaleString('ja-JP')}万円）`,
+          );
           if (x.provisionalId) {
             batch.update(doc(employeeSubCol(x.employeeId, 'standardRemunerations'), x.provisionalId), {
               healthStandard: x.healthStandard, pensionStandard: x.pensionStandard, provisional: false,
@@ -497,14 +547,23 @@ export class EmployeeRepository {
     });
   }
 
-  /** 適用除外の非該当年月日を入れる・直す */
-  async updateExemptionEnd(employeeId: string, exemptionId: string, endDate: string) {
-    return this.write(async () => {
-      const batch = writeBatch(db);
-      batch.update(doc(employeeSubCol(employeeId, 'exemptions'), exemptionId), { endDate: endDate === '' ? null : endDate });
-      batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
-      await batch.commit();
+  /** 適用除外を直す（種類・該当年月日・非該当年月日の誤り） */
+  async updateExemption(employeeId: string, exemptionId: string, input: { type: Exemption['type']; startDate: string; endDate: string }) {
+    return this.setSub(employeeId, 'exemptions', exemptionId, {
+      type: input.type,
+      startDate: input.startDate,
+      endDate: input.endDate === '' ? null : input.endDate,
     });
+  }
+
+  /** 適用除外を消す（誤って登録したもの） */
+  async deleteExemption(employeeId: string, exemptionId: string) {
+    return this.deleteSub(employeeId, 'exemptions', exemptionId);
+  }
+
+  /** 休職を消す（誤って登録したもの） */
+  async deleteAbsence(employeeId: string, absenceId: string) {
+    return this.deleteSub(employeeId, 'absences', absenceId);
   }
 
   /** 休業を足す */
@@ -522,14 +581,13 @@ export class EmployeeRepository {
     });
   }
 
-  /** 休業の終了日・就業した日数を変える（延長・短縮・復帰） */
-  async updateLeave(employeeId: string, leaveId: string, endDate: string, workedDays: number | null) {
-    return this.write(async () => {
-      await updateDoc(doc(employeeSubCol(employeeId, 'leaves'), leaveId), {
-        endDate: endDate === '' ? null : endDate,
-        workedDays,
-      });
-      await this.touch(employeeId);
+  /** 休業を直す（延長・短縮・復帰と、種類・開始日の誤り） */
+  async updateLeave(employeeId: string, leaveId: string, input: LeaveInput) {
+    return this.setSub(employeeId, 'leaves', leaveId, {
+      type: input.type,
+      startDate: input.startDate,
+      endDate: input.endDate === '' ? null : input.endDate,
+      workedDays: input.workedDays,
     });
   }
 
@@ -557,6 +615,184 @@ export class EmployeeRepository {
       });
       await this.touch(employeeId);
     });
+  }
+
+  // ---- 変更の記録（設計書 3.1「変更の記録」） ----
+  // 従業員の情報を登録・変更・削除したら、誰が・いつ・何をしたかを残す。訂正・削除で元の値が分からなくならないように、直す前の値も文に含める。
+  // 記録は書き換え・削除できない（ルールで守る）。従業員を削除・個人データを消去するときは一緒に消える。
+
+  /** 変更の記録を1件残す（担当者は、ログインしている人のメールアドレス） */
+  async addChangeLog(employeeId: string, text: string): Promise<void> {
+    await addDoc(employeeSubCol(employeeId, 'changeLogs'), { at: serverTimestamp(), by: this.auth.user()?.email ?? '', text });
+  }
+
+  /** 何人分かの変更の記録を、まとめて残す（一括登録・CSVの取り込み） */
+  async addChangeLogs(list: { employeeId: string; text: string }[]): Promise<void> {
+    const by = this.auth.user()?.email ?? '';
+    for (let i = 0; i < list.length; i += 400) {
+      const batch = writeBatch(db);
+      for (const x of list.slice(i, i + 400)) batch.set(doc(employeeSubCol(x.employeeId, 'changeLogs')), { at: serverTimestamp(), by, text: x.text });
+      await batch.commit();
+    }
+  }
+
+  /** 変更の記録（新しい順に、最大 count 件） */
+  async loadChangeLogs(employeeId: string, count = 100): Promise<ChangeLog[]> {
+    const snap = await getDocs(query(employeeSubCol(employeeId, 'changeLogs'), orderBy('at', 'desc'), limit(count)));
+    return snap.docs.map((d) => {
+      const at = d.data()['at'];
+      return { id: d.id, at: at instanceof Timestamp ? at.toDate() : null, by: d.data()['by'] ?? '', text: d.data()['text'] ?? '' };
+    });
+  }
+
+  // ---- 登録した情報の訂正・削除（設計書 3.1「登録した情報の訂正・削除」） ----
+  // 確定済みの月に関わる訂正でも、確定した金額は書き換えない（差額の画面に、さかのぼる改定の差額として出る）
+
+  /** 履歴の1件を書き換える（従業員の更新日時も合わせて変える） */
+  private async setSub(employeeId: string, sub: string, id: string, data: DocumentData, employee: DocumentData = {}) {
+    return this.write(async () => {
+      const batch = writeBatch(db);
+      batch.update(doc(employeeSubCol(employeeId, sub), id), data);
+      batch.update(siDoc('employees', employeeId), { ...employee, updatedAt: serverTimestamp() });
+      await batch.commit();
+    });
+  }
+
+  /** 履歴の1件を消す */
+  private async deleteSub(employeeId: string, sub: string, id: string, employee: DocumentData = {}) {
+    return this.write(async () => {
+      const batch = writeBatch(db);
+      batch.delete(doc(employeeSubCol(employeeId, sub), id));
+      batch.update(siDoc('employees', employeeId), { ...employee, updatedAt: serverTimestamp() });
+      await batch.commit();
+    });
+  }
+
+  /** 加入対象の判定の情報を更新する（契約が変わったとき・入社時の入力の誤り）。候補は担当者が確かめて、加入・喪失・区分の変更を別に登録する */
+  async updateEligibility(employeeId: string, eligibility: StoredEligibility) {
+    return this.write(async () => {
+      await updateDoc(siDoc('employees', employeeId), { eligibility, updatedAt: serverTimestamp() });
+    });
+  }
+
+  /** 生年月日を直す（登録の誤り）。年齢による切り替え（40・65・70・75歳）は、直した日から計算し直す */
+  async updateBirthDate(employeeId: string, birthDate: string) {
+    return this.write(async () => {
+      await updateDoc(siDoc('employees', employeeId), { birthDate, updatedAt: serverTimestamp() });
+    });
+  }
+
+  /**
+   * 資格の期間を直す（資格取得日・退職日の誤り、退職の取り消し）
+   * @param dependentMoves 退職と同じ日に扶養から外れた被扶養者の「外れた日」を合わせて直す（取り消しなら扶養に戻す）
+   */
+  async updateQualification(
+    employeeId: string,
+    qualificationId: string,
+    input: { acquiredDate: string; lostDate: string | null; lostReason: string | null },
+    dependentMoves: { id: string; removedDate: string | null }[] = [],
+  ) {
+    return this.write(async () => {
+      const batch = writeBatch(db);
+      batch.update(doc(employeeSubCol(employeeId, 'qualifications'), qualificationId), input);
+      for (const m of dependentMoves) batch.update(doc(employeeSubCol(employeeId, 'dependents'), m.id), { removedDate: m.removedDate });
+      batch.update(siDoc('employees', employeeId), { updatedAt: serverTimestamp() });
+      await batch.commit();
+    });
+  }
+
+  /** 資格の期間を消す（誤って登録した再加入など） */
+  async deleteQualification(employeeId: string, qualificationId: string) {
+    return this.deleteSub(employeeId, 'qualifications', qualificationId);
+  }
+
+  /** 標準報酬月額の履歴を直す（金額・適用開始月・理由の誤り） */
+  async updateStandard(employeeId: string, standardId: string, input: StandardInput, remuneration: number | null, breakdown: RemunerationBreakdown | null = null) {
+    return this.setSub(employeeId, 'standardRemunerations', standardId, {
+      validFrom: input.validFrom,
+      reason: input.reason,
+      healthStandard: input.healthStandard,
+      pensionStandard: input.pensionStandard,
+      ownRemuneration: input.ownRemuneration ?? null,
+      totalRemuneration: input.totalRemuneration ?? null,
+      selectedInsurerId: input.selectedInsurerId ?? null,
+      provisional: input.provisional === true,
+      remuneration,
+      remunerationBreakdown: breakdown ? normalizeBreakdown(breakdown) : null,
+    });
+  }
+
+  /**
+   * 何人分かの標準報酬月額の履歴を、まとめて消す（定時決定の一括登録の取り消しなど）。変更の記録も同じ書き込みで残す
+   * 1回の書き込みは500件までなので、150人ずつ（履歴・記録・更新日時の3つ）
+   */
+  async deleteStandards(list: { employeeId: string; standardId: string; log: string }[]): Promise<void> {
+    return this.write(async () => {
+      for (let i = 0; i < list.length; i += 150) {
+        const batch = writeBatch(db);
+        for (const x of list.slice(i, i + 150)) {
+          batch.delete(doc(employeeSubCol(x.employeeId, 'standardRemunerations'), x.standardId));
+          this.logIn(batch, x.employeeId, x.log);
+          batch.update(siDoc('employees', x.employeeId), { updatedAt: serverTimestamp() });
+        }
+        await batch.commit();
+      }
+    });
+  }
+
+  /** 標準報酬月額の履歴を消す（誤って登録した改定・取り込みの誤りなど） */
+  async deleteStandard(employeeId: string, standardId: string) {
+    return this.deleteSub(employeeId, 'standardRemunerations', standardId);
+  }
+
+  /** 被扶養者を直す（氏名・生年月日・扶養に入った日の誤り。外れた日を空にすると扶養に戻す） */
+  async updateDependent(employeeId: string, dependentId: string, input: DependentInput & { removedDate: string | null }) {
+    return this.setSub(employeeId, 'dependents', dependentId, {
+      name: input.name.trim(),
+      birthDate: input.birthDate,
+      certifiedDate: input.certifiedDate,
+      removedDate: input.removedDate,
+    });
+  }
+
+  /** 被扶養者を消す（誤って登録した人） */
+  async deleteDependent(employeeId: string, dependentId: string) {
+    return this.deleteSub(employeeId, 'dependents', dependentId);
+  }
+
+  /**
+   * 所属事業所の履歴を直す・消す。担当範囲の絞り込みに使う officeIds（これまでに所属した事業所）も合わせて直す
+   * （所属の履歴を変えられるのは全担当だけ。ルールでも制限する）
+   */
+  async updateAssignment(employeeId: string, assignmentId: string, input: Assignment, officeIds: string[]) {
+    return this.setSub(employeeId, 'assignments', assignmentId, { validFrom: input.validFrom, officeId: input.officeId }, { officeIds });
+  }
+
+  async deleteAssignment(employeeId: string, assignmentId: string, officeIds: string[]) {
+    return this.deleteSub(employeeId, 'assignments', assignmentId, { officeIds });
+  }
+
+  /** 被保険者区分の履歴を直す・消す */
+  async updateInsuredType(employeeId: string, id: string, input: InsuredTypeHistory) {
+    return this.setSub(employeeId, 'insuredTypes', id, { validFrom: input.validFrom, type: input.type });
+  }
+
+  async deleteInsuredType(employeeId: string, id: string) {
+    return this.deleteSub(employeeId, 'insuredTypes', id);
+  }
+
+  /** 支払区分の履歴を直す・消す */
+  async updatePayrollAssignment(employeeId: string, id: string, input: PayrollAssignment) {
+    return this.setSub(employeeId, 'payrollAssignments', id, { validFrom: input.validFrom, payrollGroupId: input.payrollGroupId });
+  }
+
+  async deletePayrollAssignment(employeeId: string, id: string) {
+    return this.deleteSub(employeeId, 'payrollAssignments', id);
+  }
+
+  /** 休業を消す（誤って登録したもの） */
+  async deleteLeave(employeeId: string, leaveId: string) {
+    return this.deleteSub(employeeId, 'leaves', leaveId);
   }
 
   private async touch(employeeId: string) {

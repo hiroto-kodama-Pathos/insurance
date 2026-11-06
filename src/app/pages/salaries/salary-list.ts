@@ -1,5 +1,6 @@
 // 給与の入力（設計書 2.13・3.6）
 // 給与ソフトで計算した給与を支払月ごとに入れる。給与は随時改定の候補を見つけるためだけに使い、保険料は変わらない。
+import { PageState } from '../../core/ui/page-state';
 import { DEFAULT_SALARY_CRITERIA, filterSalaryRows, SALARY_SORT_LABEL, SALARY_STATUS_LABEL, SalaryCriteria, SalarySortKey, SalaryStatusFilter } from '../../core/calc/salary-filter';
 import { Confirm } from '../../core/ui/confirm';
 import { NoticeMessage } from '../../core/ui/notice-message';
@@ -192,6 +193,13 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
 
   // ---- 絞り込みと並び替え ----
   protected readonly criteria = signal<SalaryCriteria>(DEFAULT_SALARY_CRITERIA);
+
+  /** 一覧の絞り込み・対象月を覚え、詳細から戻ってきたときに元に戻す（core/ui/page-state.ts） */
+  private readonly pageStateKept = ((pageState: PageState) => {
+    pageState.keep('salaries.yearMonth', this.yearMonth);
+    pageState.keep('salaries.criteria', this.criteria);
+    return true;
+  })(inject(PageState));
   protected readonly statusLabels = SALARY_STATUS_LABEL;
   protected readonly statusKeys = Object.keys(SALARY_STATUS_LABEL) as Exclude<SalaryStatusFilter, ''>[];
   protected readonly sortLabels = SALARY_SORT_LABEL;
@@ -495,6 +503,15 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     this.manualError.set('');
   }
 
+  /** 従業員の変更の記録を残す（残せなくても、保存した内容はそのまま。設計書 3.1） */
+  private async log(employeeId: string, text: string): Promise<void> {
+    try {
+      await this.employeeRepo.addChangeLog(employeeId, text);
+    } catch (e) {
+      console.error('変更の記録を残せませんでした', e);
+    }
+  }
+
   protected closeManual(): void {
     this.manualFor.set(null);
   }
@@ -511,10 +528,11 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
       return;
     }
     const ym = this.yearMonth();
-    await this.runManual(
-      () => this.employeeRepo.setFixedWageChange(row.employee.id, { yearMonth: ym, direction: f.direction, note }),
-      `${row.employee.name}さんの${yearMonthLabel(ym)}を、固定的賃金の変動（${f.direction === 'up' ? '上がった' : '下がった'}）として登録しました。`,
-    );
+    const message = `${row.employee.name}さんの${yearMonthLabel(ym)}を、固定的賃金の変動（${f.direction === 'up' ? '上がった' : '下がった'}）として登録しました。`;
+    await this.runManual(async () => {
+      await this.employeeRepo.setFixedWageChange(row.employee.id, { yearMonth: ym, direction: f.direction, note });
+      await this.log(row.employee.id, `${message}（内容：${note}）`);
+    }, message);
   }
 
   protected async removeManual(row: SalaryRow): Promise<void> {
@@ -526,10 +544,11 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
       danger: true,
     });
     if (!ok) return;
-    await this.runManual(
-      () => this.employeeRepo.removeFixedWageChange(row.employee.id, ym),
-      `${row.employee.name}さんの${yearMonthLabel(ym)}の、固定的賃金の変動の登録を取り消しました。`,
-    );
+    const message = `${row.employee.name}さんの${yearMonthLabel(ym)}の、固定的賃金の変動の登録を取り消しました。`;
+    await this.runManual(async () => {
+      await this.employeeRepo.removeFixedWageChange(row.employee.id, ym);
+      await this.log(row.employee.id, message);
+    }, message);
   }
 
   private async runManual(action: () => Promise<void>, message: string): Promise<void> {

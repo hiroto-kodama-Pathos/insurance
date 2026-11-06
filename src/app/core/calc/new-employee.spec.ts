@@ -1,4 +1,5 @@
-import { breakdownTotal, checkBreakdown, childLaborEndDate, childLaborNotice, EMPTY_BREAKDOWN, isValidDate, NewEmployeeInput, normalizeBreakdown, similarRemuneration, validateNewEmployee } from './new-employee';
+import { buildKyokaiGrades } from './grade-suggest';
+import { canOnboard, defaultOnboardingFrom, standardReasonFor, breakdownTotal, checkBreakdown, childLaborEndDate, childLaborNotice, EMPTY_BREAKDOWN, isValidDate, NewEmployeeInput, normalizeBreakdown, similarRemuneration, validateNewEmployee } from './new-employee';
 
 const ok: NewEmployeeInput = {
   employeeNumber: '0005',
@@ -123,7 +124,52 @@ describe('生年月日の入力チェックと、児童の注意', () => {
 
   it('入社日がその3月31日以前なら注意の一文を出し、4月1日からは出さない', () => {
     expect(childLaborNotice('2011-04-01', '2026-03-31')).toContain('2026年3月31日');
+    // 入社日と入社時の満年齢を文に入れる（1999年9月9日生まれ：15歳に達するのは2014年9月8日）
+    expect(childLaborNotice('1999-09-09', '2015-03-01')).toContain('入社日（2015年3月1日）の時点で15歳です。');
+    expect(childLaborNotice('1999-09-09', '2014-09-07')).toContain('の時点で14歳です。');
+    expect(childLaborNotice('1999-09-09', '2014-09-08')).toContain('の時点で15歳です。');
+    expect(childLaborNotice('1999-09-09', '2015-04-01')).toBe('');
     expect(childLaborNotice('2011-04-01', '2026-04-01')).toBe('');
     expect(childLaborNotice('', '2026-04-01')).toBe('');
+  });
+});
+
+describe('新規登録：標準報酬月額は等級の額', () => {
+  const grades = buildKyokaiGrades('2020-09');
+  it('等級表にない額（299,000円）は入れない。等級の額ならよい', () => {
+    expect(validateNewEmployee({ ...ok, healthStandard: 299_000 }, [], undefined, grades).healthStandard).toContain('等級の額ではありません');
+    expect(validateNewEmployee({ ...ok, pensionStandard: 700_000 }, [], undefined, grades).pensionStandard).toContain('厚生年金');
+    expect(validateNewEmployee(ok, [], undefined, grades)).toEqual({});
+  });
+});
+
+describe('導入時の登録（以前から在籍している人）', () => {
+  const grades = buildKyokaiGrades('2020-09');
+  const old: NewEmployeeInput = { ...ok, acquiredDate: '2015-04-01', breakdown: EMPTY_BREAKDOWN, onboarding: { validFrom: '2026-09' } };
+
+  it('選べるのは資格取得月が今月より前の人。適用開始月の初期値は今月以前の9月（それより後の入社なら資格取得月）', () => {
+    expect(canOnboard('2015-04-01', '2026-11-06')).toBe(true);
+    expect(canOnboard('2026-11-01', '2026-11-06')).toBe(false);
+    expect(defaultOnboardingFrom('2015-04-01', '2026-11-06')).toBe('2026-09');
+    expect(defaultOnboardingFrom('2015-04-01', '2026-08-20')).toBe('2025-09');
+    expect(defaultOnboardingFrom('2026-10-01', '2026-11-06')).toBe('2026-10');
+  });
+
+  it('決定の理由：資格取得月なら資格取得時決定、9月は定時決定、それ以外は随時改定', () => {
+    expect(standardReasonFor('2026-09', '2015-04-01')).toBe('regular');
+    expect(standardReasonFor('2026-06', '2015-04-01')).toBe('revision');
+    expect(standardReasonFor('2026-10', '2026-10-01')).toBe('acquisition');
+  });
+
+  it('報酬月額の内訳なしで登録でき、額は適用開始月の等級表で確かめる（資格取得月に等級表がなくてもよい）', () => {
+    expect(validateNewEmployee(old, [], '2026-11-06', grades)).toEqual({});
+    expect(validateNewEmployee({ ...old, healthStandard: 299_000 }, [], '2026-11-06', grades).healthStandard).toContain('等級の額ではありません');
+  });
+
+  it('適用開始月は、資格取得月以後・今月以前。今月に入社した人は導入時の登録にできない', () => {
+    expect(validateNewEmployee({ ...old, onboarding: { validFrom: '' } }, [], '2026-11-06', grades).onboardingFrom).toContain('決定通知書のとおり');
+    expect(validateNewEmployee({ ...old, onboarding: { validFrom: '2015-03' } }, [], '2026-11-06', grades).onboardingFrom).toContain('資格取得月以後');
+    expect(validateNewEmployee({ ...old, onboarding: { validFrom: '2026-12' } }, [], '2026-11-06', grades).onboardingFrom).toContain('今月以前');
+    expect(validateNewEmployee({ ...old, acquiredDate: '2026-11-01', onboarding: { validFrom: '2026-11' } }, [], '2026-11-06', grades).acquiredDate).toContain('今月に資格を取得した人');
   });
 });

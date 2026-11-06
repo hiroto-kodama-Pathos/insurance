@@ -1,6 +1,8 @@
 // 定時決定の見込み（設計書 2.13.1・3.7）
 // 7月に4〜6月の給与から見込みを一覧にし、算定基礎届を書くときにそのまま書き写せるようにする。
 // 一覧はあくまで見込み。「見込みどおり登録」や一括登録をするまで、標準報酬月額も保険料も変わらない。
+import { PageState } from '../../core/ui/page-state';
+import { Confirm } from '../../core/ui/confirm';
 import { matchesRegularStatus, REGULAR_STATUS_LABEL, RegularStatusFilter } from '../../core/calc/regular';
 import { distinctOptions, matchesPerson } from '../../core/calc/person-search';
 import { findOffice, Office } from '../../core/calc/office';
@@ -41,6 +43,7 @@ type Row = RegularEstimate & { employee: EmployeeRecord };
 })
 export class RegularList implements OnInit {
   private readonly employeeRepo = inject(EmployeeRepository);
+  private readonly confirm = inject(Confirm);
   private readonly masterRepo = inject(MasterRepository);
   private readonly salaryRepo = inject(SalaryRepository);
   private readonly settingsRepo = inject(SettingsRepository);
@@ -73,6 +76,15 @@ export class RegularList implements OnInit {
   protected readonly query = signal('');
   protected readonly officeFilter = signal('');
   protected readonly statusFilter = signal<RegularStatusFilter>('');
+
+  /** 一覧の絞り込み・対象月を覚え、詳細から戻ってきたときに元に戻す（core/ui/page-state.ts） */
+  private readonly pageStateKept = ((pageState: PageState) => {
+    pageState.keep('regular.year', this.year);
+    pageState.keep('regular.query', this.query);
+    pageState.keep('regular.officeFilter', this.officeFilter);
+    pageState.keep('regular.statusFilter', this.statusFilter);
+    return true;
+  })(inject(PageState));
   protected readonly statusLabels = REGULAR_STATUS_LABEL;
   protected readonly statusKeys = Object.keys(REGULAR_STATUS_LABEL) as Exclude<RegularStatusFilter, ''>[];
   /** 7月1日に所属している事業所の名前（算定基礎届を出す事業所） */
@@ -171,7 +183,15 @@ export class RegularList implements OnInit {
     let done = 0;
     try {
       for (const r of list) {
-        await this.employeeRepo.addStandard(r.employeeId, this.input(r), r.average);
+        const input = this.input(r);
+        await this.employeeRepo.addStandard(r.employeeId, input, r.average);
+        // 変更の記録（残せなくても、登録はそのまま。設計書 3.1）
+        try {
+          await this.employeeRepo.addChangeLog(r.employeeId,
+            `定時決定で${input.provisional ? '通知書待ちとして' : ''}標準報酬月額を登録（${this.year()}年9月から 健保 ${((input.healthStandard ?? 0) / 10_000).toLocaleString('ja-JP')}万円／厚年 ${((input.pensionStandard ?? 0) / 10_000).toLocaleString('ja-JP')}万円）`);
+        } catch (e) {
+          console.error('変更の記録を残せませんでした', e);
+        }
         done++;
       }
       this.notice.set(
@@ -182,6 +202,52 @@ export class RegularList implements OnInit {
     } catch (e) {
       console.error(e);
       this.notice.set(`${done}人まで登録したところで止まりました。権限と通信を確かめて、もう一度押してください（登録済みの人は二重に登録されません）。`);
+    } finally {
+      this.employees.set(await this.employeeRepo.loadAll());
+      this.saving.set(false);
+    }
+  }
+
+  // ---- 登録の取り消し（設計書 3.7） ----
+  // 見込みどおり登録した9月分からの標準報酬月額を、決定通知書と違ったときなどに取り消す。
+  // 7〜9月に随時改定がある人の9月分は、随時改定の登録なので取り消さない（行にボタンを出さない）
+
+  /** 取り消せる登録（9月分からの標準報酬月額の履歴） */
+  private undoTarget(r: Row): { employeeId: string; standardId: string; log: string } | null {
+    if (!r.registered || r.revisionInJulSep) return null;
+    const ym = `${this.year()}-09`;
+    const s = this.employees().find((e) => e.id === r.employeeId)?.standardHistory.find((h) => h.validFrom === ym) as { id?: string; healthStandard: number; pensionStandard: number } | undefined;
+    if (!s?.id) return null;
+    const man = (v: number) => `${(v / 10_000).toLocaleString('ja-JP')}万円`;
+    return { employeeId: r.employeeId, standardId: s.id, log: `定時決定の登録を取り消しました（${this.year()}年9月からの標準報酬月額 健保 ${man(s.healthStandard)}／厚年 ${man(s.pensionStandard)}を削除）` };
+  }
+
+  protected canUndo(r: Row): boolean {
+    return this.undoTarget(r) !== null;
+  }
+
+  /** 表示している中で、取り消せる登録 */
+  protected readonly undoable = computed(() => this.shownRows().filter((r) => this.canUndo(r)));
+
+  protected async undo(list: Row[]): Promise<void> {
+    const targets = list.map((r) => this.undoTarget(r)).filter((x): x is NonNullable<typeof x> => x !== null);
+    if (targets.length === 0) return;
+    const ok = await this.confirm.ask({
+      title: '登録を取り消しますか',
+      message:
+        `${targets.length === 1 ? `${list[0].employee.name}さんの` : `表示している${targets.length}人の`}${this.year()}年9月分からの標準報酬月額の登録を取り消します。` +
+        '9月分以降の保険料は、前の標準報酬月額に戻ります。確定済みの月に関わるときは、差額の画面にさかのぼる差額が出ます。',
+      ok: `${targets.length}人の登録を取り消す`,
+      danger: true,
+    });
+    if (!ok) return;
+    this.saving.set(true);
+    try {
+      await this.employeeRepo.deleteStandards(targets);
+      this.notice.set(`${targets.length}人の${this.year()}年9月分からの登録を取り消しました。見込みどおり登録し直すか、従業員の詳細で通知書の値を入れてください。`);
+    } catch (e) {
+      console.error(e);
+      this.notice.set('取り消せませんでした。権限と通信を確かめてください。');
     } finally {
       this.employees.set(await this.employeeRepo.loadAll());
       this.saving.set(false);

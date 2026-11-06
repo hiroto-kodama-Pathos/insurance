@@ -6,8 +6,14 @@ tr.filed { color: #888; }
 .badge.soon { background: #fef3c7; color: #92400e; }
 
 /* 固定する左の3列：期限・届出・社員番号と氏名 */
-.list.filings { --sticky-w1: 12.5em; --sticky-w2: 12em; --sticky-w3: 10em; }
+.list.filings { --sticky-w1: 14em; --sticky-w2: 12em; --sticky-w3: 10em; }
 
 .toolbar .count { color: var(--c-muted); font-size: 13px; }
 /* 期限の月の見出しの行 */
 tr.month-head td { background: var(--c-primary-weak); color: var(--c-primary-dark); font-weight: bold; }
+
+/* まとめて届出済みにする */
+.bulk { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.bulk .help { margin: 0; }
+input.pick { margin: 0 6px 0 0; vertical-align: -2px; }
+tr.picked td { background: var(--c-primary-weak); }

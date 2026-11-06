@@ -1,4 +1,4 @@
-import { addDays, FilingEmployee, filingState, findFilings, urgentFilings } from './filing';
+import { addDays, FilingEmployee, filingState, findFilings, onboardingFilings, urgentFilings } from './filing';
 import { buildKyokaiGrades } from './grade-suggest';
 
 const grades = buildKyokaiGrades('2020-09');
@@ -111,6 +111,19 @@ describe('届出の一覧', () => {
     expect(f.deadline).toBe('2026-07-10');
   });
 
+  it('利用開始日：期限がその日より前の届出は出さない（導入前の算定基礎届・資格取得届）。期限が後の届出と、期限のない月額変更届は出す', () => {
+    const e = person({ qualifications: [{ acquiredDate: '2026-04-01', lostDate: null }, { acquiredDate: '2026-10-25', lostDate: null }], assignments: [{ validFrom: '2026-04-01', officeId: 'honsha' }] });
+    const candidates = [{ id: 'c1', employeeId: 'e1', type: 'revision' as const, changeMonth: '2026-07', expectedFrom: '2026-10', status: 'open' as const }];
+    const all = findFilings([e], [], [], grades, candidates as never, [{ id: 'honsha' }], '2026-11-06');
+    expect(all.some((f) => f.kind === 'regular')).toBe(true);
+    const after = findFilings([e], [], [], grades, candidates as never, [{ id: 'honsha' }], '2026-11-06', '2026-10-28');
+    expect(after.some((f) => f.kind === 'regular')).toBe(false); // 2026年の算定基礎届（期限 7月10日）は導入前
+    expect(after.filter((f) => f.kind === 'acquisition').map((f) => f.trigger)).toEqual(['2026-10-25']); // 期限 10月30日は利用開始日の後なので出す
+    expect(after.some((f) => f.kind === 'revision')).toBe(true); // 月額変更届の見込み（期限なし）は出す
+    const later = findFilings([e], [], [], grades, candidates as never, [{ id: 'honsha' }], '2026-11-06', '2026-11-01');
+    expect(later.some((f) => f.kind === 'acquisition')).toBe(false); // 期限 10月30日は利用開始日の前
+  });
+
   it('状態：届出済み・期限切れ・3日以内・未対応。トップの件数は7日以内と期限なし', () => {
     const list = find([
       person({ qualifications: [{ acquiredDate: '2026-10-01', lostDate: null }, { acquiredDate: '2026-10-25', lostDate: null }] }),
@@ -121,5 +134,15 @@ describe('届出の一覧', () => {
     expect(filingState(b, new Set(), TODAY)).toBe('soon');
     expect(filingState(b, new Set(), '2026-10-20')).toBe('open');
     expect(urgentFilings(list, new Set([a.id]), TODAY).map((f) => f.id)).toEqual([b.id]);
+  });
+});
+
+describe('導入時の登録で対応不要にする届出', () => {
+  it('資格取得届・扶養に入った被扶養者異動届のIDが、届出の一覧のIDと同じ（対応不要にすれば一覧に出ない）', () => {
+    const e = person({ dependents: [{ name: '山田 花子', birthDate: '1992-01-01', certifiedDate: '2026-10-01', removedDate: null }] });
+    const ids = onboardingFilings('e1', '2026-10-01', 'honsha', [{ name: '山田 花子', certifiedDate: '2026-10-01' }]).map((f) => f.id);
+    const listed = find([e]).filter((f) => f.kind === 'acquisition' || f.kind === 'dependent').map((f) => f.id);
+    expect(listed.length).toBe(2);
+    expect(ids.sort()).toEqual(listed.sort());
   });
 });

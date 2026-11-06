@@ -4,6 +4,7 @@
 import { parseDateLoose, parseNumberLoose } from './csv';
 import { StandardHistory } from './employee-month';
 import { findByNumber } from './salary-import';
+import { standardGradeError, type GradeRow } from './grade-suggest';
 
 /** アプリの項目ごとに、対応するCSVの列名（空はその列なし） */
 export type DecisionMapping = {
@@ -130,6 +131,8 @@ export function buildDecisionPreview(
   m: DecisionMapping,
   employees: DecisionEmployee[],
   expectations: DecisionExpectation[],
+  /** 等級表（額が適用年月の等級の額かを確かめる。空なら確かめない） */
+  grades: GradeRow[] = [],
 ): DecisionRow[] {
   const [headers, ...body] = rows;
   const cell = (r: string[], name: string) => (name === '' || headers.indexOf(name) < 0 ? undefined : r[headers.indexOf(name)]);
@@ -158,6 +161,12 @@ export function buildDecisionPreview(
     if (health === null || Number.isNaN(health) || health <= 0 || health % 1000 !== 0) errors.push('健康保険の標準報酬月額を読み取れません');
     if (Number.isNaN(pensionRaw) || (pensionRaw !== null && (pensionRaw <= 0 || pensionRaw % 1000 !== 0)))
       errors.push('厚生年金の標準報酬月額を読み取れません');
+    if (validFrom && errors.length === 0) {
+      const gh = standardGradeError(grades, validFrom, 'health', health!);
+      if (gh) errors.push(gh);
+      const gp = pensionRaw === null ? null : standardGradeError(grades, validFrom, 'pension', pensionRaw);
+      if (gp) errors.push(gp);
+    }
 
     const label = emp ? `${emp.employeeNumber} ${emp.name}` : number || name;
     const base = { line, label, name: emp?.name ?? name };

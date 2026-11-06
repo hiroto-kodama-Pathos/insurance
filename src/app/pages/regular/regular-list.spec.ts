@@ -1,4 +1,5 @@
 import { BonusRepository } from '../../core/repository/bonus-repository';
+import { Confirm } from '../../core/ui/confirm';
 import { legacyGroup } from '../../core/calc/payroll-group';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
@@ -27,9 +28,11 @@ describe('RegularList', () => {
   let fixture: ComponentFixture<RegularList>;
   let employees: EmployeeRecord[];
   let added: { id: string; validFrom: string; healthStandard: number }[];
+  let removed: { employeeId: string; standardId: string; log: string }[] = [];
 
   beforeEach(async () => {
     added = [];
+    removed = [];
     employees = [person('e1', '0001', '山田 太郎'), person('e2', '0002', '佐藤 花子'), person('e3', '0003', '六月 入社', '2026-06-10')];
     const salaries = [
       pay('e1', '2026-04', 300_000, 20_000), pay('e1', '2026-05', 300_000, 30_000), pay('e1', '2026-06', 300_000, 40_000),
@@ -39,13 +42,18 @@ describe('RegularList', () => {
       imports: [RegularList],
       providers: [
         provideRouter([]),
+        { provide: Confirm, useValue: { ask: async () => true } },
         {
           provide: EmployeeRepository,
           useValue: {
             loadAll: async () => employees,
             addStandard: async (id: string, input: { validFrom: string; healthStandard: number; pensionStandard: number }) => {
               added.push({ id, validFrom: input.validFrom, healthStandard: input.healthStandard });
-              employees = employees.map((e) => (e.id === id ? { ...e, standardHistory: [...e.standardHistory, input] } : e));
+              employees = employees.map((e) => (e.id === id ? { ...e, standardHistory: [...e.standardHistory, { ...input, id: `s-${id}` }] } : e));
+            },
+            deleteStandards: async (list: { employeeId: string; standardId: string; log: string }[]) => {
+              removed.push(...list);
+              employees = employees.map((e) => ({ ...e, standardHistory: e.standardHistory.filter((h) => !list.some((x) => x.employeeId === e.id && x.standardId === (h as { id?: string }).id)) }));
             },
           },
         },
@@ -94,5 +102,20 @@ describe('RegularList', () => {
     ]);
     expect(row('山田 太郎').textContent).toContain('登録済み');
     expect(el().textContent).toContain('2人の2026年9月分からの標準報酬月額を登録しました。');
+  });
+
+  it('見込みどおり登録した人は、確かめてから登録を取り消せる（1人・表示中をまとめて）', async () => {
+    ([...el().querySelectorAll('button')].find((b) => b.textContent!.includes('一括登録')) as HTMLButtonElement).click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    ([...row('山田 太郎').querySelectorAll('button')].find((b) => b.textContent!.includes('登録を取り消す')) as HTMLButtonElement).click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(removed.map((x) => x.employeeId)).toEqual(['e1']);
+    expect(removed[0].log).toContain('定時決定の登録を取り消しました（2026年9月からの標準報酬月額 健保 34万円');
+    expect(row('山田 太郎').textContent).not.toContain('登録済み');
+    ([...el().querySelectorAll('button')].find((b) => b.textContent!.includes('人の登録を取り消す')) as HTMLButtonElement).click();
+    await fixture.whenStable();
+    expect(removed.map((x) => x.employeeId)).toEqual(['e1', 'e2']);
   });
 });

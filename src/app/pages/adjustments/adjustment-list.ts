@@ -1,5 +1,6 @@
 // さかのぼる改定の差額（設計書 2.20）
 // 確定した金額は書き換えず、差額を表示し、精算した給与の月を記録するまで「未精算」として知らせる。
+import { PageState } from '../../core/ui/page-state';
 import { Confirm } from '../../core/ui/confirm';
 import { NoticeMessage } from '../../core/ui/notice-message';
 import { Component, computed, inject, OnInit, signal } from '@angular/core';
@@ -77,6 +78,12 @@ export class AdjustmentList implements OnInit {
   protected readonly notice = signal<string | null>(null);
   protected readonly saving = signal(false);
   protected readonly tab = signal<'open' | 'settled'>('open');
+
+  /** 一覧の絞り込み・対象月を覚え、詳細から戻ってきたときに元に戻す（core/ui/page-state.ts） */
+  private readonly pageStateKept = ((pageState: PageState) => {
+    pageState.keep('adjustments.tab', this.tab);
+    return true;
+  })(inject(PageState));
 
   private readonly employees = signal<EmployeeRecord[]>([]);
   private readonly masters = signal<Masters | null>(null);
@@ -167,6 +174,30 @@ export class AdjustmentList implements OnInit {
       await this.adjustmentRepo.settle(row, month, this.settlements().find((s) => s.id === row.id));
       this.settlements.set(await this.adjustmentRepo.loadSettlements());
       this.notice.set(`${row.employee?.name ?? ''}さんの${yearMonthLabel(row.yearMonth)}分の差額を、${yearMonthLabel(month)}の給与で精算済みにしました。`);
+    } catch (e) {
+      console.error(e);
+      this.notice.set('保存できませんでした。権限と通信を確かめてください。');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
+  /** 精算済みを取り消して、未精算に戻す（精算した給与の月の誤り・まだ精算していなかったときなど） */
+  protected async unsettle(row: Row): Promise<void> {
+    const record = this.settlements().find((s) => s.id === row.id);
+    if (!record || record.entries.length === 0) return;
+    const last = record.entries.at(-1)!;
+    const ok = await this.confirm.ask({
+      title: '未精算に戻しますか',
+      message: `${row.employee?.name ?? ''}さんの${yearMonthLabel(row.yearMonth)}分の差額の、${yearMonthLabel(last.settledMonth)}の給与での精算の記録を取り消します。差額は未精算に戻り、精算する給与の月を入れ直せます。`,
+      ok: '未精算に戻す',
+    });
+    if (!ok) return;
+    this.saving.set(true);
+    try {
+      await this.adjustmentRepo.unsettle(row.id, record);
+      this.settlements.set(await this.adjustmentRepo.loadSettlements());
+      this.notice.set(`${row.employee?.name ?? ''}さんの${yearMonthLabel(row.yearMonth)}分の差額を、未精算に戻しました。`);
     } catch (e) {
       console.error(e);
       this.notice.set('保存できませんでした。権限と通信を確かめてください。');

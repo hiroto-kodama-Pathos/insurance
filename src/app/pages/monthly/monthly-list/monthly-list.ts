@@ -1,19 +1,22 @@
 // 月次保険料一覧（設計書 3.2）
 // 対象月を選ぶと、全従業員の保険料と、適用事業所別の小計・会社合計を表示する。
+import { saveTableCsv } from '../../../core/ui/table-csv';
+import { PageState } from '../../../core/ui/page-state';
 import { RouterLink } from '@angular/router';
 import { Confirm } from '../../../core/ui/confirm';
 import { NoticeMessage } from '../../../core/ui/notice-message';
 import { exemptingLeave, leaveExemptLabel } from '../../../core/calc/eligibility';
 import { FilingRepository } from '../../../core/repository/filing-repository';
 import { absentInMonth } from '../../../core/calc/absence';
-import { Component, computed, inject, OnInit, signal } from '@angular/core';
+import { Component, computed, inject, OnInit, signal, ElementRef } from '@angular/core';
 import { Auth } from '../../../core/auth/auth';
 import { BonusRecord, calcEmployeeBonuses, fiscalYearOf } from '../../../core/calc/bonus-premium';
 import {
   BonusRowInput,
   buildOfficeClosing,
   canCloseOffice,
-  closeBlockers,
+  CloseBlocker,
+  closeBlockerList,
   mergeWithClosings,
   OfficeClosing,
   RowInput,
@@ -26,14 +29,14 @@ import { ClosingRepository } from '../../../core/repository/closing-repository';
 import { EmployeeRecord, EmployeeRepository } from '../../../core/repository/employee-repository';
 import { MasterRepository } from '../../../core/repository/master-repository';
 import { SettingsRepository } from '../../../core/repository/settings-repository';
-import { ChildSupportRounding } from '../../../core/calc/monthly-premium';
+import { careNote, ChildSupportRounding } from '../../../core/calc/monthly-premium';
 import { exemptionNote } from '../../../core/calc/exemption';
 import { checkDeduction, DeductionCheck, payMonthFor } from '../../../core/calc/deduction';
 import { defaultGroup, legacyGroup, PayrollGroup, payrollGroupAt } from '../../../core/calc/payroll-group';
 import { DEFAULT_SETTINGS } from '../../../core/calc/settings';
 import { monthEnd, monthOf } from '../../../core/calc/date';
 import {
-  ageOn, changeReasons, compareFacts, DEFAULT_CRITERIA, ExtraFilter, FILTER_LABEL, ListCriteria, matches, premiumTotals, RowFacts, SORT_LABEL, SortKey,
+  ageOn, changeReasons, compareFacts, DEFAULT_CRITERIA, ExtraFilter, FILTER_LABEL, ListCriteria, matches, premiumTotals, RowFacts, SORT_LABEL, SortKey, STANDARD_START,
 } from '../../../core/calc/monthly-filter';
 import { ageAlerts } from '../../../core/calc/age-alerts';
 import { addDays } from '../../../core/calc/filing';
@@ -41,7 +44,6 @@ import { addMonths, SalaryRecord } from '../../../core/calc/salary';
 import { SalaryRepository } from '../../../core/repository/salary-repository';
 import { AdjustmentRepository } from '../../../core/repository/adjustment-repository';
 import { SettlementRecord, settledAmountFor } from '../../../core/calc/adjustment';
-import { YearMonthPipe } from '../../../core/ui/year-month.pipe';
 import { yearMonthLabel } from '../../../core/calc/year-month';
 
 /** 一覧の1行 */
@@ -57,7 +59,8 @@ export type OfficeStatus = {
   name: string;
   closing: OfficeClosing | null;
   /** 確定できない理由（空なら確定できる） */
-  blockers: string[];
+  /** 確定できない理由（社員番号・氏名・理由の表で出す） */
+  blockers: CloseBlocker[];
   /** ログイン中の人が確定・解除できるか */
   canOperate: boolean;
   /** その月に支給する賞与の件数（確定すると一緒に保存する） */
@@ -91,12 +94,18 @@ function currentMonth(): string {
 }
 
 @Component({
-  imports: [RouterLink, NoticeMessage, YearMonthPipe],
+  imports: [RouterLink, NoticeMessage],
   selector: 'app-monthly-list',
   styleUrl: './monthly-list.scss',
   templateUrl: './monthly-list.html',
 })
 export class MonthlyList implements OnInit {
+  private readonly host = inject(ElementRef<HTMLElement>).nativeElement as HTMLElement;
+  /** 表示している一覧（絞り込み・並び替えのあと）を、画面と同じ列でCSVに保存する（core/ui/table-csv.ts） */
+  protected saveCsv(selector: string, fileName: string): void {
+    saveTableCsv(this.host, selector, fileName);
+  }
+
   private readonly employeeRepo = inject(EmployeeRepository);
   private readonly confirm = inject(Confirm);
   private readonly masterRepo = inject(MasterRepository);
@@ -188,7 +197,8 @@ export class MonthlyList implements OnInit {
       const e = byId.get(row.employee.id);
       const prev = this.prevResults().get(row.employee.id) ?? null;
       const t = premiumTotals(row.result.premium);
-      const prevT = prev && prev.status !== 'notInsured' ? premiumTotals(prev.premium).employee : null;
+      // 前月に資格がない人・標準報酬月額がなく計算していない人（導入前の月）は、前月との差を出さない
+      const prevT = prev && prev.status !== 'notInsured' && prev.status !== 'noStandard' ? premiumTotals(prev.premium).employee : null;
       const d = this.deductions().get(row.employee.id);
       const alerts = [
         ageIds.has(row.employee.id) ? '年齢到達' : '',
@@ -234,6 +244,14 @@ export class MonthlyList implements OnInit {
   /** 1人ずつの表を開いているか（最初は閉じておき、小計をすぐ見られるようにする） */
   protected readonly personsOpen = signal(false);
 
+  /** 一覧の絞り込み・対象月を覚え、詳細から戻ってきたときに元に戻す（core/ui/page-state.ts） */
+  private readonly pageStateKept = ((pageState: PageState) => {
+    pageState.keep('monthly.yearMonth', this.yearMonth);
+    pageState.keep('monthly.criteria', this.criteria);
+    pageState.keep('monthly.personsOpen', this.personsOpen);
+    return true;
+  })(inject(PageState));
+
   /** 前月から保険料が変わった人の数 */
   protected readonly changedCount = computed(() => {
     const f = this.facts();
@@ -268,12 +286,17 @@ export class MonthlyList implements OnInit {
     this.criteria.update((c) => ({ ...c, [key]: value }));
   }
 
-  /** 前月との差（備考に出す） */
+  /**
+   * 前月との差（備考に出す）。前月に資格がなかった人（入社・再加入）は差額がないので「今月から加入」、
+   * 理由はあるが本人負担が変わらない人（同じ額の事業所への異動など）は「前月と同じ額」と出す
+   */
   protected diffLabel(row: MonthlyRow): string {
     const f = this.facts().get(row.employee.id);
     if (!f || f.reasons.length === 0) return '';
-    const d = f.diff === null ? '' : `${f.diff > 0 ? '+' : ''}${f.diff.toLocaleString('ja-JP')}円 `;
-    return `前月から ${d}（${f.reasons.join('・')}）`;
+    const why = `（${f.reasons.join('・')}）`;
+    if (f.diff === null) return f.reasons.includes(STANDARD_START) ? `今月から計算${why}` : `今月から加入${why}`;
+    if (f.diff === 0) return `前月と同じ額${why}`;
+    return `前月から ${f.diff > 0 ? '+' : ''}${f.diff.toLocaleString('ja-JP')}円${why}`;
   }
 
   /** 保険料がかかる人がいる事業所と、確定済みの事業所の、確定の状況 */
@@ -297,7 +320,7 @@ export class MonthlyList implements OnInit {
           officeId: o.id,
           name: o.name,
           closing,
-          blockers: closing ? [] : closeBlockers(ym, o.id, live, bonuses),
+          blockers: closing ? [] : closeBlockerList(ym, o.id, live, bonuses),
           canOperate: canCloseOffice(scope, o.id),
           bonusCount,
         };
@@ -456,6 +479,11 @@ export class MonthlyList implements OnInit {
     }
   }
 
+  /** 確定できない理由のうち、人ごとのもの（表に出す） */
+  protected personBlockers(blockers: CloseBlocker[]): CloseBlocker[] {
+    return blockers.filter((b) => b.employeeId !== null);
+  }
+
   protected closedAtLabel(c: OfficeClosing): string {
     return c.closedAt ? new Date(c.closedAt).toLocaleString('ja-JP', { timeZone: 'Asia/Tokyo' }) : '';
   }
@@ -465,6 +493,12 @@ export class MonthlyList implements OnInit {
   }
 
   protected statusLabel(row: MonthlyRow): string {
+    // 導入時の登録などで、標準報酬月額がこの月より後から登録されている人は、導入前の月として出す
+    if (row.result.status === 'noStandard') {
+      const e = this.employees().find((x) => x.id === row.employee.id);
+      const first = e?.standardHistory.map((s) => s.validFrom).filter((v) => v > this.yearMonth()).sort()[0];
+      if (first) return `標準報酬月額は${yearMonthLabel(first)}分から（それより前の月は計算しません）`;
+    }
     return STATUS_LABEL[row.result.status];
   }
 
@@ -488,11 +522,7 @@ export class MonthlyList implements OnInit {
 
   /** 介護保険の欄に出す説明（かからない人の理由） */
   protected careNote(row: MonthlyRow): string {
-    const p = row.result.premium;
-    if (!p || p.care) return '';
-    if (p.careLabel === 'first') return '第1号（65歳以上）';
-    if (p.careLabel === 'none') return '対象外（40歳未満）';
-    return '';
+    return careNote(row.result.premium);
   }
 
   /** 適用除外で0円にしている保険（確定済みの行は、今の登録から表示する） */

@@ -2,7 +2,17 @@
 import { Confirm } from '../../../core/ui/confirm';
 import { NoticeMessage } from '../../../core/ui/notice-message';
 import { retirementPreview } from '../../../core/calc/deduction';
-import { CANDIDATE_LABEL, EMPLOYMENT_TYPE_LABEL } from '../../../core/calc/eligibility-check';
+import {
+  CANDIDATE_LABEL,
+  EligibilityInput,
+  EligibilityRule,
+  EMPLOYMENT_TYPE_LABEL,
+  EMPTY_ELIGIBILITY,
+  EmploymentType,
+  judgeEligibility,
+  StoredEligibility,
+} from '../../../core/calc/eligibility-check';
+import { checkEligibilityInput, hoursOptional } from '../../../core/calc/new-employee';
 import { BREAKDOWN_KEYS, BREAKDOWN_LABEL, BreakdownKey, breakdownTotal, checkBreakdown, EMPTY_BREAKDOWN, RemunerationBreakdown } from '../../../core/calc/new-employee';
 import { isValidDate } from '../../../core/calc/new-employee';
 import { INSURED_TYPE_LABEL, InsuredType, insuredTypeAt } from '../../../core/calc/insured-type';
@@ -56,9 +66,9 @@ import {
   checkNumberChange,
 } from '../../../core/calc/employee-edit';
 import { calcEmployeeMonth, EmployeeMonthResult, findEffective, Masters } from '../../../core/calc/employee-month';
-import { GradeRow, suggestStandards } from '../../../core/calc/grade-suggest';
+import { GradeRow, standardGradeError, suggestStandards } from '../../../core/calc/grade-suggest';
 import { senToDisplayYen } from '../../../core/calc/premium-calculator';
-import { EmployeeDetail as Detail, EmployeeRepository } from '../../../core/repository/employee-repository';
+import { ChangeLog, EmployeeDetail as Detail, EmployeeRepository } from '../../../core/repository/employee-repository';
 import { MasterRepository } from '../../../core/repository/master-repository';
 import { NgTemplateOutlet } from '@angular/common';
 import { SettingsRepository } from '../../../core/repository/settings-repository';
@@ -67,19 +77,42 @@ import { parseNumberInput } from '../../../core/calc/half-width';
 import { DateLabelPipe, YearMonthPipe } from '../../../core/ui/year-month.pipe';
 import { dateLabel, yearMonthLabel } from '../../../core/calc/year-month';
 import { NavigationHistory, screenLabel } from '../../../core/ui/navigation-history';
+import { focusFormSoon } from '../../../core/ui/form-focus';
+import {
+  checkAssignmentDelete,
+  checkAssignmentEdit,
+  checkBirthDateChange,
+  checkDatedEdit,
+  checkLeaveOverlap,
+  checkQualificationDelete,
+  checkQualificationEdit,
+  checkStandardDelete,
+  dependentMoves,
+  officeIdsOf,
+  QualificationEditInput,
+  toQualificationEdit,
+} from '../../../core/calc/history-edit';
 
 type Mode =
   | null | 'retire' | 'loss' | 'reacquire' | 'transfer' | 'standard' | 'leave' | 'insuredType' | 'exemption' | 'exemptionEnd'
-  | 'name' | 'employeeNumber' | 'dependent' | 'dependentRemove' | 'dependentExemption' | 'dependentExemptionEnd' | 'payrollGroup' | 'confirmStandard' | 'absence' | { leaveId: string } | { absenceId: string };
+  | 'name' | 'employeeNumber' | 'dependent' | 'dependentRemove' | 'dependentExemption' | 'dependentExemptionEnd' | 'payrollGroup' | 'confirmStandard' | 'absence' | { leaveId: string } | { absenceId: string }
+  | EditKind;
+
+/** 登録した履歴を直す入力（直す行のIDは editingId） */
+export type EditKind = 'eligibility' | 'birthDate' | 'qualificationEdit' | 'standardEdit' | 'dependentEdit' | 'assignmentEdit' | 'insuredTypeEdit' | 'payrollGroupEdit';
+
+/** 削除できる履歴 */
+export type DeleteKind = 'qualification' | 'standard' | 'dependent' | 'assignment' | 'insuredType' | 'payrollGroup' | 'leave' | 'absence' | 'exemption';
 
 /** 画面の欄（カード）。入力フォームは、操作に関係するカードの中に出す */
-type Card = 'qual' | 'standard' | 'leave' | 'family' | 'history';
+type Card = 'qual' | 'standard' | 'leave' | 'family' | 'history' | 'log';
 const CARDS: { id: Card; label: string }[] = [
   { id: 'qual', label: '資格・所属' },
   { id: 'standard', label: '標準報酬月額' },
   { id: 'leave', label: '休業・休職' },
   { id: 'family', label: '被扶養者・適用除外' },
   { id: 'history', label: '直近12か月の保険料' },
+  { id: 'log', label: '変更の記録' },
 ];
 
 /** 入力の種類 → フォームを出すカード */
@@ -88,12 +121,14 @@ export function cardOfMode(mode: Mode): Card | null {
   if (typeof mode === 'object') return 'leave';
   switch (mode) {
     case 'standard':
+    case 'standardEdit':
     case 'confirmStandard':
       return 'standard';
     case 'leave':
     case 'absence':
       return 'leave';
     case 'dependent':
+    case 'dependentEdit':
     case 'dependentRemove':
     case 'dependentExemption':
     case 'dependentExemptionEnd':
@@ -264,6 +299,14 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   private readonly rounding = signal<ChildSupportRounding>('combined');
 
   protected readonly mode = signal<Mode>(null);
+  /** 直している履歴のID（EditKind のとき） */
+  protected readonly editingId = signal<string | null>(null);
+  /** 資格の期間の訂正の入力 */
+  protected readonly qualForm = signal<QualificationEditInput>({ acquiredDate: '', lostReason: '', endDate: '' });
+  /** 喪失の理由（訂正では退職も選べる） */
+  protected readonly allLostReasonKeys = Object.keys(LOST_REASONS);
+  /** 所属事業所の履歴を変えられるか（全担当だけ。特定の事業所の担当者は、ほかの事業所への所属を作れない） */
+  protected readonly scopeAll = computed(() => this.auth.user()?.siScope === 'all');
   protected readonly cards = CARDS;
   /** 生年月日の欄の上限（今日より後は選べない） */
   protected readonly todayDate = today();
@@ -276,6 +319,8 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
 
   protected readonly errors = signal<Errors>({});
   protected readonly saving = signal(false);
+  /** 保存したあと、同じ入力（被扶養者の追加）をもう一度開く（家族を何人か続けて入れるとき） */
+  protected readonly continueAfterSave = signal(false);
   protected readonly notice = signal<string | null>(null);
 
   // 入力欄
@@ -328,6 +373,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     try {
       await this.repo.setRefundStatus(d.id, qualificationId, status);
       this.notice.set(`還付の状態を「${REFUND_LABEL[status]}」にしました。`);
+      await this.logChange(`同月得喪の還付の状態を「${REFUND_LABEL[status]}」にしました。`);
       await this.reload();
     } catch (e) {
       console.error(e);
@@ -413,10 +459,20 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       ]);
       this.filedIds.set(filedIds);
       this.rounding.set(settings.childSupportRounding);
+      this.fullTime.set({ weeklyHours: settings.fullTimeWeeklyHours, monthlyDays: settings.fullTimeMonthlyDays });
       this.payrollGroups.set(groups);
       if (!detail) this.error.set('この従業員は見つかりませんでした。');
       this.detail.set(detail);
       this.masters.set(masters);
+      // 変更の記録は、読めなくても画面は出す（記録を始める前の人・権限のない人もいるため）
+      if (detail) {
+        try {
+          this.changeLogs.set(await this.repo.loadChangeLogs(detail.id));
+        } catch (e) {
+          console.error(e);
+          this.changeLogs.set([]);
+        }
+      }
       this.grades.set(grades);
     } catch (e) {
       console.error(e);
@@ -458,7 +514,11 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   protected historyNote(r: EmployeeMonthResult): string {
     if (r.status === 'notInsured') return '資格なし';
     if (r.status === 'missingRate') return '料率が未登録';
-    if (r.status === 'noStandard') return '標準報酬月額が未登録';
+    if (r.status === 'noStandard') {
+      // 導入時の登録などで、標準報酬月額がこの月より後から登録されている（導入前の月）
+      const first = (this.detail()?.standardHistory ?? []).map((x) => x.validFrom).filter((v) => v > r.yearMonth).sort()[0];
+      return first ? `導入前（標準報酬月額は${yearMonthLabel(first)}分から）` : '標準報酬月額が未登録';
+    }
     if (r.premium?.exempt) return '休業免除';
     const notes = [exemptionNote(this.detail()?.exemptions ?? [], r.yearMonth)];
     if (r.premium?.careLabel === 'special') notes.push('特定被保険者（40〜64歳の被扶養者あり）');
@@ -497,6 +557,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
   // ---- 入力 ----
   protected open(mode: Exclude<Mode, null>): void {
     this.errors.set({});
+    this.editingId.set(null);
     this.notice.set(null);
     this.date.set('');
     this.reason.set('');
@@ -544,11 +605,8 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     }
     this.mode.set(mode);
     this.snapshot.take();
-    // 入力欄は操作に関係するカードの中に開くので、見えるところまで動かす
-    setTimeout(() => {
-      const form = document.querySelector('app-employee-detail form.form') as (HTMLElement & { scrollIntoView?: unknown }) | null;
-      if (form && typeof form.scrollIntoView === 'function') form.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    });
+    // 入力欄は操作に関係するカードの中に開くので、見えるところまで動かし、最初の欄にカーソルを置く
+    focusFormSoon('app-employee-detail');
   }
   /** 資格を失う日に扶養から外れる被扶養者（まだ扶養中の人） */
   private openDependentIds(lostDate: string | null): string[] {
@@ -613,11 +671,265 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
     this.mode.set(null);
   }
 
+  // ---- 加入対象の判定の情報の更新（契約が変わったとき。設計書 2.24・3.1） ----
+  protected readonly eligForm = signal<EligibilityInput>(EMPTY_ELIGIBILITY);
+  private readonly eligRules = signal<EligibilityRule[]>([]);
+  private readonly fullTime = signal({ weeklyHours: 40, monthlyDays: 20 });
+  protected readonly employmentTypes = Object.keys(EMPLOYMENT_TYPE_LABEL) as EmploymentType[];
+  protected readonly hoursOptional = hoursOptional;
+  /** 入力中の候補（足りなければ null） */
+  protected readonly eligPreview = computed(() =>
+    this.mode() === 'eligibility' && isValidDate(this.date())
+      ? judgeEligibility(this.eligForm(), this.date(), this.eligRules(), this.fullTime())
+      : null,
+  );
+
+  protected setElig<K extends keyof EligibilityInput>(key: K, value: EligibilityInput[K]): void {
+    this.eligForm.update((f) => ({ ...f, [key]: value }));
+  }
+  protected setEligNumber(key: 'weeklyHours' | 'monthlyDays', value: string): void {
+    this.setElig(key, parseNumberInput(value));
+  }
+
+  /** 契約が変わったときに、加入対象の判定の情報を入れ直す（今の値を入れて開く） */
+  protected async openEligibility(): Promise<void> {
+    const d = this.detail();
+    if (!d) return;
+    this.openEdit('eligibility');
+    const el = d.eligibility;
+    this.eligForm.set(el ? {
+      employmentType: el.employmentType, weeklyHours: el.weeklyHours, monthlyDays: el.monthlyDays,
+      contractEnd: el.contractEnd, renewalExpected: el.renewalExpected, isStudent: el.isStudent,
+    } : EMPTY_ELIGIBILITY);
+    this.date.set(today());
+    this.snapshot.take();
+    if (this.eligRules().length === 0) {
+      try {
+        this.eligRules.set(await this.masterRepo.loadEligibilityRules());
+      } catch (e) {
+        console.error(e);
+      }
+    }
+  }
+
+  /** 新しい候補と、今の加入の状態が違うときの案内 */
+  private eligibilityHint(r: { candidate: StoredEligibility['candidate']; insuredType: InsuredType | null }): string {
+    const insured = this.isInsuredNow();
+    if (r.candidate === 'none' && insured) return '今は加入中です。加入の条件から外れるなら、「退職以外の資格喪失」（理由：加入の条件から外れた）を登録してください。';
+    if (r.candidate !== 'none' && !insured) return '今は加入していません。加入するなら、「加入を登録」で資格取得日を登録してください。';
+    if (r.insuredType && insured && r.insuredType !== this.currentInsuredType())
+      return `今の被保険者区分（${INSURED_TYPE_LABEL[this.currentInsuredType()]}）と違います。区分が変わるなら「被保険者区分を変える」で登録してください。`;
+    return '今の加入の状態と同じです。';
+  }
+
+  protected setQual(key: keyof QualificationEditInput, value: string): void {
+    this.qualForm.update((f) => ({ ...f, [key]: value }));
+  }
+
+  /** 登録した履歴を直す入力を開く（今の値を入れておく） */
+  protected openEdit(kind: EditKind, id: string | null = null): void {
+    const d = this.detail();
+    if (!d) return;
+    this.open(kind);
+    this.editingId.set(id);
+    if (kind === 'birthDate') this.date.set(d.birthDate);
+    if (kind === 'qualificationEdit') {
+      const q = d.qualifications.find((x) => x.id === id);
+      if (q) this.qualForm.set(toQualificationEdit(q));
+    }
+    if (kind === 'standardEdit') {
+      const s = d.standardHistory.find((x) => x.id === id);
+      if (s) {
+        this.standardForm.set({
+          validFrom: s.validFrom,
+          reason: (s.reason || 'revision') as StandardInput['reason'],
+          healthStandard: s.healthStandard,
+          pensionStandard: s.pensionStandard,
+          ownRemuneration: s.ownRemuneration ?? null,
+          totalRemuneration: s.totalRemuneration ?? null,
+          selectedInsurerId: s.selectedInsurerId ?? null,
+          provisional: s.provisional === true,
+        });
+        this.multiOffice.set(!!(s.ownRemuneration && s.totalRemuneration));
+        this.remuneration.set(s.remuneration);
+        const b = s.remunerationBreakdown;
+        this.breakdown.set(b ? (Object.fromEntries(BREAKDOWN_KEYS.map((k) => [k, b[k] ?? null])) as RemunerationBreakdown) : EMPTY_BREAKDOWN);
+      }
+    }
+    if (kind === 'dependentEdit') {
+      const x = d.dependents.find((y) => y.id === id);
+      if (x) {
+        this.dependentForm.set({ name: x.name, birthDate: x.birthDate, certifiedDate: x.certifiedDate });
+        this.date.set(x.removedDate ?? '');
+      }
+    }
+    if (kind === 'assignmentEdit') {
+      const a = d.assignments.find((x) => x.id === id);
+      if (a) {
+        this.date.set(a.validFrom);
+        this.officeId.set(a.officeId);
+      }
+    }
+    if (kind === 'insuredTypeEdit') {
+      const t = d.insuredTypes.find((x) => x.id === id);
+      if (t) {
+        this.date.set(t.validFrom);
+        this.insuredType.set(t.type);
+      }
+    }
+    if (kind === 'payrollGroupEdit') {
+      const a = d.payrollAssignments.find((x) => x.id === id);
+      if (a) {
+        this.date.set(a.validFrom);
+        this.payrollGroupId.set(a.payrollGroupId);
+      }
+    }
+    // 開いた時点の値を「変更なし」とする（やめる・画面を移るときの確認に使う）
+    this.snapshot.take();
+  }
+
+  // ---- 変更の記録（設計書 3.1） ----
+  protected readonly changeLogs = signal<ChangeLog[]>([]);
+
+  /** 変更の記録を残す。残せなくても、保存した内容はそのまま（知らせを出さず、コンソールに出す） */
+  private async logChange(text: string): Promise<void> {
+    const d = this.detail();
+    if (!d) return;
+    try {
+      await this.repo.addChangeLog(d.id, text);
+    } catch (e) {
+      console.error('変更の記録を残せませんでした', e);
+    }
+  }
+
+  /** 直す前の値（変更の記録に「直す前」として残す）。追加・登録のときは null */
+  private beforeLabel(mode: Exclude<Mode, null>): string | null {
+    const id = this.editingId();
+    if (typeof mode === 'object') {
+      if ('leaveId' in mode) return this.deleteTarget('leave', mode.leaveId)?.label ?? null;
+      return this.deleteTarget('absence', mode.absenceId)?.label ?? null;
+    }
+    const kind: Partial<Record<string, DeleteKind>> = {
+      standardEdit: 'standard', qualificationEdit: 'qualification', dependentEdit: 'dependent', assignmentEdit: 'assignment',
+      insuredTypeEdit: 'insuredType', payrollGroupEdit: 'payrollGroup',
+    };
+    if (kind[mode] && id) return this.deleteTarget(kind[mode]!, id)?.label ?? null;
+    if (mode === 'exemptionEnd') return this.deleteTarget('exemption', this.editingExemptionId() ?? '')?.label ?? null;
+    if (mode === 'confirmStandard') return this.deleteTarget('standard', this.confirmId() ?? '')?.label ?? null;
+    if (mode === 'eligibility') {
+      const el = this.detail()?.eligibility;
+      return el ? `${EMPLOYMENT_TYPE_LABEL[el.employmentType]}・週${el.weeklyHours ?? '―'}時間・月${el.monthlyDays ?? '―'}日・候補 ${CANDIDATE_LABEL[el.candidate]}` : null;
+    }
+    return null;
+  }
+
+  /** 変更の記録の日時（2026年11月5日 14:03） */
+  protected logTime(at: Date | null): string {
+    if (!at) return '（記録中）';
+    const p = (n: number) => String(n).padStart(2, '0');
+    return `${at.getFullYear()}年${at.getMonth() + 1}月${at.getDate()}日 ${p(at.getHours())}:${p(at.getMinutes())}`;
+  }
+
+  /** 削除する履歴の説明（確認のダイアログに出す） */
+  private deleteTarget(kind: DeleteKind, id: string): { label: string; block: string | null } | null {
+    const d = this.detail();
+    if (!d) return null;
+    switch (kind) {
+      case 'qualification': {
+        const q = d.qualifications.find((x) => x.id === id);
+        return q ? { label: `資格の期間（${dateLabel(q.acquiredDate)}〜${q.lostDate ? dateLabel(q.lostDate) : '加入中'}）`, block: checkQualificationDelete(d.qualifications) } : null;
+      }
+      case 'standard': {
+        const s = d.standardHistory.find((x) => x.id === id);
+        return s
+          ? { label: `${yearMonthLabel(s.validFrom)}からの標準報酬月額（健保 ${this.man(s.healthStandard)}／厚年 ${this.man(s.pensionStandard)}）`, block: checkStandardDelete(d.standardHistory.length, d.qualifications.length > 0) }
+          : null;
+      }
+      case 'dependent': {
+        const x = d.dependents.find((y) => y.id === id);
+        return x
+          ? { label: `被扶養者の${x.name}さん（生年月日 ${dateLabel(x.birthDate)}・扶養に入った日 ${dateLabel(x.certifiedDate)}${x.removedDate ? `・外れた日 ${dateLabel(x.removedDate)}` : ''}）`, block: null }
+          : null;
+      }
+      case 'assignment': {
+        const a = d.assignments.find((x) => x.id === id);
+        return a ? { label: `${dateLabel(a.validFrom)}からの所属（${this.officeName(a.officeId)}）`, block: checkAssignmentDelete(d.assignments, id) } : null;
+      }
+      case 'insuredType': {
+        const t = d.insuredTypes.find((x) => x.id === id);
+        return t ? { label: `${dateLabel(t.validFrom)}からの被保険者区分（${INSURED_TYPE_LABEL[t.type]}）`, block: null } : null;
+      }
+      case 'payrollGroup': {
+        const a = d.payrollAssignments.find((x) => x.id === id);
+        return a ? { label: `${dateLabel(a.validFrom)}からの支払区分（${this.groupName(a.payrollGroupId)}）`, block: null } : null;
+      }
+      case 'leave': {
+        const l = d.leaves.find((x) => x.id === id);
+        return l ? { label: `${l.type === 'maternity' ? '産前産後休業' : '育児休業'}（${dateLabel(l.startDate)}〜${l.endDate ? dateLabel(l.endDate) : '休業中'}）`, block: null } : null;
+      }
+      case 'absence': {
+        const a = d.absences.find((x) => x.id === id);
+        return a ? { label: `休職（${ABSENCE_REASON_LABEL[a.reason]}・${absencePeriodLabel(a)}）`, block: null } : null;
+      }
+      case 'exemption': {
+        const x = d.exemptions.find((y) => y.id === id);
+        return x ? { label: `適用除外（${EXEMPTION_LABEL[x.type]}・${dateLabel(x.startDate)}から）`, block: null } : null;
+      }
+    }
+  }
+
+  /**
+   * 登録した履歴を消す（誤って登録したもの）。確認してから消す。
+   * 消すと計算できなくなる場合は、理由を知らせて止める
+   */
+  protected async deleteRow(kind: DeleteKind, id: string): Promise<void> {
+    const d = this.detail();
+    const t = this.deleteTarget(kind, id);
+    if (!d || !t) return;
+    if (t.block) {
+      this.notice.set(`${t.label}は削除できません。${t.block}`);
+      return;
+    }
+    const ok = await this.confirm.ask({
+      title: '削除しますか',
+      message:
+        `${t.label}を削除します。元に戻せません。` +
+        '確定済みの月に関わる場合、確定した金額は変わらず、差額の画面にさかのぼる差額として出ます。' +
+        (kind === 'assignment' ? '異動のときに一緒に登録した標準報酬月額は残ります（不要なら標準報酬月額の欄で削除してください）。' : ''),
+      ok: '削除する',
+      danger: true,
+    });
+    if (!ok) return;
+    this.saving.set(true);
+    try {
+      switch (kind) {
+        case 'qualification': await this.repo.deleteQualification(d.id, id); break;
+        case 'standard': await this.repo.deleteStandard(d.id, id); break;
+        case 'dependent': await this.repo.deleteDependent(d.id, id); break;
+        case 'assignment': await this.repo.deleteAssignment(d.id, id, officeIdsOf(d.assignments.filter((a) => a.id !== id))); break;
+        case 'insuredType': await this.repo.deleteInsuredType(d.id, id); break;
+        case 'payrollGroup': await this.repo.deletePayrollAssignment(d.id, id); break;
+        case 'leave': await this.repo.deleteLeave(d.id, id); break;
+        case 'absence': await this.repo.deleteAbsence(d.id, id); break;
+        case 'exemption': await this.repo.deleteExemption(d.id, id); break;
+      }
+      this.mode.set(null);
+      this.notice.set(`${t.label}を削除しました。`);
+      await this.logChange(`${t.label}を削除`);
+      await this.reload();
+    } catch (e) {
+      console.error(e);
+      this.notice.set('削除できませんでした。権限と通信を確かめてください。');
+    } finally {
+      this.saving.set(false);
+    }
+  }
+
   /** 開いているフォームの入力（画面を移る前の確認に使う） */
   private readonly snapshot = new FormSnapshot(() => [
     this.date(), this.reason(), this.officeId(), this.standardForm(), this.remuneration(), this.breakdown(), this.multiOffice(),
     this.leaveForm(), this.absenceForm(), this.exemptionForm(), this.dependentForm(), this.depExemptionForm(),
-    this.insuredType(), this.payrollGroupId(), this.nameForm(), this.numberForm(),
+    this.insuredType(), this.payrollGroupId(), this.nameForm(), this.numberForm(), this.qualForm(), this.eligForm(),
   ]);
   /** 画面を移る前の確認に使う（unsavedChangesGuard）。開いているフォームで入力を変えていれば1件 */
   unsavedCount(): number {
@@ -712,6 +1024,7 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
         ...checkStandard(
           d.standardHistory.map((s) => s.validFrom),
           { ...f, validFrom: this.date() ? monthOf(this.date()) : '' },
+          this.grades(),
         ),
       };
       action = () =>
@@ -726,13 +1039,83 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const f = this.multiOffice()
         ? { ...raw, ownRemuneration: raw.ownRemuneration ?? null, totalRemuneration: raw.totalRemuneration ?? null, selectedInsurerId: raw.selectedInsurerId ?? null }
         : { ...raw, ownRemuneration: null, totalRemuneration: null, selectedInsurerId: null };
-      errors = checkStandard(d.standardHistory.map((s) => s.validFrom), f);
+      errors = checkStandard(d.standardHistory.map((s) => s.validFrom), f, this.grades());
       // 資格取得時決定で内訳を1つでも入れたら、内訳をチェックして一緒に保存する
       const b = this.breakdown();
       const useBreakdown = f.reason === 'acquisition' && BREAKDOWN_KEYS.some((k) => b[k] !== null);
       if (useBreakdown) errors = { ...errors, ...checkBreakdown(b) };
       action = () => this.repo.addStandard(d.id, f, this.remuneration(), useBreakdown ? b : null);
       message = `${yearMonthLabel(f.validFrom)}分からの標準報酬月額を登録しました。`;
+    } else if (mode === 'standardEdit') {
+      const raw = this.standardForm();
+      const id = this.editingId()!;
+      const f = this.multiOffice()
+        ? { ...raw, ownRemuneration: raw.ownRemuneration ?? null, totalRemuneration: raw.totalRemuneration ?? null, selectedInsurerId: raw.selectedInsurerId ?? null }
+        : { ...raw, ownRemuneration: null, totalRemuneration: null, selectedInsurerId: null };
+      errors = checkStandard(d.standardHistory.filter((s) => s.id !== id).map((s) => s.validFrom), f, this.grades());
+      const b = this.breakdown();
+      const useBreakdown = f.reason === 'acquisition' && BREAKDOWN_KEYS.some((k) => b[k] !== null);
+      if (useBreakdown) errors = { ...errors, ...checkBreakdown(b) };
+      action = () => this.repo.updateStandard(d.id, id, f, this.remuneration(), useBreakdown ? b : null);
+      message = `${yearMonthLabel(f.validFrom)}分からの標準報酬月額を直しました。確定済みの月に関わるときは、差額の画面にさかのぼる差額が出ます。`;
+    } else if (mode === 'eligibility') {
+      const f = this.eligForm();
+      const date = this.date();
+      errors = isValidDate(date) ? checkEligibilityInput(f, date, '変わった日') : { eligibilityDate: '契約が変わった日を正しく入力してください' };
+      const r = isValidDate(date) ? judgeEligibility(f, date, this.eligRules(), this.fullTime()) : null;
+      if (Object.keys(errors).length === 0 && !r) errors = { eligibilityDate: '判定できませんでした。所定労働時間・日数を入れてください（判定の基準が登録されていないときは、運営者に確かめてください）' };
+      const stored: StoredEligibility | null = r ? { ...f, candidate: r.candidate, reasons: r.reasons, changedDate: date } : null;
+      action = () => this.repo.updateEligibility(d.id, stored!);
+      message = r ? `加入対象の判定を更新しました（候補：${CANDIDATE_LABEL[r.candidate]}）。${this.eligibilityHint(r)}` : '';
+    } else if (mode === 'birthDate') {
+      const first = [...d.qualifications].map((q) => q.acquiredDate).sort()[0] ?? null;
+      errors = checkBirthDateChange(d.birthDate, this.date(), today(), first);
+      const value = this.date();
+      action = () => this.repo.updateBirthDate(d.id, value);
+      message = `生年月日を${dateLabel(d.birthDate)}から${dateLabel(value)}に直しました。年齢による保険料の切り替え（40・65・70・75歳）は、新しい生年月日で計算し直します。`;
+    } else if (mode === 'qualificationEdit') {
+      const id = this.editingId()!;
+      const before = d.qualifications.find((q) => q.id === id)!;
+      const f = this.qualForm();
+      const r = checkQualificationEdit(d.qualifications, id, f);
+      errors = r.errors;
+      const moves = dependentMoves(d.dependents, before.lostDate, r.lostDate);
+      action = () => this.repo.updateQualification(d.id, id, { acquiredDate: f.acquiredDate, lostDate: r.lostDate, lostReason: f.lostReason || null }, moves);
+      message =
+        (before.lostDate && !r.lostDate ? '退職（資格喪失）を取り消し、加入中に戻しました。' : '資格の期間を直しました。') +
+        (moves.length ? `同じ日に扶養から外れていた被扶養者${moves.length}人も${r.lostDate ? '外れた日を合わせました' : '扶養に戻しました'}。` : '') +
+        '届け出た内容と違うときは、資格取得届・資格喪失届の訂正（取消）も確かめてください。';
+    } else if (mode === 'dependentEdit') {
+      const id = this.editingId()!;
+      const f = this.dependentForm();
+      const removed = this.date();
+      errors = checkDependent(f, today());
+      if (removed) {
+        const x = d.dependents.find((y) => y.id === id)!;
+        errors = { ...errors, ...checkRemoval({ ...x, certifiedDate: f.certifiedDate }, removed) };
+      }
+      action = () => this.repo.updateDependent(d.id, id, { ...f, removedDate: removed || null });
+      message = `被扶養者（${f.name.trim()}さん）を直しました。`;
+    } else if (mode === 'assignmentEdit') {
+      const id = this.editingId()!;
+      const input = { validFrom: this.date(), officeId: this.officeId() };
+      errors = checkAssignmentEdit(d.assignments, id, input);
+      const officeIds = officeIdsOf(d.assignments.map((a) => (a.id === id ? input : a)));
+      action = () => this.repo.updateAssignment(d.id, id, input, officeIds);
+      message = `${dateLabel(input.validFrom)}からの所属（${this.officeName(input.officeId)}）に直しました。`;
+    } else if (mode === 'insuredTypeEdit') {
+      const id = this.editingId()!;
+      const input = { validFrom: this.date(), type: this.insuredType() };
+      errors = checkDatedEdit(d.insuredTypes.filter((x) => x.id !== id), input.validFrom, 'insuredTypeDate', '区分');
+      action = () => this.repo.updateInsuredType(d.id, id, input);
+      message = `${dateLabel(input.validFrom)}からの被保険者区分（${INSURED_TYPE_LABEL[input.type]}）に直しました。`;
+    } else if (mode === 'payrollGroupEdit') {
+      const id = this.editingId()!;
+      const input = { validFrom: this.date(), payrollGroupId: this.payrollGroupId() };
+      errors = checkDatedEdit(d.payrollAssignments.filter((x) => x.id !== id), input.validFrom, 'payrollDate', '支払区分');
+      if (!input.payrollGroupId) errors = { ...errors, payrollDate: '支払区分を選んでください' };
+      action = () => this.repo.updatePayrollAssignment(d.id, id, input);
+      message = `${dateLabel(input.validFrom)}からの支払区分（${this.groupName(input.payrollGroupId)}）に直しました。`;
     } else if (mode === 'name') {
       const name = this.nameForm().trim();
       const before = d.name;
@@ -783,8 +1166,9 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const f = this.exemptionForm();
       const id = this.editingExemptionId()!;
       errors = checkExemption(d.exemptions, f, id);
-      action = () => this.repo.updateExemptionEnd(d.id, id, f.endDate);
-      message = f.endDate ? `適用除外の非該当年月日（${dateLabel(f.endDate)}）を登録しました。` : '適用除外の非該当年月日を消しました。';
+      action = () => this.repo.updateExemption(d.id, id, f);
+      const n = exemptionNotice(f.type, f.startDate);
+      message = `適用除外（${EXEMPTION_LABEL[f.type]}）を直しました。${f.endDate ? `非該当年月日は${dateLabel(f.endDate)}です。` : ''}${n.name}：${n.deadline}`;
     } else if (mode === 'payrollGroup') {
       const gid = this.payrollGroupId();
       const date = this.date();
@@ -806,12 +1190,16 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       for (const k of ['healthStandard', 'pensionStandard'] as const) {
         const v = f[k];
         if (v === null || !Number.isInteger(v) || v <= 0 || v % 1000 !== 0) errors[k] = '標準報酬月額を1,000円単位の円で入力してください';
+        else if (t) {
+          const g = standardGradeError(this.grades(), t.validFrom, k === 'healthStandard' ? 'health' : 'pension', v);
+          if (g) errors[k] = g;
+        }
       }
       action = () => this.repo.confirmStandard(d.id, t!.id, f.healthStandard!, f.pensionStandard!);
       message = `${yearMonthLabel(t?.validFrom)}分からの標準報酬月額を、通知書の値で確定しました。`;
     } else if (mode === 'leave') {
       const f = this.leaveForm();
-      errors = checkLeave(f);
+      errors = { ...checkLeaveOverlap(d.leaves, f.startDate, f.endDate), ...checkLeave(f) };
       action = () => this.repo.addLeave(d.id, f);
       message = '休業を登録しました。';
     } else if (mode === 'absence' || 'absenceId' in mode) {
@@ -822,18 +1210,23 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       message = id ? '休職の期間を変更しました。' : '休職を登録しました。保険料は通常どおりかかります（免除はありません）。';
     } else {
       const f = this.leaveForm();
-      errors = checkLeave(f);
-      action = () => this.repo.updateLeave(d.id, mode.leaveId, f.endDate, f.workedDays);
-      message = '休業の期間を変更しました。';
+      errors = { ...checkLeaveOverlap(d.leaves.filter((l) => l.id !== mode.leaveId), f.startDate, f.endDate), ...checkLeave(f) };
+      action = () => this.repo.updateLeave(d.id, mode.leaveId, f);
+      message = '休業を直しました。保険料の免除は、直した期間で計算し直します。';
     }
 
     this.errors.set(errors);
     if (Object.keys(errors).length > 0 || !action) return;
+    const before = this.beforeLabel(mode);
     this.saving.set(true);
     try {
       await action();
+      const again = this.continueAfterSave() && mode === 'dependent';
+      this.continueAfterSave.set(false);
       this.mode.set(null);
-      this.notice.set(message);
+      if (again) this.open('dependent');
+      this.notice.set(again ? `${message} 続けて次の人を入れてください。` : message);
+      await this.logChange(before ? `${message}（直す前：${before}）` : message);
       await this.reload();
     } catch (e) {
       console.error(e);

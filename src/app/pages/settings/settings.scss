@@ -10,5 +10,21 @@ fieldset.full-time {
   border: 1px solid #ccc;
   border-radius: 4px;
   padding: 8px 12px;
-  .row { display: flex; gap: 12px; }
+  min-width: 0;
+  .row { display: flex; flex-wrap: wrap; gap: 12px; }
+}
+/* 健康保険組合の追加：料率の入力（保険ごとに1行） */
+fieldset.kumiai-rates {
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  /* fieldset は中身の幅より狭くならないので、スマホでは表の枠の中で横にスクロールさせる */
+  min-width: 0;
+  .rate-inputs { width: auto; }
+  .rate-inputs th[scope='row'] { text-align: left; font-weight: normal; white-space: nowrap; }
+  .rate-inputs input { width: 8em; }
+  .rate-inputs .err { display: block; }
 }

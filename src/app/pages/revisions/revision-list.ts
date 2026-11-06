@@ -1,6 +1,7 @@
 // 随時改定の候補（設計書 2.13・3.7）
 // 候補はあくまで見込みの表示。「見込みどおり登録」をするまで、標準報酬月額も保険料も変わらない。
 // 候補は「未対応」「届出済み」「登録済み」「確認済み」で管理し、登録漏れに気づけるようにする。
+import { PageState } from '../../core/ui/page-state';
 import { NoticeMessage } from '../../core/ui/notice-message';
 import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
@@ -76,6 +77,14 @@ export class RevisionList implements OnInit {
   protected readonly officeFilter = signal('');
   /** 変動月（休業終了時改定は復帰した月）で絞り込む（'' はすべて） */
   protected readonly monthFilter = signal('');
+
+  /** 一覧の絞り込み・対象月を覚え、詳細から戻ってきたときに元に戻す（core/ui/page-state.ts） */
+  private readonly pageStateKept = ((pageState: PageState) => {
+    pageState.keep('revisions.tab', this.tab);
+    pageState.keep('revisions.officeFilter', this.officeFilter);
+    pageState.keep('revisions.monthFilter', this.monthFilter);
+    return true;
+  })(inject(PageState));
   private readonly offices = signal<Office[]>([]);
 
   private readonly employees = signal<EmployeeRecord[]>([]);
@@ -199,6 +208,13 @@ export class RevisionList implements OnInit {
         },
         row.average,
       );
+      // 変更の記録（残せなくても、登録はそのまま。設計書 3.1）
+      try {
+        await this.employeeRepo.addChangeLog(row.employeeId,
+          `${row.type === 'leaveEnd' ? '休業終了時改定' : '随時改定'}の候補から標準報酬月額を${provisional ? '通知書待ちとして' : ''}登録（${yearMonthLabel(row.expectedFrom)}から 健保 ${this.yen(row.expectedHealth)}円／厚年 ${this.yen(row.expectedPension)}円）`);
+      } catch (e) {
+        console.error('変更の記録を残せませんでした', e);
+      }
       this.employees.set(await this.employeeRepo.loadAll());
       this.notice.set(
         `${row.employee.name}さんの${yearMonthLabel(row.expectedFrom)}分からの標準報酬月額を${provisional ? '通知書待ちとして' : ''}登録しました（健保 ${this.yen(row.expectedHealth)}円／厚年 ${this.yen(row.expectedPension)}円）。`,

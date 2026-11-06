@@ -126,6 +126,61 @@ export function checkRate(
   };
 }
 
+// ---- 健康保険組合を追加するときの料率（まとめて登録） ----
+
+/** 料率1つ分の入力（全体の料率と、本人の料率。本人が空なら折半） */
+export type RatePair = { rate: string; employeeRate: string };
+
+/** 健康保険組合を追加するときに、一緒に登録する料率（適用開始月は共通） */
+export type KumiaiRatesInput = {
+  validFrom: string;
+  health: RatePair;
+  care: RatePair;
+  childSupport: RatePair;
+};
+
+export const EMPTY_KUMIAI_RATES: KumiaiRatesInput = {
+  validFrom: '',
+  health: { rate: '', employeeRate: '' },
+  care: { rate: '', employeeRate: '' },
+  childSupport: { rate: '', employeeRate: '' },
+};
+
+/** まとめて登録する料率の種類（入力欄の並び順） */
+export const KUMIAI_RATE_TYPES = ['health', 'care', 'childSupport'] as const;
+
+/**
+ * 健康保険組合の追加と一緒に登録する料率のチェック（設計書 3.10）
+ * 健康保険は必須（ないと保険料を計算できない）。介護保険・子ども・子育て支援金は、全体の料率を空にすれば登録しない
+ * （あとから「料率を追加」で登録できる）。それぞれのチェックは、1件ずつ追加するとき（checkRate）と同じ
+ * エラーのキーは「kumiaiFrom」（適用開始月）、「{種類}Rate」「{種類}EmployeeRate」
+ * @returns エラーと、登録する料率（insurerId は組合を作るときに入れる）・登録しない種類
+ */
+export function checkKumiaiRates(input: KumiaiRatesInput): {
+  errors: Errors;
+  rates: Omit<InsurerRate, 'insurerId'>[];
+  skipped: InsurerRate['rateType'][];
+} {
+  const errors: Errors = {};
+  const rates: Omit<InsurerRate, 'insurerId'>[] = [];
+  const skipped: InsurerRate['rateType'][] = [];
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(input.validFrom)) errors['kumiaiFrom'] = '料率の適用開始月を正しく入力してください';
+  for (const type of KUMIAI_RATE_TYPES) {
+    const pair = input[type];
+    if (type !== 'health' && pair.rate.trim() === '' && pair.employeeRate.trim() === '') {
+      skipped.push(type);
+      continue;
+    }
+    const { errors: e, value } = checkRate({ insurerId: '', rateType: type, validFrom: input.validFrom, ...pair }, []);
+    if (e['rate']) errors[`${type}Rate`] = e['rate'];
+    if (e['employeeRate']) errors[`${type}EmployeeRate`] = e['employeeRate'];
+    // 支援金だけの適用開始月の誤り（2026年4月より前）は、支援金の欄に出す
+    if (e['validFrom'] && !errors['kumiaiFrom']) errors[`${type}Rate`] = e['validFrom'];
+    if (value) rates.push({ rateType: value.rateType, prefecture: null, validFrom: value.validFrom, rate: value.rate, employeeShare: value.employeeShare });
+  }
+  return { errors, rates: Object.keys(errors).length === 0 ? rates : [], skipped };
+}
+
 // ---- 会社の設定 ----
 export type CompanySettings = {
   /** 子ども・子育て支援金の本人負担の端数処理 */
@@ -139,6 +194,11 @@ export type CompanySettings = {
   /** 通常の労働者（正社員）の週の所定労働時間・月の所定労働日数（加入対象の判定。設計書 2.24） */
   fullTimeWeeklyHours: number;
   fullTimeMonthlyDays: number;
+  /**
+   * このアプリの利用開始日（'YYYY-MM-DD'。未設定は null）。期限がこの日より前の届出は、導入前に届け出たものとして
+   * 届出の一覧・要確認に出さない（設計書 3.12）
+   */
+  startDate?: string | null;
 };
 
 export const DEFAULT_SETTINGS: CompanySettings = {
@@ -148,6 +208,7 @@ export const DEFAULT_SETTINGS: CompanySettings = {
   retentionYears: 2,
   fullTimeWeeklyHours: 40,
   fullTimeMonthlyDays: 20,
+  startDate: null,
 };
 
 export function checkSettings(s: CompanySettings): Errors {
@@ -159,5 +220,15 @@ export function checkSettings(s: CompanySettings): Errors {
     errors['fullTimeWeeklyHours'] = '週の所定労働時間を1〜60時間で入力してください（小数第1位まで）';
   if (!(Number.isInteger(s.fullTimeMonthlyDays) && s.fullTimeMonthlyDays >= 1 && s.fullTimeMonthlyDays <= 31))
     errors['fullTimeMonthlyDays'] = '月の所定労働日数を1〜31日で入力してください';
+  const start = s.startDate ?? null;
+  if (start !== null && !isValidDateText(start)) errors['startDate'] = '利用開始日を正しく入力してください（未設定なら空欄）';
   return errors;
+}
+
+/** 'YYYY-MM-DD' として正しい日付か（設定画面用。月の日数まで確かめる） */
+function isValidDateText(v: string): boolean {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v);
+  if (!m) return false;
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])));
+  return d.toISOString().slice(0, 10) === v;
 }

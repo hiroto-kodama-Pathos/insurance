@@ -7,10 +7,23 @@
     <p class="error">{{ error() }}</p>
   } @else {
     <p class="help">
-      登録した内容から、届け出るものと期限を出します。届け出たら「届出済みにする」を押してください。
+      登録した内容から、届け出るものと期限を出します。届け出たら「届出済みにする」を押してください。届け出なくてよいと分かったもの（取り消した退職の資格喪失届など）は「対応不要」にできます。
       月額変更届は、<a routerLink="/revisions">改定の候補</a>で「届出済みにする」を押すと届出済みになります。
       アプリを使い始める前の届出がたまらないよう、きっかけの日が180日より前のものは出しません。
     </p>
+    @if (startDate(); as s) {
+      <p class="help start-date">利用開始日（{{ s | ymd }}）より前に期限が来た届出は、導入前に届け出たものとして出していません。</p>
+    } @else {
+      <p class="help start-date">
+        導入前に届け出た届出（使い始める前の年の算定基礎届、取り込んだ人の資格取得届など）が出ているときは、
+        @if (isAdmin()) {
+          <a routerLink="/settings" fragment="settings-company">設定</a>の「利用開始日」を入れると出なくなります。
+        } @else {
+          管理者に、設定の「利用開始日」を入れるよう依頼してください。
+        }
+        数件なら、その行で「対応不要」にしても消せます。
+      </p>
+    }
 
     @if (notice()) {
       <app-notice [message]="notice()!" (closed)="notice.set(null)" />
@@ -21,7 +34,7 @@
         <button type="button" role="tab" class="tab" [class.active]="tab() === 'open'" [attr.aria-selected]="tab() === 'open'" (click)="setTab('open')">
           未対応（{{ counts().open }}：期限切れ {{ counts().overdue }}・3日以内 {{ counts().soon }}）
         </button>
-        <button type="button" role="tab" class="tab" [class.active]="tab() === 'filed'" [attr.aria-selected]="tab() === 'filed'" (click)="setTab('filed')">届出済み（{{ counts().filed }}）</button>
+        <button type="button" role="tab" class="tab" [class.active]="tab() === 'filed'" [attr.aria-selected]="tab() === 'filed'" (click)="setTab('filed')">届出済み・対応不要（{{ counts().filed }}）</button>
       </div>
       <label>適用事業所
         <select name="office" (change)="officeFilter.set($any($event.target).value)">
@@ -50,15 +63,39 @@
       <span class="count">{{ rows().length }}件を表示</span>
     </div>
 
+    @if (tab() === 'open' && selectableRows().length > 0) {
+      <div class="bulk">
+        <button type="button" [disabled]="saving() || selectedRows().length === 0" (click)="setFiledSelected()">
+          選択した{{ selectedRows().length }}件を届出済みにする
+        </button>
+        @if (selectedRows().length > 0) {
+          <button type="button" class="link" (click)="toggleAll(false)">選択を外す</button>
+        }
+        <span class="help">届け出たものにチェックを付けて、まとめて届出済みにできます（月額変更届は改定の候補で切り替えます）。</span>
+      </div>
+    }
+
+    <p class="csv-row">
+      <button type="button" class="secondary small" (click)="saveCsv('table.filings', '届出の期限_' + (tab() === 'open' ? '未対応' : '届出済み・対応不要') + '_' + today() + '.csv')">表示中の{{ rows().length }}件をCSVで保存</button>
+    </p>
     <div class="table-wrap">
     <table class="list filings sticky-cols sticky-cols-3">
-      <thead><tr><th>期限</th><th>届出</th><th>社員番号・氏名</th><th>適用事業所</th><th>きっかけ</th><th>状態</th><th></th></tr></thead>
+      <thead><tr><th>
+        @if (tab() === 'open' && selectableRows().length > 0) {
+          <input type="checkbox" class="pick" aria-label="表示している未対応の届出をすべて選ぶ" [checked]="allSelected()" (change)="toggleAll($any($event.target).checked)" />
+        }
+        期限</th><th>届出</th><th>社員番号・氏名</th><th>適用事業所</th><th>きっかけ</th><th>状態</th><th></th></tr></thead>
       @for (g of monthGroups(); track g.month) {
       <tbody>
         <tr class="month-head"><td colspan="7">{{ g.label }}（{{ g.rows.length }}件）</td></tr>
         @for (r of g.rows; track r.id) {
-          <tr [class]="r.state">
-            <td [title]="r.deadlineLabel">{{ r.deadlineLabel }}</td>
+          <tr [class]="r.state" [class.picked]="selected().has(r.id) && selectable(r)">
+            <td [title]="r.deadlineLabel">
+              @if (selectable(r)) {
+                <input type="checkbox" class="pick" [attr.aria-label]="r.name + '（' + r.employeeLabel + '）を選ぶ'" [checked]="selected().has(r.id)" (change)="toggle(r, $any($event.target).checked)" />
+              }
+              {{ r.deadlineLabel }}
+            </td>
             <td [title]="r.name">{{ r.name }}</td>
             <td [title]="r.employeeLabel">
               @if (r.employeeId) {
@@ -69,7 +106,7 @@
             </td>
             <td>{{ r.officeName }}</td>
             <td>{{ r.triggerLabel }}</td>
-            <td><span class="badge" [class]="'badge ' + r.state">{{ stateLabel[r.state] }}</span></td>
+            <td><span class="badge" [class]="'badge ' + r.state">{{ notNeededIds().has(r.id) ? '対応不要' : stateLabel[r.state] }}</span></td>
             <td class="actions">
               @if (r.kind === 'revision') {
                 <a routerLink="/revisions">改定の候補で切り替える</a>
@@ -77,6 +114,7 @@
                 <button type="button" class="secondary" [disabled]="saving()" (click)="unsetFiled(r)">未対応に戻す</button>
               } @else {
                 <button type="button" [disabled]="saving()" (click)="setFiled(r)">届出済みにする</button>
+                <button type="button" class="link" [disabled]="saving()" (click)="setNotNeeded(r)">対応不要</button>
               }
             </td>
           </tr>
@@ -84,7 +122,7 @@
       </tbody>
       } @empty {
       <tbody>
-        <tr><td colspan="7">{{ tab() === 'open' ? '未対応の届出はありません。' : '届出済みの記録はありません。' }}</td></tr>
+        <tr><td colspan="7">{{ tab() === 'open' ? '未対応の届出はありません。' : '届出済み・対応不要の記録はありません。' }}</td></tr>
       </tbody>
       }
     </table>

@@ -6,6 +6,7 @@ import { MasterRepository } from '../../core/repository/master-repository';
 import { RateRecord, SettingsRepository } from '../../core/repository/settings-repository';
 import { Settings } from './settings';
 import { EmployeeRepository } from '../../core/repository/employee-repository';
+import { Confirm } from '../../core/ui/confirm';
 
 const masters: Masters = {
   offices: [
@@ -31,9 +32,21 @@ const rates: RateRecord[] = [
 describe('Settings', () => {
   let fixture: ComponentFixture<Settings>;
   let calls: unknown[][];
+  // 削除の確認で「削除する」を押すか・使用中を数えるためのデータ
+  let confirmAnswer: boolean;
+  let bonusTypeUsed: Set<string>;
+  let assignments: { officeId: string; groupId: string | null }[];
+  // 支払区分・賞与の種類（削除のテストだけ登録あり。ほかのテストは未登録の会社）
+  let groups: unknown[];
+  let types: unknown[];
 
   beforeEach(async () => {
     calls = [];
+    confirmAnswer = true;
+    bonusTypeUsed = new Set();
+    assignments = [];
+    groups = [];
+    types = [];
     const record = (name: string) => async (...args: unknown[]) => {
       calls.push([name, ...args]);
     };
@@ -41,6 +54,7 @@ describe('Settings', () => {
       imports: [Settings],
       providers: [
         provideRouter([]),
+        { provide: Confirm, useValue: { ask: async () => confirmAnswer } },
         {
           provide: MasterRepository,
           useValue: {
@@ -55,9 +69,11 @@ describe('Settings', () => {
           provide: EmployeeRepository,
           useValue: {
             loadAll: async () =>
-              Array.from({ length: 40 }, (_, i) => ({
+              assignments.map((a, i) => ({
                 id: `e${i}`, employeeNumber: `${i}`, name: '', birthDate: '1990-01-01',
-                qualifications: [{ acquiredDate: '2024-04-01', lostDate: null }], leaves: [], exemptions: [], assignments: [], standardHistory: [],
+                qualifications: [{ acquiredDate: '2024-04-01', lostDate: null }], leaves: [], exemptions: [], standardHistory: [],
+                assignments: [{ validFrom: '2024-04-01', officeId: a.officeId }],
+                payrollAssignments: a.groupId ? [{ validFrom: '2024-04-01', payrollGroupId: a.groupId }] : [],
               })),
           },
         },
@@ -69,9 +85,14 @@ describe('Settings', () => {
             saveSettings: record('saveSettings'),
             saveOffice: record('saveOffice'),
             saveKumiai: record('saveKumiai'),
+            addKumiaiWithRates: record('addKumiaiWithRates'),
             saveRate: record('saveRate'),
-            loadPayrollGroupRecords: async () => [],
-            loadBonusTypes: async () => [],
+            loadPayrollGroupRecords: async () => groups,
+            loadBonusTypes: async () => types,
+            isBonusTypeUsed: async (id: string) => bonusTypeUsed.has(id),
+            deleteBonusType: record('deleteBonusType'),
+            deletePayrollGroup: record('deletePayrollGroup'),
+            deleteOffice: record('deleteOffice'),
             saveBonusType: record('saveBonusType'),
             savePayrollGroup: record('savePayrollGroup'),
           },
@@ -231,6 +252,43 @@ describe('Settings', () => {
     ]);
   });
 
+  it('健康保険組合を追加するときに、料率も一緒に登録する（健康保険は必須、空欄の保険は知らせる）', async () => {
+    button('健康保険組合を追加').click();
+    fixture.detectChanges();
+    type('名前', '△△健康保険組合');
+    // 料率を入れずに保存すると、名前はよくても登録しない
+    await submit(form());
+    expect(calls).toEqual([]);
+    expect(el().textContent).toContain('料率を%で入力してください');
+
+    const set = (name: string, value: string) => {
+      const i = form().querySelector(`[name=${name}]`) as HTMLInputElement;
+      i.value = value;
+      i.dispatchEvent(new Event('input'));
+    };
+    set('kumiaiFrom', '2026-04');
+    set('healthRate', '10');
+    set('healthEmployeeRate', '4.5');
+    set('careRate', '1.6');
+    await submit(form());
+    expect(calls[0]).toEqual([
+      'addKumiaiWithRates',
+      { name: '△△健康保険組合', specialInsuredEnabled: false },
+      [
+        { rateType: 'health', prefecture: null, validFrom: '2026-04', rate: 10000, employeeShare: 450 },
+        { rateType: 'care', prefecture: null, validFrom: '2026-04', rate: 1600, employeeShare: 500 },
+      ],
+    ]);
+    expect(el().textContent).toContain('子ども・子育て支援金の料率は未登録です');
+  });
+
+  it('健康保険組合の名前の変更では、料率の欄を出さない（料率は表の「変更」「料率を追加」で直す）', () => {
+    const edit = [...el().querySelectorAll('button')].find((b) => b.textContent?.trim() === '名前などを変更')!;
+    edit.click();
+    fixture.detectChanges();
+    expect(form().querySelector('fieldset.kumiai-rates')).toBeNull();
+  });
+
   it('料率の変更では、今の値を%で入れておく', () => {
     const edit = [...el().querySelectorAll('button')].filter((b) => b.textContent?.trim() === '変更').at(-1)!;
     edit.click();
@@ -238,5 +296,64 @@ describe('Settings', () => {
     const inputs = form().querySelectorAll('input[inputmode=decimal]') as NodeListOf<HTMLInputElement>;
     expect(inputs[0].value).toBe('10');
     expect(inputs[1].value).toBe('4.5');
+  });
+
+  describe('削除（給与の支払区分・賞与の種類・適用事業所）', () => {
+    beforeEach(async () => {
+      groups = [
+        { id: 'g1', name: '月給', cutoffDay: 'end', paidIn: 'nextMonth', deductionTiming: 'nextMonth', payDay: 25, isDefault: true },
+        { id: 'g2', name: 'パート', cutoffDay: 15, paidIn: 'sameMonth', deductionTiming: 'nextMonth', payDay: 25, isDefault: false },
+      ];
+      types = [
+        { id: 't1', name: '夏季賞与', isRemuneration: false, validFrom: '2024-04' },
+        { id: 't2', name: '決算賞与', isRemuneration: false, validFrom: '2024-04' },
+      ];
+      fixture = TestBed.createComponent(Settings);
+      await fixture.whenStable();
+      fixture.detectChanges();
+    });
+    const notice = () => el().querySelector('app-notice .text')?.textContent?.trim() ?? null;
+    async function del(section: string, name: string) {
+      const table = el().querySelector(section)!;
+      const row = [...table.querySelectorAll('tbody tr')].find((r) => r.textContent!.includes(name))!;
+      const b = [...row.querySelectorAll('button')].find((x) => x.textContent!.trim() === '削除') as HTMLButtonElement;
+      b.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+    }
+    const deletes = () => calls.filter((c) => String(c[0]).startsWith('delete'));
+
+    it('1件でも使われていれば「使用中なので、削除できません」と出し、削除しない（過去の所属も数える）', async () => {
+      assignments = [{ officeId: 'osaka', groupId: 'g2' }];
+      bonusTypeUsed = new Set(['t1']);
+      await del('table.payroll-groups', 'パート');
+      expect(notice()).toBe('給与の支払区分「パート」は使用中なので、削除できません（従業員1人が所属しています。過去の所属を含みます）。');
+      expect(el().querySelector('app-notice .notice')!.classList.contains('failed')).toBe(true);
+      await del('table.bonus-types', '夏季賞与');
+      expect(notice()).toBe('賞与の種類「夏季賞与」は使用中なので、削除できません（この種類の賞与が登録されています）。');
+      await del('table.offices', '大阪支店');
+      expect(notice()).toContain('適用事業所「大阪支店」は使用中なので、削除できません');
+      expect(deletes()).toEqual([]);
+    });
+
+    it('新規登録の初期値（デフォルト）は使用中として削除しない', async () => {
+      await del('table.payroll-groups', '月給');
+      expect(notice()).toContain('給与の支払区分「月給」は新規登録の初期値として使用中なので、削除できません');
+      await del('table.offices', '本社');
+      expect(notice()).toContain('適用事業所「本社」は新規登録の初期値として使用中なので、削除できません');
+      expect(deletes()).toEqual([]);
+    });
+
+    it('使われていなければ、確認してから削除する（「やめる」なら削除しない）', async () => {
+      confirmAnswer = false;
+      await del('table.bonus-types', '決算賞与');
+      expect(deletes()).toEqual([]);
+      confirmAnswer = true;
+      await del('table.bonus-types', '決算賞与');
+      await del('table.payroll-groups', 'パート');
+      await del('table.offices', '大阪支店');
+      expect(deletes()).toEqual([['deleteBonusType', 't2'], ['deletePayrollGroup', 'g2'], ['deleteOffice', 'osaka']]);
+      expect(notice()).toBe('適用事業所「大阪支店」を削除しました。');
+    });
   });
 });

@@ -24,6 +24,8 @@ describe('月次保険料一覧の並び替え・絞り込み', () => {
   it('前月から変わった理由', () => {
     expect(changeReasons(result(), result())).toEqual([]);
     expect(changeReasons(null, result())).toEqual(['入社・資格取得']);
+    // 前月は標準報酬月額がなく計算していない（導入時の登録で、この月から登録した人）：「料率の改定」などと誤って出さない
+    expect(changeReasons(result({ status: 'noStandard', standard: null, premium: null }), result())).toEqual(['標準報酬月額の登録']);
     expect(changeReasons(result(), result({ standard: { health: 360_000, pension: 360_000 }, yen: 18_000 }))).toEqual(['標準報酬月額の改定']);
     expect(changeReasons(result(), result({ care: 'second' }))).toEqual(['介護保険（40歳など）']);
     expect(changeReasons(result(), result({ exempt: true, yen: 0 }))).toContain('休業免除の開始');

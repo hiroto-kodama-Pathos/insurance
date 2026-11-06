@@ -1,3 +1,4 @@
+import { buildKyokaiGrades } from './grade-suggest';
 import {
   checkNameChange,
   checkNumberChange,
@@ -105,5 +106,16 @@ describe('社員番号の変更', () => {
     expect(checkNumberChange('0001', '1'.repeat(20), others).errors).toEqual({});
     expect(checkNumberChange('0001', '０００１', others).errors).toEqual({ employeeNumber: '今の社員番号と同じです' });
     expect(checkNumberChange('0001', 'T0010', others).errors).toEqual({ employeeNumber: 'この社員番号はほかの従業員が使っています' });
+  });
+});
+
+describe('標準報酬月額の履歴：等級の額', () => {
+  it('等級表にない額は、追加・訂正・異動のどれでも入れない', () => {
+    const grades = buildKyokaiGrades('2020-09');
+    const input = { validFrom: '2026-09', reason: 'regular' as const, healthStandard: 299_000, pensionStandard: 300_000 };
+    const e = checkStandard([], input, grades);
+    expect(e['healthStandard']).toContain('近い等級');
+    expect(e['pensionStandard']).toBeUndefined();
+    expect(checkStandard([], { ...input, healthStandard: 300_000 }, grades)).toEqual({});
   });
 });

@@ -83,6 +83,18 @@ button.danger:hover:not(:disabled) { background: var(--c-danger-weak); color: va
 button.danger.solid { background: var(--c-danger); color: #fff; border-color: var(--c-danger); }
 button.link { background: none; border: none; padding: 0; color: #1d4ed8; text-decoration: underline; }
 button.link:hover:not(:disabled) { background: none; color: var(--c-primary-dark); }
+// 表の行の「直す」「削除」（登録した情報の訂正・削除。設計書 3.1）
+.row-actions { white-space: nowrap; }
+.row-actions button.link + button.link { margin-left: 12px; }
+button.link.danger-link, button.link.danger-link:hover:not(:disabled) { color: var(--c-danger); }
+// 入力し直した欄のエラーは、もう一度保存を押すまで隠す（core/ui/error-focus.ts）
+.err[data-stale] { display: none; }
+// 見出しの横に置く操作（従業員の詳細の「契約の変更を登録」など）
+h2.with-action, h3.with-action { display: flex; align-items: center; gap: 12px; }
+// 一覧の上の「CSVで保存」などの並び
+.csv-row { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
+// 登録したばかりの人の詳細へのリンク（従業員一覧）
+.created-link { margin: 4px 0 12px; }
 button.small, .small { font-size: 12px; padding: 2px 8px; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 8px 0; }
 // 表のセルに .actions を付けたときは、セルのまま（display: flex にすると、その列だけ行の高さと罫線の位置がずれる）。
@@ -157,6 +169,13 @@ input:disabled, select:disabled { background: #f3f4f6; color: var(--c-muted); }
   vertical-align: top;
 }
 .list .num, .list td.nowrap, .list th.nowrap { white-space: nowrap; }
+// 横にスクロールする表は、画面が狭くても列を4文字分より細くしない
+// （細くすると「適用事業所」などが1文字ずつ縦に折れて読めない。収まらない分は横にスクロールする）
+:where(.table-wrap > .list) :is(th, td) { min-width: 4em; }
+// 狭い画面（ノートPC・タブレット横向き）では、文字の列を6文字分まで広げ、詰め込まずに横スクロールにする
+@media (max-width: 1100px) {
+  :where(.table-wrap > .list) :is(th, td):not(.num) { min-width: 6em; }
+}
 // 表の中の入力欄は、列の幅いっぱいにしない（数字が読める最小の幅にする）
 .list input:not([type='checkbox']):not([type='radio']) { padding: 3px 4px; font-size: 13px; }
 .list th { background: var(--c-head); font-weight: 600; text-align: left; }
@@ -247,6 +266,8 @@ button.tab.active { background: var(--c-primary-weak); border-color: var(--c-pri
   font-size: 12px;
   font-weight: normal;
   line-height: 1.7;
+  // 狭い列でも「期限切れ」などが1文字ずつ縦に折れないようにする
+  white-space: nowrap;
 }
 .badge.warn, .badge.pending, .badge.absent, .badge.provisional { background: var(--c-warn-weak); color: var(--c-warn); }
 .badge.done, .badge.match, .badge.new { background: #dcfce7; color: var(--c-ok); }

@@ -62,6 +62,9 @@ describe('AdjustmentList', () => {
             settle: async (a: { id: string; remaining: SettlementRecord['entries'][0]['diffs'] }, month: string) => {
               settlements = [{ id: a.id, entries: [{ settledMonth: month, diffs: a.remaining }] }];
             },
+            unsettle: async (id: string) => {
+              settlements = settlements.filter((s) => s.id !== id);
+            },
           },
         },
       ],
@@ -92,5 +95,19 @@ describe('AdjustmentList', () => {
     expect(settlements[0].entries[0].settledMonth).toBe('2026-09');
     expect(el().textContent).toContain('未精算（0）');
     expect(el().textContent).toContain('2026年9月の給与で精算済みにしました。');
+  });
+
+  it('精算済みにした差額を、未精算に戻せる（精算した給与の月の誤りなど）', async () => {
+    (el().querySelector('table.adjustments button') as HTMLButtonElement).click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    [...el().querySelectorAll('button')].find((b) => b.textContent?.includes('精算済み（1）'))!.click();
+    fixture.detectChanges();
+    [...el().querySelectorAll('button')].find((b) => b.textContent?.trim() === '未精算に戻す')!.click();
+    await fixture.whenStable();
+    fixture.detectChanges();
+    expect(settlements).toEqual([]);
+    expect(el().textContent).toContain('未精算（1）');
+    expect(el().textContent).toContain('未精算に戻しました');
   });
 });

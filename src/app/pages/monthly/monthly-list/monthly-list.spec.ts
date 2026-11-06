@@ -127,6 +127,26 @@ describe('MonthlyList', () => {
     fixture.detectChanges();
   }
 
+  it('確定できない理由は、社員番号・氏名・理由の表で出し、氏名は従業員の詳細へのリンクにする', async () => {
+    employees.push({
+      id: 'e3', employeeNumber: '0003', name: '未登録 花子', birthDate: '1990-01-01',
+      qualifications: [{ acquiredDate: '2024-04-01', lostDate: null }], leaves: [], exemptions: [],
+      assignments: [{ validFrom: '2024-04-01', officeId: 'honsha' }], standardHistory: [],
+    });
+    try {
+      TestBed.resetTestingModule();
+      await setup();
+      const card = el().querySelector('.office-card[data-office="honsha"]')!;
+      expect(card.querySelector('.status')!.textContent).toContain('確定できません');
+      const rows = [...card.querySelectorAll('table.blockers tbody tr')].map((r) => [...r.querySelectorAll('td')].map((td) => td.textContent!.trim()));
+      expect(rows).toEqual([['0003', '未登録 花子', '標準報酬月額が未登録']]);
+      expect(card.querySelector('table.blockers a')!.getAttribute('href')).toBe('/employees/e3');
+      expect(card.querySelector('.blocker-count')!.textContent).toContain('確定できない理由（1件）');
+    } finally {
+      employees.pop();
+    }
+  });
+
   it('育休で免除の月は「育休免除（申出待ち）」、取得者申出書を届出済みにすると「育休免除」', async () => {
     const original = employees[0].leaves;
     employees[0].leaves = [{ type: 'childcare', startDate: '2026-09-01', endDate: null, workedDays: null }];
@@ -293,6 +313,10 @@ describe('MonthlyList 並び替え・絞り込み', () => {
     expect(names()).toEqual(['山田 太郎', '佐藤 花子', '木村 拓也']);
     expect(el.textContent).toContain('前月から +');
     expect(el.textContent).toContain('標準報酬月額の改定');
+    // 入社した人は前月の保険料がないので、差額ではなく「今月から加入」と出す（「前月から （入社…）」と途切れない）
+    const kimura = [...el.querySelectorAll('table.persons tbody tr')].find((tr) => tr.textContent?.includes('木村 拓也'))!;
+    expect(kimura.textContent).toContain('今月から加入（入社・資格取得）');
+    expect(kimura.textContent).not.toContain('前月から');
 
     set('query', '佐藤花子');
     expect(names()).toEqual(['佐藤 花子']);

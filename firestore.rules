@@ -356,9 +356,10 @@ service cloud.firestore {
       match /gradeThresholds/{id} { allow read: if isSiUser(); }
       match /eligibilityRules/{id} { allow read: if isSiUser(); }
 
-      // 適用事業所：管理者だけが追加・変更する。従業員が参照するので削除はさせない
+      // 適用事業所：管理者だけが追加・変更・削除する。削除は、使用中（従業員が所属した・初期値）でないことを画面で確かめてから
       match /offices/{id} {
         allow read: if isSiUser();
+        allow delete: if isSiAdmin() && resource.data.get('isDefault', false) != true;
         allow create, update: if isSiAdmin()
           && request.resource.data.name is string && request.resource.data.name.size() > 0
           && exists(siPath('insurers', request.resource.data.insurerId));
@@ -369,25 +370,32 @@ service cloud.firestore {
         allow read: if isSiUser();
         allow create: if isSiAdmin() && request.resource.data.type == 'kumiai';
         allow update: if isSiAdmin() && resource.data.type == 'kumiai' && request.resource.data.type == 'kumiai';
+        // 健康保険組合の削除：組合健保だけ。使用中（適用事業所・二以上事業所勤務の保険者）でないことは画面で確かめる
+        allow delete: if isSiAdmin() && resource.data.type == 'kumiai';
       }
 
       // 料率：管理者は組合健保の料率だけを追加・変更できる（保険者を付け替えることはできない）
       match /insurerRates/{id} {
         allow read: if isSiUser();
+        // 健康保険組合の追加と同じ書き込みで料率を作るので、書き込んだあとの組合で確かめる（getAfter）
         allow create: if isSiAdmin()
-          && get(siPath('insurers', request.resource.data.insurerId)).data.type == 'kumiai'
+          && getAfter(siPath('insurers', request.resource.data.insurerId)).data.type == 'kumiai'
           && request.resource.data.prefecture == null;
         allow update: if isSiAdmin()
           && get(siPath('insurers', resource.data.insurerId)).data.type == 'kumiai'
           && request.resource.data.insurerId == resource.data.insurerId
           && request.resource.data.rateType == resource.data.rateType
           && request.resource.data.prefecture == null;
+        // 誤って追加した組合健保の料率の削除（組合を削除するときは、組合と同じ書き込みで消すので getAfter ではなく get で確かめる）
+        allow delete: if isSiAdmin() && resource.data.prefecture == null
+          && get(siPath('insurers', resource.data.insurerId)).data.type == 'kumiai';
       }
 
-      // 給与の支払区分：管理者だけが追加・変更する。従業員が参照するので削除はさせない
+      // 給与の支払区分：管理者だけが追加・変更・削除する。削除は、使用中（従業員が属した・初期値）でないことを画面で確かめてから
       function isPayDay(v) { return v == 'end' || (v is int && v >= 1 && v <= 30); }
       match /payrollGroups/{id} {
         allow read: if isSiUser();
+        allow delete: if isSiAdmin() && resource.data.get('isDefault', false) != true;
         allow create, update: if isSiAdmin()
           && request.resource.data.keys().hasOnly(['name', 'cutoffDay', 'paidIn', 'deductionTiming', 'payDay', 'isDefault'])
           && request.resource.data.name is string && request.resource.data.name.size() > 0
@@ -397,9 +405,10 @@ service cloud.firestore {
           && request.resource.data.isDefault is bool;
       }
 
-      // 賞与の種類：管理者だけが追加・変更する。賞与が参照するので削除はさせない
+      // 賞与の種類：管理者だけが追加・変更・削除する。削除は、その種類の賞与がないことを画面で確かめてから
       match /bonusTypes/{id} {
         allow read: if isSiUser();
+        allow delete: if isSiAdmin();
         allow create, update: if isSiAdmin()
           && request.resource.data.keys().hasOnly(['name', 'isRemuneration', 'validFrom'])
           && request.resource.data.name is string && request.resource.data.name.size() > 0
@@ -429,11 +438,15 @@ service cloud.firestore {
 
         // サブコレクション（資格・標準報酬月額・休業・休職・被扶養者など）
         // 所属事業所の履歴（assignments）は、特定の事業所の担当者は担当事業所への所属を作ることだけができる（異動は全担当）
+        // 変更の記録（changeLogs）は、本人（ログインしている人）の名前で足すことだけができ、書き換え・削除はできない
+        // （従業員の削除・個人データの消去は、Cloud Functions が Admin SDK でまとめて消す）
         match /{sub}/{docId} {
           allow read: if isSiUser() && employeeInScope(employeeId);
           allow create: if isSiUser() && employeeInScopeAfter(employeeId)
-            && (sub != 'assignments' || scopeAll() || request.resource.data.officeId == siScope());
-          allow update, delete: if isSiUser() && employeeInScope(employeeId) && (sub != 'assignments' || scopeAll());
+            && (sub != 'assignments' || scopeAll() || request.resource.data.officeId == siScope())
+            && (sub != 'changeLogs' || (request.resource.data.by == request.auth.token.email
+              && request.resource.data.at == request.time && request.resource.data.text is string));
+          allow update, delete: if isSiUser() && employeeInScope(employeeId) && sub != 'changeLogs' && (sub != 'assignments' || scopeAll());
         }
       }
 
@@ -484,10 +497,23 @@ service cloud.firestore {
         allow delete: if isSiUser() && inScope(resource.data.officeId)
           && !exists(closedPath(resource.data.yearMonth, resource.data.officeId));
         // 二以上事業所勤務：全事業所の賞与額の合計だけは、確定済みの月でも登録できる（確定した控除額は変えず、過不足を出すため）
+        // 登録した賞与の訂正（支給日・賞与額・現物・種類）：直す前の月と直したあとの月が、どちらも確定済みでないときだけ。従業員は変えない
         allow update: if isSiUser() && inScope(resource.data.officeId)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalAmount', 'updatedAt'])
-          && (request.resource.data.totalAmount == null
-            || (request.resource.data.totalAmount is int && request.resource.data.totalAmount > resource.data.amount));
+          && ((request.resource.data.diff(resource.data).affectedKeys().hasOnly(['totalAmount', 'updatedAt'])
+            && (request.resource.data.totalAmount == null
+              || (request.resource.data.totalAmount is int && request.resource.data.totalAmount > resource.data.amount)))
+          || (request.resource.data.diff(resource.data).affectedKeys()
+              .hasOnly(['paidDate', 'yearMonth', 'amount', 'inKindAmount', 'bonusTypeId', 'isRemuneration', 'totalAmount', 'officeId', 'updatedAt'])
+            && inScope(request.resource.data.officeId)
+            && request.resource.data.amount is int && request.resource.data.amount > 0
+            && request.resource.data.paidDate.matches(request.resource.data.yearMonth + '-[0-9]{2}')
+            && (request.resource.data.get('inKindAmount', null) == null
+              || (request.resource.data.inKindAmount is int && request.resource.data.inKindAmount >= 0
+                && request.resource.data.inKindAmount <= request.resource.data.amount))
+            && (request.resource.data.get('totalAmount', null) == null
+              || (request.resource.data.totalAmount is int && request.resource.data.totalAmount > request.resource.data.amount))
+            && !exists(closedPath(resource.data.yearMonth, resource.data.officeId))
+            && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId))));
       }
 
       // 給与：確定済みの月（closings/{支払月}/offices/{事業所} がある）の給与は、登録・上書き・削除ができない。

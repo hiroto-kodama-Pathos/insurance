@@ -71,3 +71,8 @@ li.overdue, tr.overdue td { color: #b91c1c; font-weight: bold; }
 // ---- home.html の表のカスタム幅 ----
 // 随時改定の候補：社員番号・氏名を固定
 table.standard-changes-table { --sticky-w1: 6em; --sticky-w2: 8em; }
+
+// 使い始め（適用事業所が1つもない）の案内
+.setup { border: 1px solid var(--c-primary); background: var(--c-primary-weak); border-radius: var(--radius); padding: 8px 16px; margin: 8px 0 16px; max-width: 900px; }
+.setup h2 { margin: 4px 0; font-size: 16px; }
+.setup ol { margin: 4px 0 8px; padding-left: 1.4em; }

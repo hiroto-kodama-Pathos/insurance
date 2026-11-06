@@ -6,6 +6,7 @@ import { Auth } from './core/auth/auth';
 import { Confirm } from './core/ui/confirm';
 import { installHalfWidthInput } from './core/ui/half-width-input';
 import { installErrorFocus } from './core/ui/error-focus';
+import { installAmountFormat } from './core/ui/amount-format';
 import { NavigationHistory } from './core/ui/navigation-history';
 
 type MenuLink = { path: string; label: string; help: string; exact?: boolean; adminOnly?: boolean };
@@ -109,6 +110,8 @@ export class App {
     inject(DestroyRef).onDestroy(installHalfWidthInput(this.document));
     // 登録・保存で入力に誤りがあったら、最初の誤りの欄へ移る（全フォームに効かせる）
     inject(DestroyRef).onDestroy(installErrorFocus(this.document, inject(Injector)));
+    // 金額の欄は、欄から離れたら3桁ごとにカンマを入れて見せる（全画面に効かせる）
+    inject(DestroyRef).onDestroy(installAmountFormat(this.document));
     // 前に開いていた画面を覚え始める（従業員の詳細の「元の画面へ戻る」に使う）
     inject(NavigationHistory);
 

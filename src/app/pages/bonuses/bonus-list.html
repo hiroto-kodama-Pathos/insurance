@@ -13,15 +13,16 @@
     <p class="error">{{ error() }}</p>
   } @else {
     <form class="form" (submit)="add($event)">
-      <h2>賞与を登録</h2>
+      <h2>{{ editingId() ? '賞与を直す' : '賞与を登録' }}</h2>
       <p class="help">支払う前に登録すると、本人負担を確かめてから給与ソフトで賞与から控除できます。</p>
       <p class="help">大勢に支給するときは、1人ずつ入れずに<a routerLink="/imports" [queryParams]="{ kind: 'bonus' }">CSVでまとめて取り込めます</a>（給与ソフトの出力をそのまま使えます）。</p>
       <div class="fields">
         <label>従業員を探す（氏名・社員番号）
-          <input name="employeeQuery" placeholder="例：山田、0001" [value]="employeeQuery()" (input)="setEmployeeQuery($any($event.target).value)" />
+          <input name="employeeQuery" placeholder="例：山田、0001" [value]="employeeQuery()" (input)="setEmployeeQuery($any($event.target).value)"
+            (keydown.enter)="$event.preventDefault()" />
         </label>
         <label>従業員（{{ filteredEmployeeOptions().length }}人）
-          <select name="employeeId" (change)="setForm('employeeId', $any($event.target).value)">
+          <select name="employeeId" [disabled]="!!editingId()" (change)="setForm('employeeId', $any($event.target).value)">
             <option value="" [selected]="form().employeeId === ''">選んでください</option>
             @for (e of filteredEmployeeOptions(); track e.id) {
               <option [value]="e.id" [selected]="form().employeeId === e.id">{{ e.employeeNumber }} {{ e.name }}</option>
@@ -50,7 +51,12 @@
           <input inputmode="numeric" name="inKindAmount" [value]="form().inKindAmount ?? ''" (input)="setForm('inKindAmount', $any($event.target).value)" />
           <span class="err">{{ errors().inKindAmount }}</span>
         </label>
-        <button type="submit" [disabled]="saving()">登録</button>
+        @if (editingId()) {
+          <button type="submit" [disabled]="saving()">保存</button>
+          <button type="button" class="secondary" (click)="cancelEdit()">やめる</button>
+        } @else {
+          <button type="submit" [disabled]="saving()">登録</button>
+        }
       </div>
       @if (fourthWarning(); as w) {
         <p class="warn">{{ w }}</p>
@@ -87,6 +93,7 @@
           </label>
         }
         <span class="count">{{ shownRows().length }} / {{ rows().length }}件を表示</span>
+        <button type="button" class="secondary small" (click)="saveCsv('table.bonus-persons', '賞与保険料_' + yearMonth() + '.csv')">CSVで保存</button>
       </div>
     }
     <div class="table-wrap">
@@ -122,8 +129,12 @@
               <td class="num">{{ yen(row.result.standardBonus) }}</td>
               <td class="num">{{ yen(row.result.premium?.health?.employeeYen) }}</td>
               <td class="num">{{ employerYen(row.result.premium?.health) }}</td>
-              <td class="num">{{ yen(row.result.premium?.care?.employeeYen) }}</td>
-              <td class="num">{{ employerYen(row.result.premium?.care) }}</td>
+              @if (row.result.premium?.care || !careNote(row.result)) {
+                <td class="num">{{ yen(row.result.premium?.care?.employeeYen) }}</td>
+                <td class="num">{{ employerYen(row.result.premium?.care) }}</td>
+              } @else {
+                <td colspan="2" class="note">{{ careNote(row.result) }}</td>
+              }
               <td class="num">{{ yen(row.result.premium?.childSupport?.employeeYen) }}</td>
               <td class="num">{{ employerYen(row.result.premium?.childSupport) }}</td>
               <td class="num">{{ yen(row.result.premium?.pension?.employeeYen) }}</td>
@@ -157,7 +168,10 @@
                 @if (row.closed) {
                   <span class="badge">確定</span>
                 } @else {
-                  <button type="button" class="secondary" [disabled]="saving()" (click)="remove(row)">削除</button>
+                  <span class="row-actions">
+                    <button type="button" class="link" [disabled]="saving()" (click)="startEdit(row)">直す</button>
+                    <button type="button" class="link danger-link" [disabled]="saving()" (click)="remove(row)">削除</button>
+                  </span>
                 }
               </td>
             </tr>
@@ -187,7 +201,9 @@
     <p class="hint">二以上事業所勤務の人の賞与は、支給日には自社の賞与額で計算します。決定通知や他社との情報共有で全事業所の賞与額の合計が分かったら「全事業所の合計を登録」を押すと、合算した標準賞与額の保険料を賞与額の割合で按分した額と、控除した額との過不足を出します。過不足の精算は給与ソフトで行ってください。</p>
     <p class="hint">支給日から5日以内に届け出ます。産休・育休で免除された賞与や、資格喪失月の賞与も届け出が必要なので含めています。</p>
 
-    <h2>届け出る賞与額</h2>
+    <h2 class="with-action">届け出る賞与額
+      <button type="button" class="secondary small" (click)="saveCsv('table.report-amounts', '届け出る賞与額_' + yearMonth() + '.csv')">CSVで保存</button>
+    </h2>
     <table class="list report-amounts sticky-cols">
       <thead><tr><th>社員番号</th><th>氏名</th><th>支給日</th><th>通貨</th><th>現物</th><th>合計（1,000円未満切り捨て）</th><th>備考</th></tr></thead>
       <tbody>

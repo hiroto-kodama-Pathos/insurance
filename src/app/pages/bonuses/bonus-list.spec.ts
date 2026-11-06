@@ -61,6 +61,8 @@ describe('BonusList', () => {
             loadAll: async () => [
               person('e1', '0001', '山田 太郎'),
               person('e2', '0002', '退職 予定', '2026-12-31'),
+              // 40歳未満（介護保険がかからない）
+              { ...person('e4', '0004', '若手 社員'), birthDate: '1995-04-01' },
               // 二以上事業所勤務の役員（自社20万円／合計30万円）
               {
                 ...person('e3', '0003', '兼務 役員'),
@@ -89,6 +91,9 @@ describe('BonusList', () => {
             },
             remove: async (id: string) => {
               store = store.filter((b) => b.id !== id);
+            },
+            update: async (id: string, b: Partial<BonusRecord>) => {
+              store = store.map((x) => (x.id === id ? { ...x, ...b } : x));
             },
             setTotalAmount: async (id: string, totalAmount: number | null) => {
               store = store.map((b) => (b.id === id ? { ...b, totalAmount } : b));
@@ -281,6 +286,43 @@ describe('BonusList', () => {
     await settle();
     expect(store).toHaveLength(1);
     expect(el().textContent).toContain('この月は確定済みです');
+  });
+
+  it('登録した賞与を直せる（登録の欄に今の値が入り、従業員は変えられない）', async () => {
+    const fix = [...el().querySelectorAll('button')].find((b) => b.textContent?.trim() === '直す') as HTMLButtonElement;
+    fix.click();
+    await settle();
+    expect(el().querySelector('form h2')!.textContent).toContain('賞与を直す');
+    expect((el().querySelector('select[name=employeeId]') as HTMLSelectElement).disabled).toBe(true);
+    const amount = el().querySelector('input[name=amount]') as HTMLInputElement;
+    expect(amount.value).toBe(String(store[0].amount));
+    amount.value = '654321';
+    amount.dispatchEvent(new Event('input'));
+    el().querySelector('form')!.dispatchEvent(new Event('submit'));
+    await settle();
+    expect(store[0].amount).toBe(654_321);
+    expect(el().textContent).toContain('賞与を直しました');
+    expect(el().querySelector('form h2')!.textContent).toContain('賞与を登録');
+  });
+
+  it('従業員を探す欄で Enter を押しても、登録は送信しない（検索の途中で一斉にエラーが出ないように）', async () => {
+    const q = el().querySelector('input[name=employeeQuery]') as HTMLInputElement;
+    const e = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true });
+    q.dispatchEvent(e);
+    await settle();
+    expect(e.defaultPrevented).toBe(true);
+  });
+
+  it('介護保険がかからない人は、月次の一覧と同じく理由（対象外（40歳未満））を出す', async () => {
+    store.push({ id: 'b9', employeeId: 'e4', paidDate: '2026-12-10', amount: 500_000 });
+    await (fixture.componentInstance as unknown as { loadBonuses(force: boolean): Promise<void> }).loadBonuses(true);
+    await settle();
+    const rows = [...el().querySelectorAll('table.persons tbody tr')];
+    const young = rows.find((tr) => tr.textContent?.includes('若手 社員'))!;
+    expect(young.querySelector('td.note')?.textContent?.trim()).toBe('対象外（40歳未満）');
+    // 40歳以上の人は、介護保険の額を出す（理由は出さない）
+    const yamada = rows.find((tr) => tr.textContent?.includes('山田 太郎'))!;
+    expect(yamada.querySelector('td.note')).toBeNull();
   });
 
   it('削除できる', async () => {

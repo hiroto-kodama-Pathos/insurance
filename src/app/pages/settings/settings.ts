@@ -1,5 +1,6 @@
 // 設定（管理者だけ）：会社の設定、適用事業所、健康保険組合と料率（設計書 4章 マスタ・companySettings）
 // 協会けんぽの料率は、運営者が入れるシステム共通マスタのため表示だけにする
+import { focusFormSoon } from '../../core/ui/form-focus';
 import { NoticeMessage } from '../../core/ui/notice-message';
 import { Component, computed, HostListener, inject, OnInit, signal } from '@angular/core';
 import { FormSnapshot, HasUnsavedChanges } from '../../core/ui/unsaved-guard';
@@ -14,8 +15,13 @@ import {
   CompanySettings,
   DEFAULT_SETTINGS,
   Errors,
+  checkKumiaiRates,
+  EMPTY_KUMIAI_RATES,
+  KUMIAI_RATE_TYPES,
   KumiaiInput,
+  KumiaiRatesInput,
   OfficeInput,
+  RatePair,
   PREFECTURES,
   RATE_TYPE_LABELS,
   RateInput,
@@ -26,8 +32,11 @@ import { RateRecord, SettingsRepository } from '../../core/repository/settings-r
 import { checkPayrollGroup, PayrollGroup, PayrollGroupInput } from '../../core/calc/payroll-group';
 import { BonusType, BonusTypeInput, checkBonusType } from '../../core/calc/bonus-type';
 import { parseNumberInput } from '../../core/calc/half-width';
-import { DateLabelPipe, YearMonthPipe } from '../../core/ui/year-month.pipe';
+import { YearMonthPipe } from '../../core/ui/year-month.pipe';
 import { yearMonthLabel } from '../../core/calc/year-month';
+import { EmployeeRepository } from '../../core/repository/employee-repository';
+import { Confirm } from '../../core/ui/confirm';
+import { insurerUsage, inUseMessage, officeUsage, payrollGroupUsage } from '../../core/calc/master-usage';
 
 type Mode =
   | null
@@ -42,7 +51,7 @@ const EMPTY_KUMIAI: KumiaiInput = { name: '', specialInsuredEnabled: false };
 const EMPTY_GROUP: PayrollGroupInput = { name: '', cutoffDay: 'end', paidIn: 'nextMonth', deductionTiming: 'nextMonth', payDay: 25, isDefault: false };
 
 @Component({
-  imports: [RouterLink, NoticeMessage, YearMonthPipe, DateLabelPipe],
+  imports: [RouterLink, NoticeMessage, YearMonthPipe],
   selector: 'app-settings',
   styleUrl: './settings.scss',
   templateUrl: './settings.html',
@@ -63,6 +72,8 @@ export class Settings implements OnInit, HasUnsavedChanges {
 
   private readonly repo = inject(SettingsRepository);
   private readonly masterRepo = inject(MasterRepository);
+  private readonly employeeRepo = inject(EmployeeRepository);
+  private readonly confirm = inject(Confirm);
 
   protected readonly prefectures = PREFECTURES;
   protected readonly rateTypeLabels = RATE_TYPE_LABELS;
@@ -93,6 +104,10 @@ export class Settings implements OnInit, HasUnsavedChanges {
   protected readonly officeForm = signal<OfficeInput>(EMPTY_OFFICE);
   protected readonly kumiaiForm = signal<KumiaiInput>(EMPTY_KUMIAI);
   protected readonly rateForm = signal<RateInput>({ insurerId: '', rateType: 'health', validFrom: '', rate: '', employeeRate: '' });
+  /** 健康保険組合を追加するときに、一緒に登録する料率 */
+  protected readonly kumiaiRatesForm = signal<KumiaiRatesInput>(EMPTY_KUMIAI_RATES);
+  protected readonly kumiaiRateTypes = KUMIAI_RATE_TYPES;
+  protected readonly ratePlaceholder: Record<(typeof KUMIAI_RATE_TYPES)[number], string> = { health: '例：9.5', care: '例：1.6', childSupport: '例：0.23' };
 
   protected readonly kumiais = computed(() => this.insurers().filter((i) => i.type === 'kumiai'));
   protected readonly kyokaiId = computed(() => this.insurers().find((i) => i.type === 'kyokai')?.id ?? null);
@@ -226,6 +241,9 @@ export class Settings implements OnInit, HasUnsavedChanges {
     this.settings.update((s) => ({ ...s, [key]: parseNumberInput(v) ?? NaN }));
   }
 
+  protected setStartDate(v: string): void {
+    this.settings.update((s) => ({ ...s, startDate: v === '' ? null : v }));
+  }
   protected setRounding(v: string): void {
     this.settings.update((s) => ({ ...s, childSupportRounding: v as CompanySettings['childSupportRounding'] }));
   }
@@ -258,6 +276,9 @@ export class Settings implements OnInit, HasUnsavedChanges {
   }
   protected openKumiai(k: Insurer | null): void {
     this.kumiaiForm.set(k ? { name: k.name, specialInsuredEnabled: k.specialInsuredEnabled ?? false } : EMPTY_KUMIAI);
+    // 追加のときは、料率の適用開始月に今月を入れておく
+    const thisYm = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()).slice(0, 7);
+    this.kumiaiRatesForm.set({ ...EMPTY_KUMIAI_RATES, validFrom: k ? '' : thisYm });
     this.openMode({ kind: 'kumiai', id: k?.id ?? null });
   }
   /** 料率の追加（insurerId を指定）または変更（rate を指定） */
@@ -276,6 +297,8 @@ export class Settings implements OnInit, HasUnsavedChanges {
     this.openMode({ kind: 'rate', id: r?.id ?? null });
   }
   private openMode(m: Mode): void {
+    // 開いた入力欄まで動かし、最初の欄にカーソルを置く（会社の設定のフォームは前からあるので移らない）
+    focusFormSoon('app-settings', true);
     this.errors.set({});
     this.notice.set(null);
     this.mode.set(m);
@@ -288,7 +311,7 @@ export class Settings implements OnInit, HasUnsavedChanges {
   /** 会社の設定（読み込んだとき・保存したときの値と比べる） */
   private readonly settingsSnapshot = new FormSnapshot(() => this.settings());
   /** 追加・変更のフォーム（開いたときの値と比べる） */
-  private readonly formSnapshot = new FormSnapshot(() => [this.groupForm(), this.bonusTypeForm(), this.officeForm(), this.kumiaiForm(), this.rateForm()]);
+  private readonly formSnapshot = new FormSnapshot(() => [this.groupForm(), this.bonusTypeForm(), this.officeForm(), this.kumiaiForm(), this.kumiaiRatesForm(), this.rateForm()]);
   /** 画面を移る前の確認に使う（unsavedChangesGuard）。会社の設定・開いているフォームのうち、変えたものの数 */
   unsavedCount(): number {
     return (this.settingsSnapshot.changed() ? 1 : 0) + (this.mode() !== null && this.formSnapshot.changed() ? 1 : 0);
@@ -305,6 +328,12 @@ export class Settings implements OnInit, HasUnsavedChanges {
   }
   protected setKumiai<K extends keyof KumiaiInput>(key: K, value: KumiaiInput[K]): void {
     this.kumiaiForm.update((f) => ({ ...f, [key]: value }));
+  }
+  protected setKumiaiFrom(v: string): void {
+    this.kumiaiRatesForm.update((f) => ({ ...f, validFrom: v }));
+  }
+  protected setKumiaiRate(type: (typeof KUMIAI_RATE_TYPES)[number], key: keyof RatePair, v: string): void {
+    this.kumiaiRatesForm.update((f) => ({ ...f, [type]: { ...f[type], [key]: v } }));
   }
   protected setRate<K extends keyof RateInput>(key: K, value: RateInput[K]): void {
     this.rateForm.update((f) => ({ ...f, [key]: value }));
@@ -329,9 +358,22 @@ export class Settings implements OnInit, HasUnsavedChanges {
     if (m?.kind !== 'kumiai') return;
     const f = this.kumiaiForm();
     const errors = checkKumiai(f, this.insurers().filter((i) => i.id !== m.id));
-    this.errors.set(errors);
-    if (Object.keys(errors).length > 0) return;
-    await this.run(() => this.repo.saveKumiai(m.id, f), `${f.name.trim()}を保存しました。`);
+    if (m.id) {
+      this.errors.set(errors);
+      if (Object.keys(errors).length > 0) return;
+      await this.run(() => this.repo.saveKumiai(m.id, f), `${f.name.trim()}を保存しました。`);
+      return;
+    }
+    // 追加：組合と料率を一緒に登録する。名前と料率の誤りは一度に出す
+    const r = checkKumiaiRates(this.kumiaiRatesForm());
+    this.errors.set({ ...errors, ...r.errors });
+    if (Object.keys(errors).length > 0 || Object.keys(r.errors).length > 0) return;
+    const later = r.skipped.map((t) => RATE_TYPE_LABELS[t]).join('・');
+    await this.run(
+      () => this.repo.addKumiaiWithRates(f, r.rates),
+      `${f.name.trim()}を、料率${r.rates.length}件（${yearMonthLabel(this.kumiaiRatesForm().validFrom)}分から）と一緒に登録しました。` +
+        (later ? `${later}の料率は未登録です。その保険がかかる人がいるなら、下の「料率を追加」で登録してください。` : ''),
+    );
   }
 
   protected async saveRate(event: Event): Promise<void> {
@@ -347,6 +389,90 @@ export class Settings implements OnInit, HasUnsavedChanges {
       () => this.repo.saveRate(m.id, value),
       `${this.insurerName(f.insurerId)}の${RATE_TYPE_LABELS[f.rateType]}（${yearMonthLabel(f.validFrom)}分から）を保存しました。`,
     );
+  }
+
+  // ---- 削除（給与の支払区分・賞与の種類・適用事業所。設計書 3.10） ----
+  // 1件でも使われていれば「使用中なので、削除できません」と知らせ、削除しない。使われていなければ確認してから削除する
+
+  protected deletePayrollGroup(g: PayrollGroup): Promise<void> {
+    return this.deleteMaster('給与の支払区分', g.name, async () => ({
+      isDefault: g.isDefault === true,
+      employees: payrollGroupUsage(await this.employeeRepo.loadAll(), g.id),
+    }), () => this.repo.deletePayrollGroup(g.id));
+  }
+
+  protected deleteBonusType(t: BonusType): Promise<void> {
+    return this.deleteMaster('賞与の種類', t.name, async () => ({
+      isDefault: false,
+      bonuses: await this.repo.isBonusTypeUsed(t.id),
+    }), () => this.repo.deleteBonusType(t.id));
+  }
+
+  protected deleteOffice(o: Office): Promise<void> {
+    return this.deleteMaster('適用事業所', o.name, async () => ({
+      isDefault: o.isDefault === true,
+      employees: officeUsage(await this.employeeRepo.loadAll(), o.id),
+    }), () => this.repo.deleteOffice(o.id));
+  }
+
+  /** 誤って追加した組合健保の料率の行を削除する（その月にほかの料率がなければ、計算は「未登録」になる） */
+  protected deleteRate(r: RateRecord): Promise<void> {
+    const name = `${this.rateTypeLabels[r.rateType]}・${yearMonthLabel(r.validFrom)}から ${this.toPercent(r.rate)}%`;
+    return this.deleteMaster('料率', name, async () => ({ isDefault: false }), () => this.repo.deleteRate(r.id),
+      '確定済みの月の金額は変わりません。この行で計算していた月は、ほかに有効な料率がなければ「料率が未登録」になります。');
+  }
+
+  /** 健康保険組合を削除する（適用事業所の保険者・二以上事業所勤務の選んだ保険者になっていないときだけ。料率もまとめて消す） */
+  protected deleteKumiai(k: Insurer): Promise<void> {
+    const rateIds = this.rates().filter((r) => r.insurerId === k.id).map((r) => r.id);
+    return this.deleteMaster('健康保険組合', k.name, async () => ({
+      isDefault: false,
+      ...insurerUsage(this.offices(), await this.employeeRepo.loadAll(), k.id),
+    }), () => this.repo.deleteKumiai(k.id, rateIds), rateIds.length ? `登録してある料率${rateIds.length}件も一緒に削除します。` : '');
+  }
+
+  /** 使用中かを確かめ、使われていなければ確認してから削除する */
+  private async deleteMaster(
+    label: string,
+    name: string,
+    usage: () => Promise<{ isDefault: boolean; employees?: number; bonuses?: boolean; offices?: number }>,
+    remove: () => Promise<void>,
+    note = '',
+  ): Promise<void> {
+    this.notice.set(null);
+    this.saving.set(true);
+    try {
+      const inUse = inUseMessage(label, name, await usage());
+      if (inUse) {
+        this.notice.set(inUse);
+        return;
+      }
+    } catch (e) {
+      console.error(e);
+      this.notice.set(`${label}「${name}」が使われているかを確かめられませんでした。権限と通信を確かめてください。`);
+      return;
+    } finally {
+      this.saving.set(false);
+    }
+    const ok = await this.confirm.ask({
+      title: `${label}を削除`,
+      message: `${label}「${name}」を削除します。元に戻せません。${note}`,
+      ok: '削除する',
+      danger: true,
+    });
+    if (!ok) return;
+    this.saving.set(true);
+    try {
+      await remove();
+      this.mode.set(null);
+      this.notice.set(`${label}「${name}」を削除しました。`);
+      await this.reload();
+    } catch (e) {
+      console.error(e);
+      this.notice.set(`${label}「${name}」を削除できませんでした。権限と通信を確かめてください。`);
+    } finally {
+      this.saving.set(false);
+    }
   }
 
   private async run(action: () => Promise<void>, message: string): Promise<void> {

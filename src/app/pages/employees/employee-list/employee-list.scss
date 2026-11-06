@@ -37,3 +37,8 @@ fieldset.dependents { border: 1px solid #ccc; border-radius: 4px; padding: 8px 1
 .dependent-row .err { flex-basis: 100%; }
 .child-notice { display: block; font-size: 12px; color: #92400e; background: #fffbeb; padding: 4px 6px; border-radius: 4px; }
 .filters .count { color: var(--c-muted); }
+/* 導入時の登録（以前から在籍している人） */
+fieldset.onboarding { border: 1px solid #ccc; border-radius: 4px; padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+/* fieldset は中身の幅より狭くならないので、スマホでは画面の幅に収める（所定労働時間・日数の欄は折り返す） */
+fieldset.breakdown, fieldset.eligibility, fieldset.dependents { min-width: 0; }
+fieldset.eligibility .row { flex-wrap: wrap; }

@@ -5,6 +5,7 @@ import { pendingRefunds as findPendingRefunds } from '../../core/calc/same-month
 import { Component, computed, inject, OnInit, signal } from '@angular/core';
 import { NgTemplateOutlet } from '@angular/common';
 import { RouterLink } from '@angular/router';
+import { Auth } from '../../core/auth/auth';
 import { AgeAlert, ageAlerts } from '../../core/calc/age-alerts';
 import { age70Notice, Age70Status } from '../../core/calc/age70';
 import { calcEmployeeMonth, EmployeeMonthResult, Masters } from '../../core/calc/employee-month';
@@ -103,7 +104,7 @@ export class Home implements OnInit {
     const m = this.masters();
     if (!m) return [];
     const candidates = trackRevisionCandidates(this.employees(), this.salaries(), this.grades(), this.thresholds(), this.statuses(), this.cutoff());
-    const list = findFilings(this.employees(), this.bonuses(), this.salaries(), this.grades(), candidates, m.offices, this.today());
+    const list = findFilings(this.employees(), this.bonuses(), this.salaries(), this.grades(), candidates, m.offices, this.today(), this.settings().startDate ?? null);
     return urgentFilings(list, this.filedIds(), this.today());
   });
   protected readonly overdueFilings = computed(() => this.urgentFilings().filter((f) => f.deadline !== null && f.deadline < this.today()).length);
@@ -126,6 +127,10 @@ export class Home implements OnInit {
   protected readonly error = signal<string | null>(null);
   private readonly employees = signal<EmployeeRecord[]>([]);
   private readonly masters = signal<Masters | null>(null);
+  /** 適用事業所が1つもない（使い始め）。設定から始める案内を出す */
+  protected readonly noOffices = computed(() => (this.masters()?.offices.length ?? 1) === 0);
+  private readonly auth = inject(Auth);
+  protected readonly isAdmin = computed(() => this.auth.user()?.siRole === 'admin');
   private readonly rounding = signal<ChildSupportRounding>('combined');
   private readonly groups = signal<PayrollGroup[]>([legacyGroup(DEFAULT_SETTINGS)]);
   /** 人と支払月ごとの締め日（その人の支払区分） */

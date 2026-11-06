@@ -1,3 +1,4 @@
+import { buildKyokaiGrades } from './grade-suggest';
 import { parseCsv } from './csv';
 import {
   buildDecisionPreview, DECISION_TEMPLATE_HEADERS, DECISION_TEMPLATE_MAPPING, DecisionEmployee, DecisionExpectation,
@@ -83,5 +84,16 @@ describe('buildDecisionPreview', () => {
     expect(p[0].errors[0]).toContain('照合できません');
     expect(p[3].errors[0]).toContain('値が違います');
     expect(p[5].errors[0]).toContain('2つ以上');
+  });
+});
+
+describe('決定通知書の取り込み：等級の額', () => {
+  it('等級表にない額の行はエラーにする（厚生年金の欄が空の行は、健康保険だけ確かめる）', () => {
+    const grades = buildKyokaiGrades('2020-09');
+    const p = buildDecisionPreview(csv(['0001,,,2026-11,299,299', '0001,,,2026-12,1390,']), DECISION_TEMPLATE_MAPPING, employees, [], grades);
+    expect(p[0].status).toBe('error');
+    expect(p[0].errors.join()).toContain('健康保険の等級の額ではありません');
+    expect(p[0].errors.join()).toContain('厚生年金の等級の額ではありません');
+    expect(p[1].status).toBe('new');
   });
 });

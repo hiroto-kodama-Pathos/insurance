@@ -68,6 +68,7 @@
               <td>
                 @if (r.settledMonth) {
                   <span class="badge done">{{ r.settledMonth | ym }}の給与で精算済み</span>
+                  <button type="button" class="link" [disabled]="saving()" (click)="unsettle(r)">未精算に戻す</button>
                 } @else {
                   <span class="settle">
                     <input type="month" [value]="settleMonth(r.id)" (change)="setSettleMonth(r.id, $any($event.target).value)" />

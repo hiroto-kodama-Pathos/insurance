@@ -119,3 +119,28 @@ export function buildKyokaiThresholds(validFrom: string): GradeThreshold[] {
     { validFrom, insuranceType: 'pension', maxGrade: 32, upper: 665_000, lower: 83_000, topLower: 635_000, secondLower: 93_000 },
   ];
 }
+
+/** その月に使う等級表（適用開始月が対象月以前で最も新しいもの）。なければ空 */
+export function gradeTableAt(grades: GradeRow[], yearMonth: string): GradeRow[] {
+  const from = [...new Set(grades.map((g) => g.validFrom))].filter((v) => v <= yearMonth).sort().at(-1);
+  return from ? grades.filter((g) => g.validFrom === from) : [];
+}
+
+/**
+ * 標準報酬月額が、その月の等級表の額か（設計書 2.6）。等級の額でなければ、近い等級を添えたエラーの文を返す
+ * 健康保険は50等級、厚生年金は32等級（等級の範囲が狭い）で、どの保険者でも同じ（健康保険法40条・厚生年金保険法20条）。
+ * 組合健保の会社・70歳以上の人の相当額も同じ等級の額を使う。等級表がない月は確かめない（null）
+ * @param kind 'health'（健康保険）・'pension'（厚生年金）
+ */
+export function standardGradeError(grades: GradeRow[], yearMonth: string, kind: 'health' | 'pension', amount: number): string | null {
+  const table = gradeTableAt(grades, yearMonth).filter((g) => kind === 'health' || g.pensionGrade !== null);
+  if (table.length === 0) return null;
+  if (table.some((g) => g.standardAmount === amount)) return null;
+  const label = kind === 'health' ? '健康保険' : '厚生年金';
+  const sorted = [...table].sort((a, b) => a.standardAmount - b.standardAmount);
+  const lower = sorted.filter((g) => g.standardAmount < amount).at(-1);
+  const upper = sorted.find((g) => g.standardAmount > amount);
+  const show = (g: GradeRow) => `${(g.standardAmount / 10_000).toLocaleString('ja-JP')}万円（${kind === 'health' ? g.healthGrade : g.pensionGrade}等級）`;
+  const near = [lower, upper].filter((g): g is GradeRow => !!g).map(show).join('・');
+  return `${amount.toLocaleString('ja-JP')}円は${label}の等級の額ではありません。決定通知書の額を入れてください（近い等級：${near}）`;
+}

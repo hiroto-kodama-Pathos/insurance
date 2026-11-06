@@ -76,6 +76,25 @@ export class BonusRepository {
     await updateDoc(siDoc('bonuses', id), { totalAmount, updatedAt: serverTimestamp() });
   }
 
+  /**
+   * 登録した賞与を直す（支給日・賞与額・現物・種類の誤り）。直す前の月と、直したあとの月のどちらも確定済みでないこと（ルールでも守る）
+   * 全事業所の合計（二以上事業所勤務）が賞与額以下になったら、合計は消す（登録し直してもらう）
+   */
+  async update(id: string, bonus: Omit<BonusRecord, 'id' | 'employeeId'>, officeId: string): Promise<void> {
+    const total = bonus.totalAmount ?? null;
+    await updateDoc(siDoc('bonuses', id), {
+      paidDate: bonus.paidDate,
+      yearMonth: bonus.paidDate.slice(0, 7),
+      amount: bonus.amount,
+      inKindAmount: bonus.inKindAmount ?? null,
+      bonusTypeId: bonus.bonusTypeId ?? null,
+      isRemuneration: bonus.isRemuneration === true,
+      totalAmount: total !== null && total > bonus.amount ? total : null,
+      officeId,
+      updatedAt: serverTimestamp(),
+    });
+  }
+
   async remove(id: string): Promise<void> {
     await deleteDoc(siDoc('bonuses', id));
   }

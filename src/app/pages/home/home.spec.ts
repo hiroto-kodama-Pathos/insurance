@@ -104,6 +104,14 @@ describe('Home', () => {
 
   const el = () => fixture.nativeElement as HTMLElement;
 
+  it('適用事業所があるときは、使い始めの案内を出さない。1つもないときは出す', () => {
+    expect(el().querySelector('.setup')).toBeNull();
+    const masters = fixture.componentRef.instance['masters'] as unknown as { update(f: (m: { offices: unknown[] }) => unknown): void };
+    masters.update((m) => ({ ...m, offices: [] }));
+    fixture.detectChanges();
+    expect(el().querySelector('.setup')?.textContent).toContain('はじめに');
+  });
+
   it('同月得喪で還付待ちの人を出す', () => {
     expect(el().textContent).toContain('同月得喪の還付待ち 1人');
     const row = el().querySelector('table.same-month tbody tr')!;

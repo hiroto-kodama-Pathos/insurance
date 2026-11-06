@@ -12,6 +12,7 @@ import { EmployeeRecord, EmployeeRepository } from '../../../core/repository/emp
 import { MasterRepository } from '../../../core/repository/master-repository';
 import { SalaryRepository } from '../../../core/repository/salary-repository';
 import { EmployeeList } from './employee-list';
+import { Confirm } from '../../../core/ui/confirm';
 
 const masters: Masters = {
   offices: [{ id: 'honsha', name: '本社', prefecture: '東京都', insurerId: 'kyokai' }],
@@ -168,6 +169,18 @@ describe('EmployeeList', () => {
     expect(el().querySelector('.office-scope')?.textContent).toContain('担当している事業所の従業員だけを登録できます');
   });
 
+  it('新規登録：適用事業所が1つもなければ、選ぶ欄の下に登録を促す（管理者は設定へのリンク、担当者は依頼の案内）', async () => {
+    const page = fixture.componentInstance as unknown as { offices: { set(v: unknown): void } };
+    page.offices.set([]);
+    (el().querySelector('.page-header button') as HTMLButtonElement).click();
+    await settle();
+    expect(el().querySelector('.no-office')?.textContent).toContain('管理者に登録を依頼してください');
+    user.set({ uid: 'u1', email: '', siRole: 'admin', siScope: 'all' });
+    await settle();
+    expect(el().querySelector('.no-office')?.textContent).toContain('「適用事業所」で登録してください');
+    expect(el().querySelector('.no-office a')?.getAttribute('href')).toBe('/settings');
+  });
+
   type Unsaved = { unsavedCount(): number };
   const unsaved = () => (fixture.componentInstance as unknown as Unsaved).unsavedCount();
 
@@ -228,8 +241,8 @@ describe('EmployeeList', () => {
     c.setBreakdown('overtime', '20,000');
     await settle();
     expect(el().querySelector('fieldset.breakdown .total')?.textContent).toContain('700,000円');
-    c.suggest();
-    await settle();
+    // 内訳を入れると、「提案を入力」を押さなくても標準報酬月額が入る
+    expect((el().querySelector('input[name=healthStandard]') as HTMLInputElement).value).toBe('710000');
     el().querySelector('form')!.dispatchEvent(new Event('submit'));
     await settle();
     expect(created.length).toBe(1);
@@ -239,10 +252,81 @@ describe('EmployeeList', () => {
     expect(created[0].breakdown).toEqual({ basic: 600_000, allowances: 50_000, commuting: 30_000, overtime: 20_000 });
     expect(created[0].pensionStandard).toBe(650_000);
     expect(el().querySelector('.notice')?.textContent).toContain('田中 次郎さんを登録しました');
+    // 続きを入れやすいように、登録した人の詳細へのリンクを出す
+    expect(el().querySelector('.created-link a')?.textContent).toContain('田中 次郎さんの詳細を開く');
     // 入社時：控除する給与の月と資格取得届の期限
     const ym = created[0].acquiredDate.slice(0, 7);
     expect(el().querySelector('.notice')?.textContent).toContain(`${Number(ym.slice(0, 4))}年${Number(ym.slice(5))}月分から保険料がかかり`);
     expect(el().querySelector('.notice')?.textContent).toContain('資格取得届の期限は');
+  });
+
+  it('導入時の登録：資格取得月に等級表がない人は自動で導入時の登録になり、内訳なしで今の標準報酬月額を登録する', async () => {
+    (el().querySelector('.page-header button') as HTMLButtonElement).click();
+    await settle();
+    const c = fixture.componentInstance as unknown as {
+      setText(k: string, v: string): void;
+      setAmount(k: string, v: string): void;
+      setOnboardingFrom(v: string): void;
+    };
+    c.setText('employeeNumber', '0003');
+    c.setText('name', '古参 一郎');
+    c.setText('birthDate', '1980-04-01');
+    c.setText('acquiredDate', '2015-04-01');
+    await settle();
+    // 等級表は2020年9月からなので、2015年4月の入社は自動で導入時の登録（内訳の欄は出さない）
+    expect((el().querySelector('input[name=onboarding]') as HTMLInputElement).checked).toBe(true);
+    expect(el().querySelector('fieldset.breakdown')).toBeNull();
+    expect(el().textContent).toContain('使える等級表がない');
+    c.setOnboardingFrom('2026-09');
+    c.setAmount('healthStandard', '300000');
+    c.setAmount('pensionStandard', '300000');
+    await settle();
+    el().querySelector('form')!.dispatchEvent(new Event('submit'));
+    await settle();
+    expect(created.length).toBe(1);
+    expect(created[0].onboarding).toEqual({ validFrom: '2026-09' });
+    expect(created[0].acquiredDate).toBe('2015-04-01');
+    const notice = el().querySelector('.notice')?.textContent ?? '';
+    expect(notice).toContain('2026年9月分から登録しました');
+    expect(notice).toContain('「対応不要」にしました');
+    expect(notice).not.toContain('資格取得届の期限は');
+  });
+
+  it('導入時の登録：最近の入社日なら、資格取得届が済んでいるかを確かめ、やめれば登録しない。今月の入社では選べない', async () => {
+    const ask = vi.spyOn(TestBed.inject(Confirm), 'ask').mockResolvedValue(false);
+    (el().querySelector('.page-header button') as HTMLButtonElement).click();
+    await settle();
+    const c = fixture.componentInstance as unknown as {
+      setText(k: string, v: string): void;
+      setAmount(k: string, v: string): void;
+      setOnboarding(on: boolean): void;
+      form(): NewEmployeeInput;
+    };
+    c.setText('employeeNumber', '0004');
+    c.setText('name', '最近 入社');
+    c.setText('birthDate', '1990-04-01');
+    // 今日の資格取得日（初期値）では、導入時の登録の欄を出さない
+    await settle();
+    expect(el().querySelector('input[name=onboarding]')).toBeNull();
+    // 前の月の入社：等級表はあるので自動では選ばないが、選べる
+    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1);
+    const lastMonth = new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(d).slice(0, 7) + '-01';
+    c.setText('acquiredDate', lastMonth);
+    await settle();
+    expect((el().querySelector('input[name=onboarding]') as HTMLInputElement).checked).toBe(false);
+    c.setOnboarding(true);
+    c.setAmount('healthStandard', '300000');
+    c.setAmount('pensionStandard', '300000');
+    await settle();
+    el().querySelector('form')!.dispatchEvent(new Event('submit'));
+    await settle();
+    expect(ask).toHaveBeenCalledTimes(1);
+    expect(ask.mock.calls[0][0].message).toContain('資格取得届');
+    expect(created.length).toBe(0);
+    // 今月の入社日に戻すと、導入時の登録は外れる
+    c.setText('acquiredDate', lastMonth.slice(0, 5) + lastMonth.slice(5, 7) + '-01');
+    c.setText('acquiredDate', new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()));
+    expect(c.form().onboarding).toBeNull();
   });
 
   it('正社員は所定労働時間を空欄のまま登録でき、被扶養者も一緒に登録して期限を知らせる', async () => {
@@ -432,5 +516,19 @@ describe('EmployeeList', () => {
     search.dispatchEvent(new Event('input'));
     fixture.detectChanges();
     expect(el.querySelector('table.list tbody')!.textContent).not.toContain('山田 太郎');
+  });
+
+  it('標準報酬月額を自分で直したあとは、内訳を変えても自動では書き換えない', async () => {
+    (el().querySelector('.page-header button') as HTMLButtonElement).click();
+    await settle();
+    const c = fixture.componentInstance as unknown as { setText(k: string, v: string): void; setAmount(k: string, v: string): void; setBreakdown(k: string, v: string): void };
+    c.setText('acquiredDate', '2026-10-01');
+    c.setBreakdown('basic', '300000');
+    await settle();
+    expect((el().querySelector('input[name=healthStandard]') as HTMLInputElement).value).toBe('300000');
+    c.setAmount('healthStandard', '320000');
+    c.setBreakdown('basic', '500000');
+    await settle();
+    expect((el().querySelector('input[name=healthStandard]') as HTMLInputElement).value).toBe('320000');
   });
 });

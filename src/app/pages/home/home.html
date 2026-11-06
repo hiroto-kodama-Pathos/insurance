@@ -6,6 +6,21 @@
   } @else if (error()) {
     <p class="error">{{ error() }}</p>
   } @else {
+    @if (noOffices()) {
+      <div class="setup">
+        <h2>はじめに</h2>
+        @if (isAdmin()) {
+          <ol>
+            <li><a routerLink="/settings">設定</a>で、適用事業所・給与の支払区分・賞与の種類を登録します（会社の設定も確かめます）。</li>
+            <li><a routerLink="/settings/accounts">アカウントと権限</a>で、担当者のアカウントを発行します（必要なとき）。</li>
+            <li><a routerLink="/employees">従業員一覧</a>で1人ずつ登録するか、<a routerLink="/imports">CSV取り込み</a>で、従業員・被扶養者・標準報酬月額をまとめて入れます。</li>
+            <li>毎月、<a routerLink="/salaries">給与</a>を入れ、<a routerLink="/monthly">月次保険料一覧</a>で確定します。</li>
+          </ol>
+        } @else {
+          <p>適用事業所がまだ登録されていません。管理者に、設定での登録を依頼してください。</p>
+        }
+      </div>
+    }
     <p class="hint">件数のある項目を、左から順に確かめてください（赤を先頭に、毎月起き、保険料の金額や期限に関わるものほど左にあります）。<span class="legend urgent">赤</span>は給与計算・納付の前に必ず対応するもの、<span class="legend">オレンジ</span>は確かめるものです。押すとこの画面の下の欄に移り、「→」の付いた項目は担当の画面に移ります。</p>
     <div class="chips">
       <button type="button" class="chip" [class.zero]="unclosedPrev().length === 0" [class.urgent]="unclosedPrev().length > 0" [style.order]="unclosedPrev().length ? -1 : 1" (click)="goTo('unclosed')">{{ prevMonth() | ym }}分の未確定 {{ unclosedPrev().length }}件</button>
@@ -123,7 +138,8 @@
 
         @case ('filings') {
           <div class="table-wrap">
-            <table class="list sticky-head sticky-cols">
+            <!-- 期限・届出の2列だけで横にスクロールしないため、左の列は固定しない（固定すると列の幅が決まり、届出の名前が途中で切れる） -->
+            <table class="list urgent-filings sticky-head">
               <thead><tr><th>期限</th><th>届出</th></tr></thead>
               <tbody>
                 @for (f of urgentFilings(); track f.id) {

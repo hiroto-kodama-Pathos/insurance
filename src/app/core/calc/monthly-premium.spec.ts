@@ -1,4 +1,4 @@
-import { calcMonthlyPremium, MonthlyPremiumInput } from './monthly-premium';
+import { careNote, calcMonthlyPremium, MonthlyPremiumInput } from './monthly-premium';
 
 // 東京（協会けんぽ）の例として置いた料率。健康保険9.85%・介護1.62%・支援金0.23%・厚生年金18.3%、すべて折半
 const RATES: MonthlyPremiumInput['rates'] = {
@@ -137,5 +137,16 @@ describe('組合健保で負担割合が違う場合', () => {
     );
     // 介護：300,000 × 1.6% × 50% = 2,400円
     expect(r.care?.employeeYen).toBe(2_400n);
+  });
+});
+
+describe('介護保険の欄に出す理由（careNote）', () => {
+  it('かからない人だけ理由を出す（40歳未満・65歳以上）。かかる人・特定被保険者・計算していない人は空', () => {
+    const care = { employeeYen: 2430n } as never;
+    expect(careNote({ care: null, careLabel: 'none' })).toBe('対象外（40歳未満）');
+    expect(careNote({ care: null, careLabel: 'first' })).toBe('第1号（65歳以上）');
+    expect(careNote({ care, careLabel: 'second' })).toBe('');
+    expect(careNote({ care: null, careLabel: 'special' })).toBe('');
+    expect(careNote(null)).toBe('');
   });
 });

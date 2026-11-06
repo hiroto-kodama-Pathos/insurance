@@ -27,6 +27,9 @@ export function premiumTotals(p: MonthlyPremium | null): { employee: number; emp
   };
 }
 
+/** 前月は計算していなかった人の、変わった理由（diff は出さず「今月から計算」と出す） */
+export const STANDARD_START = '標準報酬月額の登録';
+
 /**
  * 前月から保険料が変わった理由（変わっていなければ空）
  * @param prev 前月の結果（前月に資格がなければ null）
@@ -34,6 +37,8 @@ export function premiumTotals(p: MonthlyPremium | null): { employee: number; emp
 export function changeReasons(prev: EmployeeMonthResult | null, cur: EmployeeMonthResult): string[] {
   const now = premiumTotals(cur.premium).employee;
   if (!prev || prev.status === 'notInsured') return now > 0 || cur.status === 'ok' ? ['入社・資格取得'] : [];
+  // 前月は標準報酬月額がなく計算していない（導入時の登録で、標準報酬月額をこの月から登録した人など）
+  if (prev.status === 'noStandard' && cur.status === 'ok') return [STANDARD_START];
   const before = premiumTotals(prev.premium).employee;
   if (before === now && prev.officeId === cur.officeId) return [];
   const r: string[] = [];

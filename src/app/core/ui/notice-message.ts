@@ -3,6 +3,8 @@ import { Component, computed, effect, input, output, signal } from '@angular/cor
 /** 知らせの文が、うまくいかなかったことを伝えるものか（赤で出す） */
 export function isFailureMessage(message: string): boolean {
   if (/できませんでした|ませんでした/.test(message)) return true;
+  // 「使用中なので、削除できません」など、できなかったことを伝える文
+  if (/できません[。（]/.test(message)) return true;
   // 「〜しました」を含まず、「〜してください」だけの文は、入力の誤りなどの知らせ
   return !/しました|しています|なりました/.test(message) && /ください/.test(message);
 }

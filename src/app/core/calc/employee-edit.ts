@@ -4,6 +4,7 @@ import { isValidDate } from './new-employee';
 import { Assignment } from './office';
 import { yearMonthLabel } from './year-month';
 import { toHalfWidth } from './half-width';
+import { standardGradeError, type GradeRow } from './grade-suggest';
 
 export type Errors = Record<string, string>;
 
@@ -109,8 +110,11 @@ export type StandardInput = {
   provisional?: boolean;
 };
 
-/** 標準報酬月額の履歴の追加 */
-export function checkStandard(existingMonths: string[], input: StandardInput): Errors {
+/**
+ * 標準報酬月額の履歴の追加・訂正・異動
+ * @param grades 等級表（額が適用開始月の等級の額かを確かめる。空なら確かめない）
+ */
+export function checkStandard(existingMonths: string[], input: StandardInput, grades: GradeRow[] = []): Errors {
   const errors: Errors = {};
   if (!isValidMonth(input.validFrom)) errors['validFrom'] = '適用開始月を正しく入力してください';
   else if (existingMonths.includes(input.validFrom))
@@ -119,6 +123,10 @@ export function checkStandard(existingMonths: string[], input: StandardInput): E
     const v = input[key];
     if (v === null || !Number.isInteger(v) || v <= 0) errors[key] = '標準報酬月額を円で入力してください';
     else if (v % 1000 !== 0) errors[key] = '標準報酬月額は1,000円単位です';
+    else if (isValidMonth(input.validFrom)) {
+      const g = standardGradeError(grades, input.validFrom, key === 'healthStandard' ? 'health' : 'pension', v);
+      if (g) errors[key] = g;
+    }
   }
   const own = input.ownRemuneration ?? null;
   const total = input.totalRemuneration ?? null;

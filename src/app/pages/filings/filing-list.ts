@@ -1,8 +1,11 @@
 // 届出の期限（設計書 2.25・3.12）
 // 届け出るものと期限を登録した内容から求めて並べ、「届出済み」にすると未対応から消える。
+import { saveTableCsv } from '../../core/ui/table-csv';
+import { PageState } from '../../core/ui/page-state';
 import { NoticeMessage } from '../../core/ui/notice-message';
-import { Component, computed, inject, OnInit, signal } from '@angular/core';
+import { Component, computed, inject, OnInit, signal, ElementRef } from '@angular/core';
 import { RouterLink } from '@angular/router';
+import { DateLabelPipe } from '../../core/ui/year-month.pipe';
 import { Auth } from '../../core/auth/auth';
 import { addDays, Filing, FILING_KIND_LABEL, FilingKind, filingState, FilingState, findFilings } from '../../core/calc/filing';
 import { GradeRow } from '../../core/calc/grade-suggest';
@@ -21,6 +24,7 @@ import { SalaryRepository } from '../../core/repository/salary-repository';
 import { SettingsRepository } from '../../core/repository/settings-repository';
 import { REVISION_LOOKBACK_MONTHS } from '../revisions/revision-list';
 import { yearMonthLabel } from '../../core/calc/year-month';
+import { Confirm } from '../../core/ui/confirm';
 
 export function today(): string {
   return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date());
@@ -46,12 +50,18 @@ export function deadlineMonthLabel(month: string): string {
 }
 
 @Component({
-  imports: [RouterLink, NoticeMessage],
+  imports: [RouterLink, NoticeMessage, DateLabelPipe],
   selector: 'app-filing-list',
   styleUrl: './filing-list.scss',
   templateUrl: './filing-list.html',
 })
 export class FilingList implements OnInit {
+  private readonly host = inject(ElementRef<HTMLElement>).nativeElement as HTMLElement;
+  /** 表示している一覧（絞り込み・並び替えのあと）を、画面と同じ列でCSVに保存する（core/ui/table-csv.ts） */
+  protected saveCsv(selector: string, fileName: string): void {
+    saveTableCsv(this.host, selector, fileName);
+  }
+
   private readonly auth = inject(Auth);
   private readonly employeeRepo = inject(EmployeeRepository);
   private readonly masterRepo = inject(MasterRepository);
@@ -59,7 +69,11 @@ export class FilingList implements OnInit {
   private readonly salaryRepo = inject(SalaryRepository);
   private readonly revisionRepo = inject(RevisionRepository);
   private readonly settingsRepo = inject(SettingsRepository);
+  /** 利用開始日（会社の設定）。期限がこの日より前の届出は出さない。未設定なら null */
+  protected readonly startDate = signal<string | null>(null);
+  protected readonly isAdmin = computed(() => this.auth.user()?.siRole === 'admin');
   private readonly filingRepo = inject(FilingRepository);
+  private readonly confirm = inject(Confirm);
 
   protected readonly stateLabel = STATE_LABEL;
   protected readonly today = signal(today());
@@ -74,6 +88,15 @@ export class FilingList implements OnInit {
   /** 届出の種類で絞り込む（'' はすべての種類） */
   protected readonly kindFilter = signal<FilingKind | ''>('');
 
+  /** 一覧の絞り込み・対象月を覚え、詳細から戻ってきたときに元に戻す（core/ui/page-state.ts） */
+  private readonly pageStateKept = ((pageState: PageState) => {
+    pageState.keep('filings.tab', this.tab);
+    pageState.keep('filings.officeFilter', this.officeFilter);
+    pageState.keep('filings.monthFilter', this.monthFilter);
+    pageState.keep('filings.kindFilter', this.kindFilter);
+    return true;
+  })(inject(PageState));
+
   private readonly employees = signal<EmployeeRecord[]>([]);
   protected readonly offices = signal<Office[]>([]);
   private readonly bonuses = signal<BonusRecord[]>([]);
@@ -83,12 +106,14 @@ export class FilingList implements OnInit {
   private readonly statuses = signal<CandidateStatusRecord[]>([]);
   private readonly groups = signal<PayrollGroup[]>([legacyGroup(DEFAULT_SETTINGS)]);
   private readonly filedIds = signal<Set<string>>(new Set());
+  /** 対応不要にした届出（届出済みのタブで「対応不要」と出す） */
+  protected readonly notNeededIds = signal<Set<string>>(new Set());
 
   private readonly all = computed<Row[]>(() => {
     const cutoff = cutoffResolver(this.groups(), this.employees());
     const candidates = trackRevisionCandidates(this.employees(), this.salaries(), this.grades(), this.thresholds(), this.statuses(), cutoff);
     const byId = new Map(this.employees().map((e) => [e.id, e]));
-    return findFilings(this.employees(), this.bonuses(), this.salaries(), this.grades(), candidates, this.offices(), this.today()).map((f) => {
+    return findFilings(this.employees(), this.bonuses(), this.salaries(), this.grades(), candidates, this.offices(), this.today(), this.startDate()).map((f) => {
       const e = f.employeeId ? byId.get(f.employeeId) : null;
       return {
         ...f,
@@ -193,6 +218,7 @@ export class FilingList implements OnInit {
   /** タブを切り替えたら、月・種類の絞り込みは「すべて」に戻す（届出済みにはない月・種類を選んだままにしない） */
   protected setTab(tab: 'open' | 'filed'): void {
     this.tab.set(tab);
+    this.selected.set(new Set());
     this.monthFilter.set('');
     this.kindFilter.set('');
   }
@@ -220,8 +246,9 @@ export class FilingList implements OnInit {
         this.masterRepo.loadGradeThresholds(),
         this.revisionRepo.loadStatuses(),
         this.settingsRepo.loadPayrollGroups(),
-        this.filingRepo.loadFiledIds(),
+        this.filingRepo.loadResolutions(),
       ]);
+      this.startDate.set((await this.settingsRepo.loadSettings()).startDate ?? null);
       this.employees.set(employees);
       this.offices.set(masters.offices);
       this.bonuses.set(bonuses);
@@ -230,7 +257,8 @@ export class FilingList implements OnInit {
       this.thresholds.set(thresholds);
       this.statuses.set(statuses);
       this.groups.set(groups);
-      this.filedIds.set(filed);
+      this.filedIds.set(new Set(filed.keys()));
+      this.notNeededIds.set(new Set([...filed].filter(([, v]) => v === 'notNeeded').map(([k]) => k)));
     } catch (e) {
       console.error(e);
       this.error.set('データを読み込めませんでした。ログインと権限を確かめてください。');
@@ -246,11 +274,84 @@ export class FilingList implements OnInit {
     }, `${r.name}（${r.employeeLabel}）を届出済みにしました。`);
   }
 
+  // ---- まとめて届出済みにする（設計書 3.12） ----
+  // 未対応のタブで、届出をチェックで選び、まとめて届出済みにする。月額変更届は改定の候補で切り替えるので選べない
+
+  /** 選んだ届出のID（絞り込みで見えなくなったものは、まとめての対象にしない） */
+  protected readonly selected = signal<Set<string>>(new Set());
+
+  /** チェックで選べるか（未対応のタブの、月額変更届以外の未対応の届出） */
+  protected selectable(r: Row): boolean {
+    return this.tab() === 'open' && r.kind !== 'revision' && r.state !== 'filed';
+  }
+
+  /** いま表示している中で選べる届出 */
+  protected readonly selectableRows = computed(() => this.rows().filter((r) => this.selectable(r)));
+
+  /** いま表示している中で選んでいる届出（まとめて届出済みにする対象） */
+  protected readonly selectedRows = computed(() => {
+    const s = this.selected();
+    return this.selectableRows().filter((r) => s.has(r.id));
+  });
+
+  /** 表示している選べる届出を、すべて選んでいるか */
+  protected readonly allSelected = computed(() => this.selectableRows().length > 0 && this.selectedRows().length === this.selectableRows().length);
+
+  protected toggle(r: Row, checked: boolean): void {
+    this.selected.update((s) => {
+      const next = new Set(s);
+      if (checked) next.add(r.id);
+      else next.delete(r.id);
+      return next;
+    });
+  }
+
+  /** 見出しのチェック：表示している選べる届出を、すべて選ぶ／すべて外す */
+  protected toggleAll(checked: boolean): void {
+    this.selected.set(checked ? new Set(this.selectableRows().map((r) => r.id)) : new Set());
+  }
+
+  protected async setFiledSelected(): Promise<void> {
+    const list = this.selectedRows();
+    if (list.length === 0) return;
+    const ok = await this.confirm.ask({
+      title: 'まとめて届出済みにする',
+      message: `選んだ${list.length}件を届出済みにします（あとから1件ずつ未対応に戻せます）。`,
+      ok: `${list.length}件を届出済みにする`,
+    });
+    if (!ok) return;
+    await this.run(async () => {
+      await this.filingRepo.setFiledMany(list, this.auth.user()?.email ?? '');
+      const ids = list.map((r) => r.id);
+      this.filedIds.update((s) => new Set([...s, ...ids]));
+      this.selected.set(new Set());
+    }, `${list.length}件を届出済みにしました。`);
+  }
+
   protected async unsetFiled(r: Row): Promise<void> {
     await this.run(async () => {
       await this.filingRepo.unsetFiled(r.id);
       this.filedIds.update((s) => new Set([...s].filter((x) => x !== r.id)));
+      this.notNeededIds.update((s) => new Set([...s].filter((x) => x !== r.id)));
     }, `${r.name}（${r.employeeLabel}）を未対応に戻しました。`);
+  }
+
+  /**
+   * 対応不要にする（届け出なくてよいと分かったもの：取り消した退職の資格喪失届、登録の誤りで出た届出など）
+   * 確かめてから記録し、未対応の一覧と要確認から外す。届出済みのタブで「対応不要」と出し、未対応に戻せる
+   */
+  protected async setNotNeeded(r: Row): Promise<void> {
+    const ok = await this.confirm.ask({
+      title: '対応不要にしますか',
+      message: `${r.name}（${r.employeeLabel}・${r.triggerLabel}）を、届け出なくてよいものとして未対応の一覧から外します。登録の誤りで出た届出なら、先に従業員の詳細で登録を直すと、届出そのものが出なくなります。あとから未対応に戻せます。`,
+      ok: '対応不要にする',
+    });
+    if (!ok) return;
+    await this.run(async () => {
+      await this.filingRepo.setNotNeeded(r, this.auth.user()?.email ?? '');
+      this.filedIds.update((s) => new Set([...s, r.id]));
+      this.notNeededIds.update((s) => new Set([...s, r.id]));
+    }, `${r.name}（${r.employeeLabel}）を対応不要にしました。`);
   }
 
   private async run(action: () => Promise<void>, message: string): Promise<void> {

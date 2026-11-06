@@ -97,10 +97,41 @@ function within5(date: string): { deadline: string; deadlineLabel: string } {
   return { deadline: d, deadlineLabel: `${dateLabel(d)}（5日以内）` };
 }
 
+/** 届出のID（届出済み・対応不要の記録 filings のドキュメントIDにも使う） */
+export function filingId(ownerId: string, kind: FilingKind, trigger: string): string {
+  return `${ownerId}_${kind}_${trigger}`;
+}
+
+/** 被扶養者が扶養に入った届出のきっかけ（扶養に入った日と氏名） */
+function dependentInTrigger(certifiedDate: string, name: string): string {
+  return `${certifiedDate}_in_${name}`;
+}
+
+/**
+ * 導入時の登録で、すでに届け出ているはずの届出（資格取得届・扶養に入った被扶養者異動届）。
+ * 導入前に届け出たものなので「対応不要」として記録し、期限切れの届出として出さない（設計書 3.1）
+ */
+export function onboardingFilings(
+  employeeId: string,
+  acquiredDate: string,
+  officeId: string,
+  dependents: { name: string; certifiedDate: string }[],
+): { id: string; employeeId: string; kind: FilingKind; trigger: string; officeId: string }[] {
+  return [
+    { id: filingId(employeeId, 'acquisition', acquiredDate), employeeId, kind: 'acquisition' as const, trigger: acquiredDate, officeId },
+    ...dependents.map((d) => {
+      const trigger = dependentInTrigger(d.certifiedDate, d.name);
+      return { id: filingId(employeeId, 'dependent', trigger), employeeId, kind: 'dependent' as const, trigger, officeId };
+    }),
+  ];
+}
+
 /**
  * 届け出るものの一覧（届出済みかどうかは filings と突き合わせて決める）
  *
  * @param today 今日（きっかけが FILING_LOOKBACK_DAYS 日より前のものは出さない）
+ * @param startDate このアプリの利用開始日。期限がこの日より前の届出は、導入前に届け出たものとして出さない
+ *   （期限のない月額変更届の見込みと、期限が利用開始日以後の届出は出す。導入の時点でまだ届け出ていないことがあるため）
  */
 export function findFilings(
   employees: FilingEmployee[],
@@ -110,12 +141,14 @@ export function findFilings(
   candidates: FilingCandidate[],
   offices: { id: string }[],
   today: string,
+  startDate: string | null = null,
 ): Filing[] {
   const from = addDays(today, -FILING_LOOKBACK_DAYS);
   const list: Filing[] = [];
   const push = (f: Omit<Filing, 'id'>) => {
     if (f.trigger.slice(0, 10) < from) return;
-    list.push({ ...f, id: `${f.employeeId ?? f.officeId}_${f.kind}_${f.trigger}` });
+    if (startDate && f.deadline !== null && f.deadline < startDate) return;
+    list.push({ ...f, id: filingId(`${f.employeeId ?? f.officeId}`, f.kind, f.trigger) });
   };
 
   for (const e of employees) {
@@ -143,7 +176,7 @@ export function findFilings(
     for (const d of e.dependents ?? []) {
       push({
         kind: 'dependent', name: `${FILING_KIND_LABEL.dependent}（${d.name}・扶養に入った）`, employeeId: e.id,
-        officeId: officeOn(e.assignments, d.certifiedDate), trigger: `${d.certifiedDate}_in_${d.name}`,
+        officeId: officeOn(e.assignments, d.certifiedDate), trigger: dependentInTrigger(d.certifiedDate, d.name),
         triggerLabel: `認定日 ${dateLabel(d.certifiedDate)}`, ...within5(d.certifiedDate),
       });
       // 外れた日を登録した人と、75歳の誕生日を迎える人（外れた日を登録していなくても、誕生日に後期高齢者医療へ移り扶養から外れる）

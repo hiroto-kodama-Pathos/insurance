@@ -33,6 +33,9 @@
         通知書待ちとして登録する（9月分の給与計算に通知書が間に合わないとき）
       </label>
       電子申請の通知書は<a routerLink="/decisions/import">CSVで取り込めます</a>（見込みと違う人だけを表示します）。
+      @if (undoable().length > 0) {
+        <button type="button" class="secondary danger" [disabled]="saving()" (click)="undo(undoable())">表示中の登録済み{{ undoable().length }}人の登録を取り消す</button>
+      }
     </p>
 
     <div class="filters">
@@ -108,6 +111,9 @@
               <td>
                 @if (r.registered) {
                   <span class="badge done">登録済み</span>
+                  @if (canUndo(r)) {
+                    <button type="button" class="link danger-link" [disabled]="saving()" (click)="undo([r])">登録を取り消す</button>
+                  }
                 } @else if (!r.revisionInJulSep && r.average !== null) {
                   <button type="button" [disabled]="saving()" (click)="register(r)">見込みどおり登録</button>
                 }
