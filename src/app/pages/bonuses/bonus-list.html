@@ -41,7 +41,7 @@
         <label>賞与の種類
           <select name="bonusType" (change)="setForm('bonusTypeId', $any($event.target).value)">
             <option value="">（種類なし）</option>
-            @for (t of bonusTypes(); track t.id) {
+            @for (t of bonusTypes() | usable: form().bonusTypeId; track t.id) {
               <option [value]="t.id" [selected]="form().bonusTypeId === t.id">{{ t.name }}{{ t.isRemuneration ? '（年4回以上支給）' : '' }}</option>
             }
           </select>

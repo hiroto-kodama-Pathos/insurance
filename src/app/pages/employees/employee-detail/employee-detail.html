@@ -528,7 +528,7 @@
               <label>異動先の適用事業所
                 <select [value]="officeId()" (change)="officeId.set($any($event.target).value)">
                   <option value="">選んでください</option>
-                  @for (o of masters()?.offices ?? []; track o.id) {
+                  @for (o of masters()?.offices | usable: officeId(); track o.id) {
                     <option [value]="o.id" [selected]="o.id === (officeId())">{{ o.name }}</option>
                   }
                 </select>
@@ -667,7 +667,7 @@
               <span class="err">{{ errors()['payrollDate'] }}</span>
               <label>新しい支払区分
                 <select name="payrollGroup" (change)="payrollGroupId.set($any($event.target).value)">
-                  @for (g of payrollGroups(); track g.id) {
+                  @for (g of payrollGroups() | usable: payrollGroupId(); track g.id) {
                     <option [value]="g.id" [selected]="payrollGroupId() === g.id">{{ g.name }}（{{ groupLabel(g) }}）</option>
                   }
                 </select>
@@ -783,7 +783,7 @@
               <span class="err">{{ errors()['assignmentDate'] }}</span>
               <label>適用事業所
                 <select name="assignmentOffice" (change)="officeId.set($any($event.target).value)">
-                  @for (o of masters()?.offices ?? []; track o.id) {
+                  @for (o of masters()?.offices | usable: officeId(); track o.id) {
                     <option [value]="o.id" [selected]="officeId() === o.id">{{ o.name }}</option>
                   }
                 </select>
@@ -813,7 +813,7 @@
               <span class="err">{{ errors()['payrollDate'] }}</span>
               <label>支払区分
                 <select name="payrollGroupEdit" (change)="payrollGroupId.set($any($event.target).value)">
-                  @for (g of payrollGroups(); track g.id) {
+                  @for (g of payrollGroups() | usable: payrollGroupId(); track g.id) {
                     <option [value]="g.id" [selected]="payrollGroupId() === g.id">{{ g.name }}（{{ groupLabel(g) }}）</option>
                   }
                 </select>
@@ -946,7 +946,7 @@
                 <label>本人が選んだ保険者
                   <select name="selectedInsurer" [value]="standardForm().selectedInsurerId ?? ''" (change)="setSelectedInsurer($any($event.target).value)">
                     <option value="">選んでください</option>
-                    @for (i of masters()?.insurers ?? []; track i.id) {
+                    @for (i of masters()?.insurers | usable: standardForm().selectedInsurerId; track i.id) {
                       <option [value]="i.id" [selected]="i.id === (standardForm().selectedInsurerId ?? '')">{{ i.name }}</option>
                     }
                   </select>

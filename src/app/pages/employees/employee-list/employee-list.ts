@@ -1,4 +1,5 @@
 // 従業員一覧と新規登録（設計書 3.1）
+import { UsablePipe } from '../../../core/ui/usable.pipe';
 import { saveTableCsv } from '../../../core/ui/table-csv';
 import { PageState } from '../../../core/ui/page-state';
 import { focusFormSoon } from '../../../core/ui/form-focus';
@@ -66,7 +67,7 @@ type AmountKey = 'healthStandard' | 'pensionStandard';
 const toYen = (value: string): number | null => parseNumberInput(value);
 
 @Component({
-  imports: [RouterLink, NoticeMessage, YearMonthPipe, DateLabelPipe],
+  imports: [RouterLink, NoticeMessage, YearMonthPipe, DateLabelPipe, UsablePipe],
   selector: 'app-employee-list',
   styleUrl: './employee-list.scss',
   templateUrl: './employee-list.html',

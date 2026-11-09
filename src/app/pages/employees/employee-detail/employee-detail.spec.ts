@@ -476,6 +476,18 @@ describe('EmployeeDetail', () => {
     expect(calls).toEqual([['addPayrollAssignment', 'e1', { validFrom: '2026-11-01', payrollGroupId: 'part' }]]);
   });
 
+  it('使わないにした支払区分は、新しく割り当てない（理由を出す）', async () => {
+    const inst = fixture.componentRef.instance as unknown as Record<string, { set: (v: unknown) => void; update: (f: (v: never) => unknown) => void }>;
+    inst['payrollGroups'].update((gs: { id: string }[]) => gs.map((g) => (g.id === 'part' ? { ...g, archived: true } : g)));
+    button('支払区分を変える').click();
+    fixture.detectChanges();
+    input('input[name=payrollDate]', '2026-11-01');
+    inst['payrollGroupId'].set('part');
+    await submit();
+    expect(calls).toEqual([]);
+    expect(fixture.nativeElement.textContent).toContain('支払区分「パート」は使わないにしているため、新しく割り当てられません');
+  });
+
   it('適用除外を追加する（届け出ることと期限を出す）', async () => {
     button('適用除外を追加').click();
     fixture.detectChanges();

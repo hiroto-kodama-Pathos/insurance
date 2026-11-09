@@ -13,6 +13,7 @@ name: string; //事業所名
 prefecture: string; //都道府県
 insurerId: string; //保険者ID
 isDefault?: boolean; //新規登録で初めから選んでおく事業所（本社など）
+archived?: boolean; //使わない（廃止した）事業所。過去の履歴・確定した結果が参照するので消さず、新しく選べなくする
 }
 
 /**

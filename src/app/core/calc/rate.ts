@@ -23,6 +23,7 @@ export interface Insurer {
   type: 'kyokai' | 'kumiai'; // 協会けんぽ or 組合健保
   name: string;
   specialInsuredEnabled?: boolean; // 特定被保険者制度の採用有無（組合健保のみ）
+  archived?: boolean; // 使わない健康保険組合（消さずに、新しく選べなくする）
 }
 
 /**

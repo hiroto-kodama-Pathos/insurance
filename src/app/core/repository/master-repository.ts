@@ -65,6 +65,7 @@ function toOffice(id: string, d: DocumentData): Office {
     prefecture: d['prefecture'] ?? '',
     insurerId: d['insurerId'],
     isDefault: d['isDefault'] === true,
+    archived: d['archived'] === true,
   };
 }
 
@@ -74,6 +75,7 @@ function toInsurer(id: string, d: DocumentData): Insurer {
     type: d['type'],
     name: d['name'],
     specialInsuredEnabled: d['specialInsuredEnabled'] ?? false,
+    archived: d['archived'] === true,
   };
 }
 

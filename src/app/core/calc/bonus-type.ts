@@ -2,8 +2,9 @@
 // 年4回以上支給する種類は報酬扱いとし、賞与の保険料をかけず、定時決定で報酬に上乗せする。
 // 年4回以上かどうかは給与規程などで決まるため、管理者が種類ごとに設定する。
 
-export type BonusType = { id: string; name: string; isRemuneration: boolean; validFrom: string };
-export type BonusTypeInput = Omit<BonusType, 'id'>;
+/** archived：使わない種類（登録した賞与が参照するので消さず、新しい賞与で選べなくする） */
+export type BonusType = { id: string; name: string; isRemuneration: boolean; validFrom: string; archived?: boolean };
+export type BonusTypeInput = Omit<BonusType, 'id' | 'archived'>;
 
 /** その支給日に、その種類の賞与が報酬扱いか（適用開始月から） */
 export function isRemunerationBonus(types: BonusType[], typeId: string | null | undefined, paidDate: string): boolean {

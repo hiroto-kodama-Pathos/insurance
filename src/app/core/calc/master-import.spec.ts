@@ -57,6 +57,21 @@ describe('従業員のCSV', () => {
     expect(b.errors.join()).toContain('資格取得日が入社日より前です');
   });
 
+  it('使わないにした事業所・支払区分には、新しく所属させない', () => {
+    const run2 = (rows: string[][]) =>
+      buildEmployeeImport([head, ...rows], templateMapping('employee'), {
+        ...ctx,
+        offices: offices.map((o) => (o.id === 'osaka' ? { ...o, archived: true } : o)),
+        groups: ctx.groups.map((g) => (g.id === 'part' ? { ...g, archived: true } : g)),
+      });
+    const [a, b] = run2([
+      ['0106', '木村 翼', '1990-01-01', '大阪支店', '', '2024-04-01', '', ''],
+      ['0107', '佐々木 光', '1990-01-01', '本社', '', '2024-04-01', '', 'パート'],
+    ]);
+    expect(a.errors.join()).toContain('使わないにしているため、新しく所属させられません');
+    expect(b.errors.join()).toContain('支払区分「パート」は使わないにしているため');
+  });
+
   it('加入する人・未加入の人を登録する内容にする', () => {
     const [a, b] = run([
       ['0101', '青木 健', 'S60.4.1', '本社', '', '2020/4/1', '', 'パート'],
@@ -164,6 +179,17 @@ describe('賞与のCSV', () => {
   };
   const head = ['社員番号', '支給日', '賞与額', 'うち現物', '賞与の種類'];
   const run = (rows: string[][], scope = 'all') => buildBonusImport([head, ...rows], templateMapping('bonus'), { ...ctx, scope });
+
+  it('使わないにした種類は新しい賞与では選べない。登録済みの賞与の訂正で種類が前と同じなら通す', () => {
+    const c = {
+      ...ctx,
+      types: ctx.types.map((t) => (t.id === 'summer' ? { ...t, archived: true } : t)),
+      existing: [{ id: 'e1_2026-07-10', employeeId: 'e1', paidDate: '2026-07-10', amount: 300_000, inKindAmount: null, bonusTypeId: 'summer' }],
+    };
+    const [fresh, fix] = buildBonusImport([head, ['0001', '2026-12-10', '300000', '', '夏季賞与'], ['0001', '2026-07-10', '350000', '', '夏季賞与']], templateMapping('bonus'), c);
+    expect(fresh.errors.join()).toContain('使わないにしているため');
+    expect(fix.errors.join()).not.toContain('使わないにしているため');
+  });
 
   it('登録する内容（報酬扱いは種類と支給日で決める）', () => {
     const rows = run([

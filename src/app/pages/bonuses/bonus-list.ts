@@ -1,5 +1,6 @@
 // 賞与の登録と賞与保険料一覧（設計書 2.4・3.3）
 // 支払う前に支給日と賞与額を登録し、上限・免除・喪失月を判定した保険料と、賞与支払届の期限を確かめる。
+import { UsablePipe } from '../../core/ui/usable.pipe';
 import { saveTableCsv } from '../../core/ui/table-csv';
 import { PageState } from '../../core/ui/page-state';
 import { distinctOptions, matchesPerson } from '../../core/calc/person-search';
@@ -73,7 +74,7 @@ function currentMonth(): string {
 }
 
 @Component({
-  imports: [RouterLink, NoticeMessage, YearMonthPipe, DateLabelPipe],
+  imports: [RouterLink, NoticeMessage, YearMonthPipe, DateLabelPipe, UsablePipe],
   selector: 'app-bonus-list',
   styleUrl: './bonus-list.scss',
   templateUrl: './bonus-list.html',

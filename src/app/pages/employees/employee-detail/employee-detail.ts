@@ -1,4 +1,5 @@
 // 従業員の詳細（設計書 3.1）：資格・所属事業所・標準報酬月額・休業の履歴と、保険料の推移
+import { UsablePipe } from '../../../core/ui/usable.pipe';
 import { Confirm } from '../../../core/ui/confirm';
 import { NoticeMessage } from '../../../core/ui/notice-message';
 import { retirementPreview } from '../../../core/calc/deduction';
@@ -180,7 +181,7 @@ const toAmount = (value: string): number | null => parseNumberInput(value);
 const LOG_FAILED = '（ただし、変更の記録を残せませんでした。「変更の記録」の欄には出ないので、誰がいつ何を変えたかを別に控えてください）';
 
 @Component({
-  imports: [RouterLink, NgTemplateOutlet, NoticeMessage, YearMonthPipe, DateLabelPipe],
+  imports: [RouterLink, NgTemplateOutlet, NoticeMessage, YearMonthPipe, DateLabelPipe, UsablePipe],
   selector: 'app-employee-detail',
   styleUrl: './employee-detail.scss',
   templateUrl: './employee-detail.html',
@@ -1365,6 +1366,11 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const input = { validFrom: this.date(), payrollGroupId: this.payrollGroupId() };
       errors = checkDatedEdit(d.payrollAssignments.filter((x) => x.id !== id), input.validFrom, 'payrollDate', '支払区分');
       if (!input.payrollGroupId) errors = { ...errors, payrollDate: '支払区分を選んでください' };
+      else if (
+        this.payrollGroups().find((g) => g.id === input.payrollGroupId)?.archived &&
+        d.payrollAssignments.find((x) => x.id === id)?.payrollGroupId !== input.payrollGroupId
+      )
+        errors = { ...errors, payrollDate: `支払区分「${this.groupName(input.payrollGroupId)}」は使わないにしているため、選べません` };
       action = () => this.repo.updatePayrollAssignment(d.id, id, input);
       message = `${dateLabel(input.validFrom)}からの支払区分（${this.groupName(input.payrollGroupId)}）に直しました。`;
     } else if (mode === 'name') {
@@ -1428,6 +1434,9 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
       const gid = this.payrollGroupId();
       const date = this.date();
       errors = checkPayrollAssignment(d.payrollAssignments, date, gid, isValidDate(date) ? payrollGroupAt(this.payrollGroups(), d.payrollAssignments, date).id : '');
+      // 使わないにした区分は新しく割り当てられない（ルールでも拒否する。開いたときは今の区分が選ばれているので、使わない区分のままのことがある）
+      if (!errors['payrollDate'] && this.payrollGroups().find((g) => g.id === gid)?.archived)
+        errors = { ...errors, payrollDate: `支払区分「${this.groupName(gid)}」は使わないにしているため、新しく割り当てられません。ほかの区分を選んでください` };
       action = () => this.repo.addPayrollAssignment(d.id, { validFrom: date, payrollGroupId: gid });
       message = `${dateLabel(date)}から支払区分を「${this.payrollGroups().find((g) => g.id === gid)?.name ?? ''}」に変えました。`;
     } else if (mode === 'insuredType') {

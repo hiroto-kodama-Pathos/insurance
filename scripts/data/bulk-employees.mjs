@@ -71,6 +71,8 @@ export function buildBulkPeople({ count, offices, partGroupId, bonusTypeId, idPr
     const put = (path, data) => docs.push({ path, data });
 
     put(['employees', id], { employeeNumber, name, birthDate, officeIds: [office], ...(mark ? { bulkTest: true } : {}) });
+    // 社員番号の記録（アプリの登録と同じ。これがないと、同じ社員番号の人をもう1人登録できてしまう）
+    put(['employeeNumbers', employeeNumber], { employeeId: id });
     put(['employees', id, 'assignments', 'a1'], { validFrom: acquiredDate, officeId: office });
 
     // 未加入（パート・アルバイト）：時給で働き、労働時間を入れる。1割ほどは2か月続けて週20時間を超える

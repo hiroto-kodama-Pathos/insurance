@@ -23,8 +23,34 @@ export function bonusDocId(employeeId: string, paidDate: string): string {
   return `${employeeId}_${paidDate}`;
 }
 
-/** CSVの取り込みで、1回の書き込み（トランザクション）にまとめる件数 */
-export const IMPORT_CHUNK = 8;
+/** CSVの取り込みで、1回の書き込み（トランザクション）にまとめる件数の上限 */
+export const IMPORT_CHUNK = 20;
+/**
+ * 1回の書き込みで、ルールが確かめる文書の数の上限の目安。賞与のルールは、1件ごとに従業員（いるか・所属した事業所か）・
+ * 賞与の種類（あるか・報酬扱い・使わないにしていないか）・支給月×事業所の確定を確かめる。1回の書き込みで確かめられる
+ * 文書は20までなので、余裕をみて18までにする（同じ文書は1つと数える）
+ */
+export const IMPORT_CHUNK_REFS = 18;
+
+/** 賞与の取り込みを、書き込みのまとまりに分ける（件数は IMPORT_CHUNK まで、確かめる文書は IMPORT_CHUNK_REFS まで。順番は変えない） */
+export function chunkBonuses<T extends { employeeId: string; paidDate: string; officeId: string; bonusTypeId?: string | null }>(items: T[]): T[][] {
+  const chunks: T[][] = [];
+  let cur: T[] = [];
+  let refs = new Set<string>();
+  const refsOf = (x: T) => [`employee|${x.employeeId}`, `closed|${x.paidDate.slice(0, 7)}|${x.officeId}`, ...(x.bonusTypeId ? [`type|${x.bonusTypeId}`] : [])];
+  for (const item of items) {
+    const need = refsOf(item).filter((k) => !refs.has(k));
+    if (cur.length >= IMPORT_CHUNK || (cur.length > 0 && refs.size + need.length > IMPORT_CHUNK_REFS)) {
+      chunks.push(cur);
+      cur = [];
+      refs = new Set();
+    }
+    cur.push(item);
+    for (const k of refsOf(item)) refs.add(k);
+  }
+  if (cur.length) chunks.push(cur);
+  return chunks;
+}
 
 /** CSVの取り込みの結果 */
 export type BonusImportResult = {
@@ -92,13 +118,15 @@ export class BonusRepository {
    * CSVで取り込んだ賞与を登録・訂正する（設計書 3.8）
    * - existingId のない行は新しく登録する。書く時点で同じ人・同じ支給日の賞与があれば書かない（conflicts）
    * - existingId のある行は、その賞与を訂正する（賞与額・現物・種類。担当者が「訂正する」を選んだ行だけ渡す）
-   * - IMPORT_CHUNK 件ずつのトランザクションで書き、途中で失敗したら止めて、書けた件数と書けなかった件数を返す
+   * - 確かめる文書の数で分けたトランザクション（chunkBonuses）で書き、途中で失敗したら止めて、書けた件数と書けなかった件数を返す
    *   （ルールが1件ごとに従業員・種類・確定を確かめ、1回の書き込みで確かめられるドキュメントは20件までのため、少しずつ書く）
    */
   async importMany(list: (Omit<BonusRecord, 'id'> & { officeId: string; existingId?: string | null })[]): Promise<BonusImportResult> {
     const result: BonusImportResult = { added: 0, updated: 0, conflicts: [], failed: 0, error: null };
-    for (let i = 0; i < list.length; i += IMPORT_CHUNK) {
-      const chunk = list.slice(i, i + IMPORT_CHUNK);
+    let done = 0;
+    for (const chunk of chunkBonuses(list)) {
+      const i = done;
+      done += chunk.length;
       try {
         const r = await runTransaction(db, async (tx) => {
           const news = chunk.filter((x) => !x.existingId);

@@ -24,7 +24,7 @@ const { db, col } = openSi();
 console.log(`対象：${PROJECT_ID}（本番）の apps/socialInsurance\n`);
 
 /** 社員に紐づく記録（employeeId を持つコレクション） */
-const LINKED = ['salaries', 'bonuses', 'filings', 'revisionCandidates', 'adjustments', 'payrollDeductions'];
+const LINKED = ['salaries', 'bonuses', 'filings', 'revisionCandidates', 'adjustments', 'payrollDeductions', 'employeeNumbers'];
 
 if (REMOVE) {
   await remove();

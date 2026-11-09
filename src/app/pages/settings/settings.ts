@@ -1,5 +1,6 @@
 // 設定（管理者だけ）：会社の設定、適用事業所、健康保険組合と料率（設計書 4章 マスタ・companySettings）
 // 協会けんぽの料率は、運営者が入れるシステム共通マスタのため表示だけにする
+import { UsablePipe } from '../../core/ui/usable.pipe';
 import { focusFormSoon } from '../../core/ui/form-focus';
 import { NoticeMessage } from '../../core/ui/notice-message';
 import { Component, computed, HostListener, inject, OnInit, signal } from '@angular/core';
@@ -37,7 +38,7 @@ import { YearMonthPipe } from '../../core/ui/year-month.pipe';
 import { yearMonthLabel } from '../../core/calc/year-month';
 import { EmployeeRepository } from '../../core/repository/employee-repository';
 import { Confirm } from '../../core/ui/confirm';
-import { insurerUsage, inUseMessage, officeChangeError, officeInUse, OfficeUse, officeUsage, officeUseLabel, payrollGroupUsage, rateDeleteImpact, rateDeleteMessage } from '../../core/calc/master-usage';
+import { archiveBlockMessage, currentOfficeUsers, currentPayrollGroupUsers, insurerUsage, inUseMessage, officeChangeError, officeInUse, OfficeUse, officeUsage, officeUseLabel, rateDeleteImpact, rateDeleteMessage } from '../../core/calc/master-usage';
 import { ClosingRepository } from '../../core/repository/closing-repository';
 
 type Mode =
@@ -54,7 +55,7 @@ const EMPTY_KUMIAI: KumiaiInput = { name: '', specialInsuredEnabled: false };
 const EMPTY_GROUP: PayrollGroupInput = { name: '', cutoffDay: 'end', paidIn: 'nextMonth', deductionTiming: 'nextMonth', payDay: 25, isDefault: false };
 
 @Component({
-  imports: [RouterLink, NoticeMessage, YearMonthPipe],
+  imports: [RouterLink, NoticeMessage, YearMonthPipe, UsablePipe],
   selector: 'app-settings',
   styleUrl: './settings.scss',
   templateUrl: './settings.html',
@@ -241,6 +242,11 @@ export class Settings implements OnInit, HasUnsavedChanges {
     this.errors.set(errors);
     if (Object.keys(errors).length > 0) return;
     const before = id ? this.payrollGroups().find((g) => g.id === id) : undefined;
+    // 使わないにした区分は初期値にできない（ルールでも拒否する）
+    if (before?.archived && f.isDefault) {
+      this.notice.set(`給与の支払区分「${before.name}」は使わないにしているため、初期値にできません。先に「使うに戻す」をしてください。`);
+      return;
+    }
     // 最初の区分を、これまでの会社の設定と違う締め日などで作ると、区分を割り当てていない人の過去の月の計算が変わる
     if (!id && this.payrollGroups().length === 0 && !sameTerms(legacyGroup(this.settings()), f)) {
       const ok = await this.confirm.ask({
@@ -554,6 +560,11 @@ export class Settings implements OnInit, HasUnsavedChanges {
     if (Object.keys(errors).length > 0) return;
     // 使われている事業所の保険者・都道府県は変えない。保存の直前に、最新の所属・確定の記録で確かめ直す
     const before = m.id ? this.offices().find((o) => o.id === m.id) : null;
+    // 使わないにした事業所は初期値にできない（ルールでも拒否する）
+    if (before?.archived && f.isDefault) {
+      this.notice.set(`適用事業所「${before.name}」は使わないにしているため、初期値にできません。先に「使うに戻す」をしてください。`);
+      return;
+    }
     if (before && (before.insurerId !== f.insurerId || before.prefecture !== f.prefecture)) {
       this.saving.set(true);
       try {
@@ -615,28 +626,103 @@ export class Settings implements OnInit, HasUnsavedChanges {
     );
   }
 
-  // ---- 削除（給与の支払区分・賞与の種類・適用事業所。設計書 3.10） ----
-  // 1件でも使われていれば「使用中なので、削除できません」と知らせ、削除しない。使われていなければ確認してから削除する
+  // ---- 使わないにする（給与の支払区分・賞与の種類・適用事業所・健康保険組合。設計書 3.10） ----
+  // マスタは消さない。過去の給与・賞与・履歴・確定した結果がIDで参照しているので、消すと参照先がなくなるため（ルールでも削除を止める）。
+  // 使わなくなったものは「使わない」にし、新しく選べなくする（ルールでも止める）。過去の計算・表示は変わらない
 
-  protected deletePayrollGroup(g: PayrollGroup): Promise<void> {
-    return this.deleteMaster('給与の支払区分', g.name, async () => ({
+  protected archivePayrollGroup(g: PayrollGroup): Promise<void> {
+    return this.archiveMaster('給与の支払区分', g.name, 'payrollGroups', g.id, async () => ({
       isDefault: g.isDefault === true,
-      employees: payrollGroupUsage(await this.employeeRepo.loadAll(), g.id),
-    }), () => this.repo.deletePayrollGroup(g.id));
+      currentEmployees: currentPayrollGroupUsers(await this.freshEmployees(), g.id, this.today()),
+    }), '使わないにした区分は、新しく割り当てられなくなります。これまでの月の計算はこの区分のままです。');
   }
 
-  protected deleteBonusType(t: BonusType): Promise<void> {
-    return this.deleteMaster('賞与の種類', t.name, async () => ({
+  protected archiveBonusType(t: BonusType): Promise<void> {
+    return this.archiveMaster('賞与の種類', t.name, 'bonusTypes', t.id, async () => ({ isDefault: false }),
+      '使わないにした種類は、新しい賞与では選べなくなります。登録済みの賞与はこの種類のままです。');
+  }
+
+  protected archiveOffice(o: Office): Promise<void> {
+    return this.archiveMaster('適用事業所', o.name, 'offices', o.id, async () => ({
+      isDefault: o.isDefault === true,
+      currentEmployees: currentOfficeUsers(await this.freshEmployees(), o.id, this.today()),
+    }), '使わないにした事業所は、新規登録・異動で選べなくなります。これまでに所属した人の履歴・過去の月の計算・確定した結果はそのままです。');
+  }
+
+  /** 健康保険組合を使わないにする（使っている適用事業所があればできない。料率は残す） */
+  protected archiveKumiai(k: Insurer): Promise<void> {
+    return this.archiveMaster('健康保険組合', k.name, 'insurers', k.id, async () => ({
       isDefault: false,
-      bonuses: await this.repo.isBonusTypeUsed(t.id),
-    }), () => this.repo.deleteBonusType(t.id));
+      activeOffices: this.offices().filter((o) => !o.archived && o.insurerId === k.id).length,
+    }), '使わないにした組合は、適用事業所・二以上事業所勤務の保険者として選べなくなります。料率と、これまでの月の計算はそのままです。');
   }
 
-  protected deleteOffice(o: Office): Promise<void> {
-    return this.deleteMaster('適用事業所', o.name, async () => {
-      const use = await this.loadOfficeUse(o.id);
-      return { isDefault: o.isDefault === true, employees: use.employees, closedMonths: use.closedMonths };
-    }, () => this.repo.deleteOffice(o.id));
+  /** 使わないにしたマスタを、また使えるようにする */
+  protected async unarchive(label: string, name: string, kind: 'offices' | 'payrollGroups' | 'insurers' | 'bonusTypes', id: string): Promise<void> {
+    await this.run(() => this.repo.setArchived(kind, id, false), `${label}「${name}」を、また使えるようにしました。`);
+  }
+
+  private today(): string {
+    return new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date());
+  }
+
+  /** 使われているかを確かめるための、読み直した従業員の一覧（使い回している一覧は古いことがあるため） */
+  private async freshEmployees() {
+    this.employeeRepo.clearCache();
+    return this.employeeRepo.loadAll();
+  }
+
+  /**
+   * 使わないにできるかを確かめ、確認してから使わないにする。確認を出しているあいだに使われ始めることがあるので、
+   * 書き込む直前にもう一度確かめる
+   */
+  private async archiveMaster(
+    label: string,
+    name: string,
+    kind: 'offices' | 'payrollGroups' | 'insurers' | 'bonusTypes',
+    id: string,
+    check: () => Promise<{ isDefault: boolean; currentEmployees?: number; activeOffices?: number }>,
+    note: string,
+  ): Promise<void> {
+    this.notice.set(null);
+    this.saving.set(true);
+    try {
+      const blocked = archiveBlockMessage(label, name, await check());
+      if (blocked) {
+        this.notice.set(blocked);
+        return;
+      }
+    } catch (e) {
+      console.error(e);
+      this.notice.set(`${label}「${name}」が使われているかを確かめられませんでした。権限と通信を確かめてください。`);
+      return;
+    } finally {
+      this.saving.set(false);
+    }
+    const ok = await this.confirm.ask({
+      title: `${label}を使わないにする`,
+      message: `${label}「${name}」を使わないにします。${note}あとから「使うに戻す」で戻せます。`,
+      ok: '使わないにする',
+    });
+    if (!ok) return;
+    this.saving.set(true);
+    try {
+      const now = archiveBlockMessage(label, name, await check());
+      if (now) {
+        this.notice.set(now);
+        await this.reload();
+        return;
+      }
+      await this.repo.setArchived(kind, id, true);
+      this.mode.set(null);
+      this.notice.set(`${label}「${name}」を使わないにしました。`);
+      await this.reload();
+    } catch (e) {
+      console.error(e);
+      this.notice.set(`${label}「${name}」を使わないにできませんでした。権限と通信を確かめてください。`);
+    } finally {
+      this.saving.set(false);
+    }
   }
 
   /** 誤って追加した組合健保の料率の行を削除する（その月にほかの料率がなければ、計算は「未登録」になる） */
@@ -655,15 +741,6 @@ export class Settings implements OnInit, HasUnsavedChanges {
       return rateDeleteMessage(rateDeleteImpact(r, this.rates(), this.offices(), selecting, closedByOffice), (v) => this.toPercent(v));
     };
     return this.deleteMaster('料率', name, async () => ({ isDefault: false }), () => this.repo.deleteRate(r.id), note);
-  }
-
-  /** 健康保険組合を削除する（適用事業所の保険者・二以上事業所勤務の選んだ保険者になっていないときだけ。料率もまとめて消す） */
-  protected deleteKumiai(k: Insurer): Promise<void> {
-    const rateIds = this.rates().filter((r) => r.insurerId === k.id).map((r) => r.id);
-    return this.deleteMaster('健康保険組合', k.name, async () => ({
-      isDefault: false,
-      ...insurerUsage(this.offices(), await this.employeeRepo.loadAll(), k.id),
-    }), () => this.repo.deleteKumiai(k.id, rateIds), rateIds.length ? `登録してある料率${rateIds.length}件も一緒に削除します。` : '');
   }
 
   /** 使用中かを確かめ、使われていなければ確認してから削除する */

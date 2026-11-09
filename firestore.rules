@@ -371,22 +371,35 @@ service cloud.firestore {
       match /gradeThresholds/{id} { allow read: if isSiUser(); }
       match /eligibilityRules/{id} { allow read: if isSiUser(); }
 
-      // 適用事業所：管理者だけが追加・変更・削除する。削除は、使用中（従業員が所属した・初期値）でないことを画面で確かめてから
+      // マスタ（適用事業所・支払区分・健康保険組合・賞与の種類）は削除しない（設計書 3.10）。過去の給与・賞与・履歴・確定した結果が
+      // IDで参照しているので、消すと参照先がなくなる。使わなくなったものは「使わない」（archived: true）にし、新しく選べなくする。
+      // ルールでは「使っている人がいるか」を問い合わせられないので、削除を許すと、使用中のものを消すことを止められないため
+      function isArchivedFlag(d) { return d.get('archived', false) is bool; }
+      // 使わないにしたマスタか（新しく選ぶ書き込みで止める）
+      function notArchived(name, id) { return get(siPath(name, id)).data.get('archived', false) != true; }
+
+      // 適用事業所：管理者だけが追加・変更する。初期値の事業所は使わないにできない
       match /offices/{id} {
         allow read: if isSiUser();
-        allow delete: if isSiAdmin() && resource.data.get('isDefault', false) != true;
+        allow delete: if false;
         allow create, update: if isSiAdmin()
+          && request.resource.data.keys().hasOnly(['name', 'prefecture', 'insurerId', 'isDefault', 'archived'])
           && request.resource.data.name is string && request.resource.data.name.size() > 0
-          && exists(siPath('insurers', request.resource.data.insurerId));
+          && exists(siPath('insurers', request.resource.data.insurerId))
+          // 保険者を選び直すときは、使わないにした健康保険組合は選べない
+          && ((resource != null && resource.data.insurerId == request.resource.data.insurerId) || notArchived('insurers', request.resource.data.insurerId))
+          && isArchivedFlag(request.resource.data)
+          && !(request.resource.data.get('archived', false) == true && request.resource.data.get('isDefault', false) == true);
       }
 
       // 保険者：協会けんぽはシステム共通。管理者は組合健保だけを追加・変更できる
       match /insurers/{id} {
         allow read: if isSiUser();
         allow create: if isSiAdmin() && request.resource.data.type == 'kumiai';
-        allow update: if isSiAdmin() && resource.data.type == 'kumiai' && request.resource.data.type == 'kumiai';
-        // 健康保険組合の削除：組合健保だけ。使用中（適用事業所・二以上事業所勤務の保険者）でないことは画面で確かめる
-        allow delete: if isSiAdmin() && resource.data.type == 'kumiai';
+        allow update: if isSiAdmin() && resource.data.type == 'kumiai' && request.resource.data.type == 'kumiai'
+          && isArchivedFlag(request.resource.data);
+        // 健康保険組合は削除しない（適用事業所・二以上事業所勤務の履歴・確定した結果が参照する）。使わないにする
+        allow delete: if false;
       }
 
       // 料率：管理者は組合健保の料率だけを追加・変更できる（保険者を付け替えることはできない）
@@ -401,12 +414,12 @@ service cloud.firestore {
           && request.resource.data.insurerId == resource.data.insurerId
           && request.resource.data.rateType == resource.data.rateType
           && request.resource.data.prefecture == null;
-        // 誤って追加した組合健保の料率の削除（組合を削除するときは、組合と同じ書き込みで消すので getAfter ではなく get で確かめる）
+        // 誤って追加した組合健保の料率の削除（料率は IDで参照されないので、行ごとに消せる）
         allow delete: if isSiAdmin() && resource.data.prefecture == null
           && get(siPath('insurers', resource.data.insurerId)).data.type == 'kumiai';
       }
 
-      // 給与の支払区分：管理者だけが追加・変更・削除する。削除は、使用中（従業員が属した・初期値）でないことを画面で確かめてから
+      // 給与の支払区分：管理者だけが追加・変更する（削除しない。使わないにする。初期値の区分は使わないにできない）
       function isPayDay(v) { return v == 'end' || (v is int && v >= 1 && v <= 30); }
       // 休業（産前産後休業・育児休業）のデータの形。壊れたデータで保険料の免除の計算が止まったり誤ったりしないように（設計書 2.12）
       // 実在する日付か（'YYYY-MM-DD' の形で、その月にある日。2026-02-31 などを止める）
@@ -438,9 +451,11 @@ service cloud.firestore {
       }
       match /payrollGroups/{id} {
         allow read: if isSiUser();
-        allow delete: if isSiAdmin() && resource.data.get('isDefault', false) != true;
+        allow delete: if false;
         allow create, update: if isSiAdmin()
-          && request.resource.data.keys().hasOnly(['name', 'cutoffDay', 'paidIn', 'deductionTiming', 'payDay', 'isDefault', 'changes'])
+          && request.resource.data.keys().hasOnly(['name', 'cutoffDay', 'paidIn', 'deductionTiming', 'payDay', 'isDefault', 'changes', 'archived'])
+          && isArchivedFlag(request.resource.data)
+          && !(request.resource.data.get('archived', false) == true && request.resource.data.isDefault == true)
           // 給与の制度の変更（「○年○月から変える」の履歴。設計書 2.10）。各項目の形は画面で確かめる
           && (!('changes' in request.resource.data) || (request.resource.data.changes is list && request.resource.data.changes.size() <= 120))
           && request.resource.data.name is string && request.resource.data.name.size() > 0
@@ -450,12 +465,13 @@ service cloud.firestore {
           && request.resource.data.isDefault is bool;
       }
 
-      // 賞与の種類：管理者だけが追加・変更・削除する。削除は、その種類の賞与がないことを画面で確かめてから
+      // 賞与の種類：管理者だけが追加・変更する（削除しない。登録した賞与が参照するので、使わないにする）
       match /bonusTypes/{id} {
         allow read: if isSiUser();
-        allow delete: if false; // CloudFunctions だけが削除可能（運営者が使う）
+        allow delete: if false;
         allow create, update: if isSiAdmin()
-          && request.resource.data.keys().hasOnly(['name', 'isRemuneration', 'validFrom'])
+          && request.resource.data.keys().hasOnly(['name', 'isRemuneration', 'validFrom', 'archived'])
+          && isArchivedFlag(request.resource.data)
           && request.resource.data.name is string && request.resource.data.name.size() > 0
           && request.resource.data.isRemuneration is bool
           && request.resource.data.validFrom.matches('[0-9]{4}-[0-9]{2}');
@@ -482,8 +498,18 @@ service cloud.firestore {
         return d.employeeNumber is string && d.employeeNumber.matches('^[0-9A-Za-z-]{1,20}$')
           && d.name is string && d.name.size() > 0 && d.name.size() <= 50
           && isRealDate(d.birthDate)
-          && d.officeIds is list
+          // 所属事業所の一覧（これまでに所属した事業所）：1つ以上・重なりなし
+          && d.officeIds is list && d.officeIds.size() >= 1 && d.officeIds.size() <= 50
+          && d.officeIds.toSet().size() == d.officeIds.size()
           && (d.get('eligibility', null) == null || d.eligibility is map);
+      }
+      // 所属事業所の一覧に新しく入れた事業所（登録では全部、変更では足したもの）が、登録されていて使わないにしていないか。
+      // 1回の書き込みで足すのは、異動・所属の訂正の1つ（多くても2つ）だけ
+      function officeUsable(id) { return exists(siPath('offices', id)) && notArchived('offices', id); }
+      function addedOfficesOk(added) {
+        return added.size() <= 2
+          && (added.size() < 1 || officeUsable(added[0]))
+          && (added.size() < 2 || officeUsable(added[1]));
       }
       function numberRecordIs(number, employeeId) {
         return existsAfter(siPath('employeeNumbers', number))
@@ -495,12 +521,15 @@ service cloud.firestore {
           && (scopeAll() || request.resource.data.officeIds == [siScope()])
           && request.resource.data.keys().hasOnly(['employeeNumber', 'name', 'birthDate', 'officeIds', 'eligibility', 'createdAt', 'updatedAt'])
           && validEmployee(request.resource.data)
+          && addedOfficesOk(request.resource.data.officeIds)
           && numberRecordIs(request.resource.data.employeeNumber, employeeId);
         // 変える項目は決めたものだけ（前のデータにほかの項目があっても、書き換えられるように、変わった項目で見る）
         allow update: if isSiUser() && (scopeAll()
           || (siScope() in resource.data.get('officeIds', []) && request.resource.data.get('officeIds', []) == resource.data.get('officeIds', [])))
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['employeeNumber', 'name', 'birthDate', 'officeIds', 'eligibility', 'updatedAt'])
           && validEmployee(request.resource.data)
+          && (request.resource.data.officeIds == resource.data.get('officeIds', [])
+            || addedOfficesOk(request.resource.data.officeIds.removeAll(resource.data.get('officeIds', []))))
           && (request.resource.data.employeeNumber == resource.data.employeeNumber
             || numberRecordIs(request.resource.data.employeeNumber, employeeId));
 
@@ -535,6 +564,20 @@ service cloud.firestore {
             && (sub != 'leaves' || isLeaveData(d))
             && (sub != 'dependents' || isDependentData(d));
         }
+        // サブコレクションは決めたものだけ（知らない名前のサブコレクションは作れない）
+        function knownSub(sub) {
+          return sub in ['qualifications', 'standardRemunerations', 'assignments', 'insuredTypes', 'payrollAssignments', 'exemptions',
+            'absences', 'fixedWageChanges', 'leaves', 'dependents', 'changeLogs'];
+        }
+        // 新しく選んだ事業所・支払区分・保険者（二以上事業所勤務）が、使わないにしたものでないか（前と同じなら確かめない）
+        function refsUsable(sub, d, before) {
+          return (sub != 'assignments' || (before != null && before.get('officeId', null) == d.officeId) || notArchived('offices', d.officeId))
+            && (sub != 'payrollAssignments' || (before != null && before.get('payrollGroupId', null) == d.payrollGroupId)
+              || notArchived('payrollGroups', d.payrollGroupId))
+            && (sub != 'standardRemunerations' || d.get('selectedInsurerId', null) == null
+              || (before != null && before.get('selectedInsurerId', null) == d.selectedInsurerId)
+              || (exists(siPath('insurers', d.selectedInsurerId)) && notArchived('insurers', d.selectedInsurerId)));
+        }
         // 書ける項目（登録では全部の項目、直すときは変えた項目で見る。前のデータにほかの項目があっても直せるように）
         function subKeysOk(sub, keys) {
           return (sub != 'qualifications' || keys.hasOnly(['acquiredDate', 'lostDate', 'lostReason', 'refundStatus']))
@@ -554,14 +597,16 @@ service cloud.firestore {
         // （従業員の削除・個人データの消去は、Cloud Functions が Admin SDK でまとめて消す）
         match /{sub}/{docId} {
           allow read: if isSiUser() && employeeInScope(employeeId);
-          allow create: if isSiUser() && employeeInScopeAfter(employeeId)
+          allow create: if isSiUser() && knownSub(sub) && employeeInScopeAfter(employeeId)
             && (sub != 'assignments' || scopeAll() || request.resource.data.officeId == siScope())
             && validSubData(sub, request.resource.data) && subKeysOk(sub, request.resource.data.keys())
+            && refsUsable(sub, request.resource.data, null)
             && (sub != 'changeLogs' || (request.resource.data.by == request.auth.token.email
               && request.resource.data.at == request.time && request.resource.data.text is string));
-          allow update: if isSiUser() && employeeInScope(employeeId) && sub != 'changeLogs' && (sub != 'assignments' || scopeAll())
+          allow update: if isSiUser() && knownSub(sub) && employeeInScope(employeeId) && sub != 'changeLogs' && (sub != 'assignments' || scopeAll())
             && validSubData(sub, request.resource.data)
-            && subKeysOk(sub, request.resource.data.diff(resource.data).affectedKeys());
+            && subKeysOk(sub, request.resource.data.diff(resource.data).affectedKeys())
+            && refsUsable(sub, request.resource.data, resource.data);
           allow delete: if isSiUser() && employeeInScope(employeeId) && sub != 'changeLogs' && (sub != 'assignments' || scopeAll());
         }
       }
@@ -609,10 +654,13 @@ service cloud.firestore {
         return get(siPath('bonusTypes', d.bonusTypeId)).data.isRemuneration == true
           && d.yearMonth >= get(siPath('bonusTypes', d.bonusTypeId)).data.validFrom;
       }
+      // 賞与・給与の事業所は、その従業員が所属した（所属している）事業所だけ（従業員の officeIds。支給日の所属かまでは
+      // 履歴を問い合わせられないので画面・CSVで確かめる）
+      function officeOfEmployee(d) { return d.officeId in get(siPath('employees', d.employeeId)).data.get('officeIds', []); }
       function validBonus(d) {
         return d.employeeId is string && exists(siPath('employees', d.employeeId))
           && isRealDate(d.paidDate) && d.yearMonth is string && d.paidDate.matches(d.yearMonth + '-[0-9]{2}')
-          && d.officeId is string
+          && d.officeId is string && officeOfEmployee(d)
           && d.amount is int && d.amount > 0 && d.amount <= 99999999
           && (d.get('inKindAmount', null) == null || (d.inKindAmount is int && d.inKindAmount >= 0 && d.inKindAmount <= d.amount))
           && (d.get('totalAmount', null) == null || (d.totalAmount is int && d.totalAmount > d.amount && d.totalAmount <= 999999999))
@@ -627,6 +675,8 @@ service cloud.firestore {
           && request.resource.data.keys().hasOnly(['employeeId', 'paidDate', 'yearMonth', 'officeId', 'amount', 'inKindAmount',
             'bonusTypeId', 'isRemuneration', 'totalAmount', 'createdAt'])
           && validBonus(request.resource.data)
+          // 使わないにした種類は、新しい賞与では選べない
+          && (request.resource.data.get('bonusTypeId', null) == null || notArchived('bonusTypes', request.resource.data.bonusTypeId))
           && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId));
         allow delete: if isSiUser() && inScope(resource.data.officeId)
           && !exists(closedPath(resource.data.yearMonth, resource.data.officeId));
@@ -641,6 +691,8 @@ service cloud.firestore {
               .hasOnly(['paidDate', 'yearMonth', 'amount', 'inKindAmount', 'bonusTypeId', 'isRemuneration', 'totalAmount', 'officeId', 'updatedAt'])
             && inScope(request.resource.data.officeId)
             && validBonus(request.resource.data)
+            && (request.resource.data.get('bonusTypeId', null) == resource.data.get('bonusTypeId', null)
+              || request.resource.data.get('bonusTypeId', null) == null || notArchived('bonusTypes', request.resource.data.bonusTypeId))
             && !exists(closedPath(resource.data.yearMonth, resource.data.officeId))
             && !exists(closedPath(request.resource.data.yearMonth, request.resource.data.officeId))));
       }
@@ -654,10 +706,10 @@ service cloud.firestore {
       function validSalary(d) {
         return d.keys().hasOnly(['employeeId', 'paidDate', 'yearMonth', 'officeId', 'fixedWages', 'nonFixedWages', 'paymentBaseDays',
             'retroactiveDiff', 'inKindWages', 'workingHours', 'hourlyRate', 'excludedAmount', 'updatedAt'])
-          && d.employeeId is string
+          && d.employeeId is string && exists(siPath('employees', d.employeeId))
           && isRealDate(d.paidDate) && d.yearMonth is string
           && d.paidDate.matches(d.yearMonth + '-[0-9]{2}')
-          && d.officeId is string
+          && d.officeId is string && officeOfEmployee(d)
           && isSalaryYen(d.fixedWages)
           && isSalaryYen(d.nonFixedWages)
           && d.paymentBaseDays is int && d.paymentBaseDays >= 0 && d.paymentBaseDays <= 31

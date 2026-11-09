@@ -40,7 +40,7 @@
           @if (newOffices().length !== 1) {
             <option value="" [selected]="form().officeId === ''">選んでください</option>
           }
-          @for (o of newOffices(); track o.id) {
+          @for (o of newOffices() | usable: form().officeId; track o.id) {
             <option [value]="o.id" [selected]="form().officeId === o.id">{{ o.name }}</option>
           }
         </select>
@@ -56,7 +56,7 @@
       <label>
         給与の支払区分
         <select name="payrollGroup" (change)="setPayrollGroup($any($event.target).value)">
-          @for (g of payrollGroups(); track g.id) {
+          @for (g of payrollGroups() | usable: form().payrollGroupId; track g.id) {
             <option [value]="g.id" [selected]="form().payrollGroupId === g.id">{{ g.name }}（{{ groupLabel(g) }}）</option>
           }
         </select>

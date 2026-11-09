@@ -151,3 +151,43 @@ export function rateDeleteMessage(i: RateDeleteImpact, percent: (rate: number) =
     '料率が変わったときは削除せず、新しい適用開始月で追加してください（削除は、誤って追加した行を消すためのものです）。',
   ].filter((x) => x).join('');
 }
+
+// ---- 「使わない」にする前の確かめ（設計書 3.10。マスタは消さず、使わないにする） ----
+
+type CurrentEmployee = UsageEmployee & { qualifications: { lostDate: string | null }[] };
+
+/** 退職して、もう在籍していない人か（資格があって、すべて今日までに喪失している） */
+function leftBy(e: CurrentEmployee, today: string): boolean {
+  return e.qualifications.length > 0 && e.qualifications.every((q) => q.lostDate !== null && q.lostDate <= today);
+}
+
+/** 今日の時点の履歴（なければ最初の履歴）と、これからの履歴の値 */
+function currentAndFuture<T extends { validFrom: string }>(list: T[], today: string): T[] {
+  const sorted = [...list].sort((a, b) => a.validFrom.localeCompare(b.validFrom));
+  const now = sorted.filter((x) => x.validFrom <= today).at(-1) ?? sorted[0];
+  return [...(now ? [now] : []), ...sorted.filter((x) => x.validFrom > today)];
+}
+
+/** その適用事業所に、今所属している（これから所属する）在籍中の従業員の数。いれば使わないにできない（先に異動を登録する） */
+export function currentOfficeUsers(employees: CurrentEmployee[], officeId: string, today: string): number {
+  return employees.filter((e) => !leftBy(e, today) && currentAndFuture(e.assignments, today).some((a) => a.officeId === officeId)).length;
+}
+
+/** その支払区分に、今属している（これから属する）在籍中の従業員の数 */
+export function currentPayrollGroupUsers(employees: CurrentEmployee[], groupId: string, today: string): number {
+  return employees.filter((e) => !leftBy(e, today) && currentAndFuture(e.payrollAssignments ?? [], today).some((a) => a.payrollGroupId === groupId)).length;
+}
+
+/** 「使わない」にできない理由（できるなら null） */
+export function archiveBlockMessage(
+  label: string,
+  name: string,
+  reason: { isDefault: boolean; currentEmployees?: number; activeOffices?: number },
+): string | null {
+  if (reason.isDefault) return `${label}「${name}」は新規登録の初期値なので、使わないにできません（先に別の${label}を初期値にしてください）。`;
+  if (reason.currentEmployees && reason.currentEmployees > 0)
+    return `${label}「${name}」には、今（またはこれから）属している従業員が${reason.currentEmployees}人いるので、使わないにできません（先に、その人たちの異動・区分の変更を登録してください）。`;
+  if (reason.activeOffices && reason.activeOffices > 0)
+    return `${label}「${name}」は、適用事業所${reason.activeOffices}件の保険者になっているので、使わないにできません（先に、その事業所の保険者を変えるか、事業所を使わないにしてください）。`;
+  return null;
+}

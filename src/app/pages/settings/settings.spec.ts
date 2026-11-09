@@ -96,9 +96,7 @@ describe('Settings', () => {
             loadPayrollGroupRecords: async () => groups,
             loadBonusTypes: async () => types,
             isBonusTypeUsed: async (id: string) => bonusTypeUsed.has(id),
-            deleteBonusType: record('deleteBonusType'),
-            deletePayrollGroup: record('deletePayrollGroup'),
-            deleteOffice: record('deleteOffice'),
+            setArchived: record('setArchived'),
             saveBonusType: record('saveBonusType'),
             savePayrollGroup: record('savePayrollGroup'),
             savePayrollTermsChanges: record('savePayrollTermsChanges'),
@@ -414,6 +412,20 @@ describe('Settings', () => {
       expect(calls.some((c) => c[0] === 'savePayrollGroup')).toBe(false);
     });
 
+    it('使わないにした区分は、初期値にできない（先に「使うに戻す」）', async () => {
+      groups = [{ ...(groups[0] as object), isDefault: false, archived: true }];
+      fixture = TestBed.createComponent(Settings);
+      await fixture.whenStable();
+      fixture.detectChanges();
+      await rowButton('直す');
+      const cb = form().querySelector('input[type=checkbox]') as HTMLInputElement;
+      cb.checked = true;
+      cb.dispatchEvent(new Event('change'));
+      await submit(form());
+      expect(calls).toEqual([]);
+      expect(el().textContent).toContain('使わないにしているため、初期値にできません');
+    });
+
     it('過去の月からは変えられない', async () => {
       await rowButton('○年○月から変える');
       type('変える月', next(thisMonth(), -1));
@@ -455,7 +467,7 @@ describe('Settings', () => {
     });
   });
 
-  describe('削除（給与の支払区分・賞与の種類・適用事業所）', () => {
+  describe('使わないにする（給与の支払区分・賞与の種類・適用事業所。マスタは削除しない）', () => {
     beforeEach(async () => {
       groups = [
         { id: 'g1', name: '月給', cutoffDay: 'end', paidIn: 'nextMonth', deductionTiming: 'nextMonth', payDay: 25, isDefault: true },
@@ -473,12 +485,12 @@ describe('Settings', () => {
     async function del(section: string, name: string) {
       const table = el().querySelector(section)!;
       const row = [...table.querySelectorAll('tbody tr')].find((r) => r.textContent!.includes(name))!;
-      const b = [...row.querySelectorAll('button')].find((x) => x.textContent!.trim() === '削除') as HTMLButtonElement;
+      const b = [...row.querySelectorAll('button')].find((x) => x.textContent!.trim() === '使わないにする') as HTMLButtonElement;
       b.click();
       await fixture.whenStable();
       fixture.detectChanges();
     }
-    const deletes = () => calls.filter((c) => String(c[0]).startsWith('delete'));
+    const deletes = () => calls.filter((c) => String(c[0]).startsWith('delete') || c[0] === 'setArchived');
 
     it('使用中の賞与の種類は、年4回以上支給と適用開始月を変えられない（名前は変えられる）', async () => {
       bonusTypeUsed = new Set(['t1']);
@@ -496,16 +508,13 @@ describe('Settings', () => {
       expect(calls[0]).toEqual(['saveBonusType', 't1', { name: '夏の賞与', isRemuneration: false, validFrom: '2024-04' }]);
     });
 
-    it('1件でも使われていれば「使用中なので、削除できません」と出し、削除しない（過去の所属も数える）', async () => {
+    it('今（これから）属している在籍中の人がいれば、使わないにできない。過去だけなら使わないにできる', async () => {
       assignments = [{ officeId: 'osaka', groupId: 'g2' }];
-      bonusTypeUsed = new Set(['t1']);
       await del('table.payroll-groups', 'パート');
-      expect(notice()).toBe('給与の支払区分「パート」は使用中なので、削除できません（従業員1人が所属しています。過去の所属を含みます）。');
+      expect(notice()).toBe('給与の支払区分「パート」には、今（またはこれから）属している従業員が1人いるので、使わないにできません（先に、その人たちの異動・区分の変更を登録してください）。');
       expect(el().querySelector('app-notice .notice')!.classList.contains('failed')).toBe(true);
-      await del('table.bonus-types', '夏季賞与');
-      expect(notice()).toBe('賞与の種類「夏季賞与」は使用中なので、削除できません（この種類の賞与が登録されています）。');
       await del('table.offices', '大阪支店');
-      expect(notice()).toContain('適用事業所「大阪支店」は使用中なので、削除できません');
+      expect(notice()).toContain('適用事業所「大阪支店」には、今（またはこれから）属している従業員が1人いるので、使わないにできません');
       expect(deletes()).toEqual([]);
     });
 
@@ -521,22 +530,23 @@ describe('Settings', () => {
       expect(deletes()).toEqual([]);
     });
 
-    it('所属した従業員がいなくても、確定済みの月がある事業所は削除しない（確定の記録が指しているため）', async () => {
+    it('確定済みの月がある事業所・使われた賞与の種類も、消さずに使わないにできる（過去の結果はそのまま）', async () => {
       closed = { osaka: ['2026-09', '2026-10'] };
+      bonusTypeUsed = new Set(['t1']);
       await del('table.offices', '大阪支店');
-      expect(notice()).toBe('適用事業所「大阪支店」は使用中なので、削除できません（確定済みの月（2か月）の結果に使われています）。');
-      expect(deletes()).toEqual([]);
+      await del('table.bonus-types', '夏季賞与');
+      expect(deletes()).toEqual([['setArchived', 'offices', 'osaka', true], ['setArchived', 'bonusTypes', 't1', true]]);
     });
 
-    it('新規登録の初期値（デフォルト）は使用中として削除しない', async () => {
+    it('新規登録の初期値（デフォルト）は使わないにできない', async () => {
       await del('table.payroll-groups', '月給');
-      expect(notice()).toContain('給与の支払区分「月給」は新規登録の初期値として使用中なので、削除できません');
+      expect(notice()).toContain('給与の支払区分「月給」は新規登録の初期値なので、使わないにできません');
       await del('table.offices', '本社');
-      expect(notice()).toContain('適用事業所「本社」は新規登録の初期値として使用中なので、削除できません');
+      expect(notice()).toContain('適用事業所「本社」は新規登録の初期値なので、使わないにできません');
       expect(deletes()).toEqual([]);
     });
 
-    it('使われていなければ、確認してから削除する（「やめる」なら削除しない）', async () => {
+    it('確認してから使わないにする（「やめる」なら変えない）。使わないにしたものは「使うに戻す」で戻せる', async () => {
       confirmAnswer = false;
       await del('table.bonus-types', '決算賞与');
       expect(deletes()).toEqual([]);
@@ -544,8 +554,18 @@ describe('Settings', () => {
       await del('table.bonus-types', '決算賞与');
       await del('table.payroll-groups', 'パート');
       await del('table.offices', '大阪支店');
-      expect(deletes()).toEqual([['deleteBonusType', 't2'], ['deletePayrollGroup', 'g2'], ['deleteOffice', 'osaka']]);
-      expect(notice()).toBe('適用事業所「大阪支店」を削除しました。');
+      expect(deletes()).toEqual([['setArchived', 'bonusTypes', 't2', true], ['setArchived', 'payrollGroups', 'g2', true], ['setArchived', 'offices', 'osaka', true]]);
+      expect(notice()).toBe('適用事業所「大阪支店」を使わないにしました。');
+      calls.length = 0;
+      types = (types as { id: string }[]).map((t) => (t.id === 't2' ? { ...t, archived: true } : t));
+      fixture = TestBed.createComponent(Settings);
+      await fixture.whenStable();
+      fixture.detectChanges();
+      const row = [...el().querySelectorAll('table.bonus-types tbody tr')].find((r) => r.textContent!.includes('決算賞与'))!;
+      expect(row.textContent).toContain('使わない');
+      ([...row.querySelectorAll('button')].find((x) => x.textContent!.trim() === '使うに戻す') as HTMLButtonElement).click();
+      await fixture.whenStable();
+      expect(calls).toEqual([['setArchived', 'bonusTypes', 't2', false]]);
     });
   });
 });

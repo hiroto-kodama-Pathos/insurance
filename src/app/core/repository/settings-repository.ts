@@ -65,6 +65,7 @@ export class SettingsRepository {
         deductionTiming: x['deductionTiming'] ?? 'nextMonth',
         payDay: x['payDay'] ?? 25,
         isDefault: x['isDefault'] === true,
+        archived: x['archived'] === true,
         changes: ((x['changes'] ?? []) as PayrollTermsChange[])
           .map((c) => ({ validFrom: c.validFrom, ...termsOf(c) }))
           .sort((a, b) => a.validFrom.localeCompare(b.validFrom)),
@@ -131,6 +132,7 @@ export class SettingsRepository {
         name: d.data()['name'] ?? '',
         isRemuneration: d.data()['isRemuneration'] === true,
         validFrom: d.data()['validFrom'] ?? '',
+        archived: d.data()['archived'] === true,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -141,14 +143,13 @@ export class SettingsRepository {
     return !snap.empty;
   }
 
-  /** 賞与の種類の削除（管理者だけ。使用中でないことを画面で確かめてから呼ぶ） */
-  async deleteBonusType(id: string): Promise<void> {
-    await deleteDoc(siDoc('bonusTypes', id));
-  }
-
-  /** 給与の支払区分の削除（管理者だけ。使用中・初期値でないことを画面で確かめてから呼ぶ） */
-  async deletePayrollGroup(id: string): Promise<void> {
-    await deleteDoc(siDoc('payrollGroups', id));
+  /**
+   * マスタ（適用事業所・支払区分・健康保険組合・賞与の種類）を「使わない」にする・使うに戻す（管理者だけ。設計書 3.10）。
+   * マスタは消さない：過去の給与・賞与・履歴・確定した結果がIDで参照しているので、消すと参照先がなくなるため。
+   * 使わないにしたものは新しく選べなくなる（ルールでも止める）。過去の計算・表示はそのまま
+   */
+  async setArchived(kind: 'offices' | 'payrollGroups' | 'insurers' | 'bonusTypes', id: string, archived: boolean): Promise<void> {
+    await updateDoc(siDoc(kind, id), { archived });
   }
 
   /** 組合健保の料率の削除（管理者だけ。誤って追加した行。消した月は、ほかに有効な料率がなければ「未登録」になる） */
@@ -156,23 +157,11 @@ export class SettingsRepository {
     await deleteDoc(siDoc('insurerRates', id));
   }
 
-  /** 健康保険組合の削除（管理者だけ。使用中でないことを画面で確かめてから呼ぶ）。その組合の料率もまとめて消す */
-  async deleteKumiai(id: string, rateIds: string[]): Promise<void> {
-    const batch = writeBatch(db);
-    for (const r of rateIds) batch.delete(siDoc('insurerRates', r));
-    batch.delete(siDoc('insurers', id));
-    await batch.commit();
-  }
-
-  /** 適用事業所の削除（管理者だけ。使用中・初期値でないことを画面で確かめてから呼ぶ） */
-  async deleteOffice(id: string): Promise<void> {
-    await deleteDoc(siDoc('offices', id));
-  }
-
   /** 賞与の種類の追加・変更（管理者だけ） */
   async saveBonusType(id: string | null, input: BonusTypeInput): Promise<void> {
     const data = { name: input.name.trim(), isRemuneration: input.isRemuneration, validFrom: input.validFrom };
-    if (id) await setDoc(siDoc('bonusTypes', id), data);
+    // 直すときは update（「使わない」の印を消さない）
+    if (id) await updateDoc(siDoc('bonusTypes', id), data);
     else await addDoc(siCol('bonusTypes'), data);
   }
 
@@ -242,12 +231,10 @@ export class SettingsRepository {
   async saveOffice(id: string | null, input: OfficeInput, offices: Office[]): Promise<void> {
     const batch = writeBatch(db);
     const ref = id ? siDoc('offices', id) : siDocNew('offices');
-    batch.set(ref, {
-      name: input.name.trim(),
-      prefecture: input.prefecture,
-      insurerId: input.insurerId,
-      isDefault: input.isDefault,
-    });
+    const data = { name: input.name.trim(), prefecture: input.prefecture, insurerId: input.insurerId, isDefault: input.isDefault };
+    // 直すときは update（「使わない」の印を消さない）
+    if (id) batch.update(ref, data);
+    else batch.set(ref, data);
     if (input.isDefault) {
       for (const o of offices) {
         if (o.id !== ref.id && o.isDefault) batch.update(siDoc('offices', o.id), { isDefault: false });
@@ -259,7 +246,7 @@ export class SettingsRepository {
   /** 組合健保の追加・変更 */
   async saveKumiai(id: string | null, input: KumiaiInput): Promise<void> {
     const data = { type: 'kumiai', name: input.name.trim(), specialInsuredEnabled: input.specialInsuredEnabled };
-    if (id) await setDoc(siDoc('insurers', id), data);
+    if (id) await updateDoc(siDoc('insurers', id), data);
     else await addDoc(siCol('insurers'), data);
   }
 

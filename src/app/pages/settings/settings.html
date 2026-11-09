@@ -82,6 +82,7 @@
             <tr>
               <td>
                 {{ r.group.name }}
+                @if (r.group.archived) { <span class="badge archived">使わない</span> }
                 @if (r.history.length > 0) {
                   <ul class="terms-history">
                     @for (h of r.history; track $index) {
@@ -103,7 +104,11 @@
                 @if (r.history.length > 0) {
                   <button type="button" class="secondary" [disabled]="saving()" (click)="undoTermsChange(r.group)">最後の変更を取り消す</button>
                 }
-                <button type="button" class="secondary danger" [disabled]="saving()" (click)="deletePayrollGroup(r.group)">削除</button>
+                @if (r.group.archived) {
+                  <button type="button" class="secondary" [disabled]="saving()" (click)="unarchive('給与の支払区分', r.group.name, 'payrollGroups', r.group.id)">使うに戻す</button>
+                } @else {
+                  <button type="button" class="secondary danger" [disabled]="saving()" (click)="archivePayrollGroup(r.group)">使わないにする</button>
+                }
               </td>
             </tr>
           } @empty {
@@ -230,12 +235,16 @@
         <tbody>
           @for (t of bonusTypes(); track t.id) {
             <tr>
-              <td>{{ t.name }}</td>
+              <td>{{ t.name }} @if (t.archived) { <span class="badge archived">使わない</span> }</td>
               <td>{{ t.isRemuneration ? '○（報酬扱い）' : '' }}</td>
               <td>{{ t.validFrom | ym }}</td>
               <td class="actions">
                 <button type="button" class="secondary" (click)="openBonusType(t)">変更</button>
-                <button type="button" class="secondary danger" [disabled]="saving()" (click)="deleteBonusType(t)">削除</button>
+                @if (t.archived) {
+                  <button type="button" class="secondary" [disabled]="saving()" (click)="unarchive('賞与の種類', t.name, 'bonusTypes', t.id)">使うに戻す</button>
+                } @else {
+                  <button type="button" class="secondary danger" [disabled]="saving()" (click)="archiveBonusType(t)">使わないにする</button>
+                }
               </td>
             </tr>
           } @empty {
@@ -281,13 +290,17 @@
         <tbody>
           @for (o of offices(); track o.id) {
             <tr>
-              <td>{{ o.name }}</td>
+              <td>{{ o.name }} @if (o.archived) { <span class="badge archived">使わない</span> }</td>
               <td>{{ o.prefecture }}</td>
               <td>{{ insurerName(o.insurerId) }}</td>
               <td>{{ o.isDefault ? '○' : '' }}</td>
               <td class="actions">
                 <button type="button" class="secondary" (click)="openOffice(o)">変更</button>
-                <button type="button" class="secondary danger" [disabled]="saving()" (click)="deleteOffice(o)">削除</button>
+                @if (o.archived) {
+                  <button type="button" class="secondary" [disabled]="saving()" (click)="unarchive('適用事業所', o.name, 'offices', o.id)">使うに戻す</button>
+                } @else {
+                  <button type="button" class="secondary danger" [disabled]="saving()" (click)="archiveOffice(o)">使わないにする</button>
+                }
               </td>
             </tr>
           } @empty {
@@ -306,7 +319,7 @@
         <label>加入する保険者
           <select name="officeInsurer" [disabled]="officeLocked()" [value]="officeForm().insurerId" (change)="setOffice('insurerId', $any($event.target).value)">
             <option value="">選んでください</option>
-            @for (i of insurers(); track i.id) {
+            @for (i of insurers() | usable: officeForm().insurerId; track i.id) {
               <option [value]="i.id" [selected]="i.id === (officeForm().insurerId)">{{ i.name }}</option>
             }
           </select>
@@ -347,7 +360,12 @@
           <span class="badge">特定被保険者制度あり</span>
         }
         <button type="button" class="secondary small" (click)="openKumiai(g.insurer)">名前などを変更</button>
-        <button type="button" class="secondary small danger" [disabled]="saving()" (click)="deleteKumiai(g.insurer)">削除</button>
+        @if (g.insurer.archived) {
+          <span class="badge archived">使わない</span>
+          <button type="button" class="secondary small" [disabled]="saving()" (click)="unarchive('健康保険組合', g.insurer.name, 'insurers', g.insurer.id)">使うに戻す</button>
+        } @else {
+          <button type="button" class="secondary small danger" [disabled]="saving()" (click)="archiveKumiai(g.insurer)">使わないにする</button>
+        }
       </h3>
       <div class="table-wrap">
         <table class="list">

@@ -24,25 +24,27 @@ export class SalaryExistsError extends Error {
 /** CSVの取り込みで、1回の書き込み（トランザクション）にまとめる件数 */
 export const SAVE_CHUNK = 200;
 /**
- * 1回の書き込みにまとめる「支払月×事業所」の数。給与のルールは、支払月×事業所ごとに確定済みか（exists）を確かめ、
- * 1回の書き込みで確かめられる文書は20までなので、余裕をみて10までにする（同じ月・事業所は1つと数える）
+ * 1回の書き込みで、ルールが確かめる文書の数の上限の目安。給与のルールは、支払月×事業所ごとに確定済みか（exists）と、
+ * 従業員ごとにその人がいて、その事業所に所属したか（get）を確かめる。1回の書き込みで確かめられる文書は20までなので、
+ * 余裕をみて「支払月×事業所」と「従業員」を合わせて18までにする（同じ文書は1つと数える）
  */
-export const SAVE_CHUNK_MONTH_OFFICES = 10;
+export const SAVE_CHUNK_REFS = 18;
 
-/** 書き込みのまとまりに分ける（件数は SAVE_CHUNK まで、支払月×事業所は SAVE_CHUNK_MONTH_OFFICES まで。順番は変えない） */
-export function chunkSalaries<T extends { salary: { paidDate: string }; officeId: string }>(items: T[]): T[][] {
+/** 書き込みのまとまりに分ける（件数は SAVE_CHUNK まで、確かめる文書は SAVE_CHUNK_REFS まで。順番は変えない） */
+export function chunkSalaries<T extends { salary: { paidDate: string; employeeId: string }; officeId: string }>(items: T[]): T[][] {
   const chunks: T[][] = [];
   let cur: T[] = [];
-  let keys = new Set<string>();
+  let refs = new Set<string>();
   for (const item of items) {
-    const key = `${item.salary.paidDate.slice(0, 7)}|${item.officeId}`;
-    if (cur.length >= SAVE_CHUNK || (!keys.has(key) && keys.size >= SAVE_CHUNK_MONTH_OFFICES)) {
+    const need = [`closed|${item.salary.paidDate.slice(0, 7)}|${item.officeId}`, `employee|${item.salary.employeeId}`].filter((k) => !refs.has(k));
+    if (cur.length >= SAVE_CHUNK || (cur.length > 0 && refs.size + need.length > SAVE_CHUNK_REFS)) {
       chunks.push(cur);
       cur = [];
-      keys = new Set();
+      refs = new Set();
     }
     cur.push(item);
-    keys.add(key);
+    refs.add(`closed|${item.salary.paidDate.slice(0, 7)}|${item.officeId}`);
+    refs.add(`employee|${item.salary.employeeId}`);
   }
   if (cur.length) chunks.push(cur);
   return chunks;
@@ -127,7 +129,7 @@ export class SalaryRepository {
    * - 新規の行（overwrite: false）は、書き込む時点で同じ人・同じ支払日の給与がすでにあれば書かない（プレビューのあとに
    *   ほかの担当者が登録した給与を上書きしないように。トランザクションで確かめる）。書かなかった行は conflicts に返す
    * - 上書きの行（overwrite: true）は、担当者が上書きを確かめた行だけ
-   * - 1回の書き込みは SAVE_CHUNK 件・支払月×事業所 SAVE_CHUNK_MONTH_OFFICES までずつ（chunkSalaries）。途中で失敗したら、そこで止めて、書けた件数と失敗した件数を返す
+   * - 1回の書き込みは SAVE_CHUNK 件・確かめる文書 SAVE_CHUNK_REFS までずつ（chunkSalaries。確かめる文書の数で分ける）。途中で失敗したら、そこで止めて、書けた件数と失敗した件数を返す
    *   （「取り込めませんでした」だけを出して、実は途中まで書けていた、とならないように）
    */
   async saveMany(items: { salary: Omit<SalaryRecord, 'id'>; officeId: string; overwrite: boolean }[]): Promise<SaveManyResult> {

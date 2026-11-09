@@ -24,6 +24,8 @@ export type PayrollGroup = PayrollTerms & {
   id: string;
   name: string;
   isDefault?: boolean;
+  /** 使わない区分（消さずに、新しく割り当てられなくする。設計書 3.10） */
+  archived?: boolean;
   /** 給与の制度の変更（支払月 'YYYY-MM' の古い順） */
   changes?: PayrollTermsChange[];
 };

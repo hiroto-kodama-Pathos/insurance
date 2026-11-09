@@ -167,8 +167,8 @@ export type EmployeeToImport = {
 
 export type EmployeeImportContext = {
   existingNumbers: string[];
-  offices: { id: string; name: string }[];
-  groups: { id: string; name: string; isDefault?: boolean }[];
+  offices: { id: string; name: string; archived?: boolean }[];
+  groups: { id: string; name: string; isDefault?: boolean; archived?: boolean }[];
   scope: string;
 };
 
@@ -220,6 +220,7 @@ export function buildEmployeeImport(rows: string[][], m: ColumnMapping, ctx: Emp
     const office = ctx.offices.find((o) => o.id === officeRaw || norm(o.name) === norm(officeRaw));
     if (!officeRaw) errors.push('適用事業所が空欄です');
     else if (!office) errors.push(`適用事業所「${officeRaw}」が見つかりません`);
+    else if (office.archived) errors.push(`適用事業所「${office.name}」は使わないにしているため、新しく所属させられません（設定で「使うに戻す」か、別の事業所にしてください）`);
 
     const typeRaw = cell(r, 'insuredType');
     const insuredType = parseInsuredType(typeRaw);
@@ -228,6 +229,7 @@ export function buildEmployeeImport(rows: string[][], m: ColumnMapping, ctx: Emp
     const groupRaw = cell(r, 'payrollGroup');
     const group = groupRaw ? ctx.groups.find((g) => g.id === groupRaw || norm(g.name) === norm(groupRaw)) : null;
     if (groupRaw && !group) errors.push(`支払区分「${groupRaw}」が見つかりません`);
+    else if (group?.archived) errors.push(`支払区分「${group.name}」は使わないにしているため、新しく割り当てられません`);
 
     const label = `${number} ${name}`.trim();
     const summary = office
@@ -474,6 +476,9 @@ export function buildBonusImport(rows: string[][], m: ColumnMapping, ctx: BonusI
     const typeRaw = cell(r, 'bonusType');
     const type = typeRaw ? ctx.types.find((t) => t.id === typeRaw || norm(t.name) === norm(typeRaw)) : null;
     if (typeRaw && !type) errors.push(`賞与の種類「${typeRaw}」が見つかりません`);
+    // 使わないにした種類は新しく選べない。ただし、登録済みの賞与の訂正で種類が前と同じなら通す（金額だけを直すとき）
+    else if (type?.archived && !(e && paidDate && ctx.existing.some((b) => b.employeeId === e.id && b.paidDate === paidDate && b.bonusTypeId === type.id)))
+      errors.push(`賞与の種類「${type.name}」は使わないにしているため、新しい賞与では選べません`);
     const office = e && paidDate ? officeAt(e.assignments, paidDate) : null;
     if (e && paidDate && isValidDate(paidDate) && !office) errors.push('支給日に所属している適用事業所がありません');
     if (e && paidDate) {
