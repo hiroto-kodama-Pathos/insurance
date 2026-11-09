@@ -59,8 +59,9 @@ export class Rate {
         r.validFrom <= yearMonth
     );
 
-    // 協会けんぽの健康保険料率は都道府県別
-    if (insurer.type === 'kyokai' && rateType === 'health' && prefecture) {
+    // 協会けんぽの健康保険料率は都道府県別。都道府県が分からなければ選ばない（ほかの都道府県の料率を返さないため）
+    if (insurer.type === 'kyokai' && rateType === 'health') {
+      if (!prefecture) return null;
       filtered = filtered.filter((r) => r.prefecture === prefecture);
     } else if (rateType !== 'health' || insurer.type === 'kumiai') {
       // 介護保険・支援金・組合健保は都道府県なし（prefecture = null）

@@ -2,7 +2,7 @@
 // 給与ソフトごとに列の並びや名前が違うため、列の対応づけを会社の設定（csvMappings.salary）に保存して毎月使う。
 import { parseDateLoose, parseHoursLoose, parseNumberLoose } from './csv';
 import { findOffice, Assignment, Office } from './office';
-import { addMonths, baseDaysWarning, SalaryRecord, validateSalary } from './salary';
+import { addMonths, baseDaysTotalError, baseDaysWarning, SalaryRecord, validateSalary } from './salary';
 import { toHalfWidth } from './half-width';
 
 /** アプリの項目ごとに、対応するCSVの列名（固定的・非固定的賃金は複数の列を合計） */
@@ -102,6 +102,8 @@ export type PreviewContext = {
   periodDaysOf?: (employeeId: string, yearMonth: string) => number | null;
   /** 今日（YYYY-MM-DD）。支払日が来月より先の行に注意を出す。渡さなければ注意しない */
   today?: string;
+  /** 登録済みの給与の支払基礎日数（同じ月の支払いの合計を確かめる。ファイルで上書きする支払日の分は数えない） */
+  existingDays?: { employeeId: string; paidDate: string; paymentBaseDays: number }[];
 };
 
 /** 小数の数字か（「300000.5」など）。金額・日数は整数なので、読めない理由をはっきり伝える */
@@ -119,7 +121,36 @@ export function findByNumber(employees: ImportEmployee[], raw: string): ImportEm
 
 /** CSVの行（見出しを含む）から、取り込む内容とエラーを作る */
 export function buildPreview(rows: string[][], mapping: SalaryMapping, ctx: PreviewContext): PreviewRow[] {
-  const result = buildRows(rows, mapping, ctx);
+  return checkBaseDaysTotal(checkExclusion(buildRows(rows, mapping, ctx), ctx), ctx);
+}
+
+/**
+ * 同じ人・同じ月の支払基礎日数の合計（ファイルの行＋登録済みの給与。上書きする支払日は、ファイルの値で数える）が、
+ * 給与の計算期間の暦日数を超えたら、その月のファイルの行をエラーにする（2回目以降の支払いに1か月分の日数を入れた誤り）
+ */
+function checkBaseDaysTotal(result: PreviewRow[], ctx: PreviewContext): PreviewRow[] {
+  const periodDaysOf = ctx.periodDaysOf;
+  if (!periodDaysOf) return result;
+  const days = new Map<string, Map<string, number>>(); // 人|月 → 支払日 → 日数
+  const add = (employeeId: string, paidDate: string, d: number) => {
+    const key = `${employeeId}|${paidDate.slice(0, 7)}`;
+    if (!days.has(key)) days.set(key, new Map());
+    days.get(key)!.set(paidDate, d);
+  };
+  for (const s of ctx.existingDays ?? []) add(s.employeeId, s.paidDate, s.paymentBaseDays);
+  const imported = (r: PreviewRow) => !!r.salary && (r.status === 'new' || r.status === 'overwrite');
+  for (const r of result) if (imported(r)) add(r.salary!.employeeId, r.salary!.paidDate, r.salary!.paymentBaseDays);
+  return result.map((r) => {
+    if (!imported(r) || !r.salary) return r;
+    const key = `${r.salary.employeeId}|${r.salary.paidDate.slice(0, 7)}`;
+    const all = [...days.get(key)!.values()];
+    if (all.length < 2) return r;
+    const msg = baseDaysTotalError(all[0], all.slice(1), periodDaysOf(r.salary.employeeId, r.salary.paidDate.slice(0, 7)));
+    return msg ? { ...r, status: 'error' as const, errors: [msg] } : r;
+  });
+}
+
+function checkExclusion(result: PreviewRow[], ctx: PreviewContext): PreviewRow[] {
   // 算定から除く額が要る月（支払月・締め日の変更月）は、同じ人・同じ月の行のどれかに額（なければ0）が要る。
   // 空のまま取り込むと、平均から除く額が引かれず、随時改定・定時決定を誤るため、その月の行は取り込まない
   const need = ctx.needsExclusion;

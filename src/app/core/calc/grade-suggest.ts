@@ -153,3 +153,26 @@ export function standardGradeError(grades: GradeRow[] | null, yearMonth: string,
   const near = [lower, upper].filter((g): g is GradeRow => !!g).map(show).join('・');
   return `${amount.toLocaleString('ja-JP')}円は${label}の等級の額ではありません。決定通知書の額を入れてください（近い等級：${near}）`;
 }
+
+/**
+ * 健康保険の標準報酬月額から、同じ報酬月額で決まる厚生年金の標準報酬月額（等級表がなければ null）。
+ * 両方とも同じ報酬月額から決まり、等級の範囲が重なるところでは同じ額。厚生年金の範囲より下・上の人は、
+ * 厚生年金のいちばん下・上の等級になる（例：健康保険 5.8万円 → 厚生年金 8.8万円、健康保険 139万円 → 厚生年金 65万円）
+ */
+export function pensionStandardFor(grades: GradeRow[], yearMonth: string, health: number): number | null {
+  const table = gradeTableAt(grades, yearMonth);
+  const row = table.find((g) => g.standardAmount === health);
+  const pension = table.filter((g) => g.pensionGrade !== null).map((g) => g.standardAmount);
+  if (!row || pension.length === 0) return null;
+  if (row.pensionGrade !== null) return row.standardAmount;
+  return health < Math.min(...pension) ? Math.min(...pension) : Math.max(...pension);
+}
+
+/** 健康保険と厚生年金の標準報酬月額が、同じ報酬月額から決まる組み合わせでないときのエラー（確かめられないときは null） */
+export function standardPairError(grades: GradeRow[] | null, yearMonth: string, health: number | null, pension: number | null): string | null {
+  if (grades === null || health === null || pension === null) return null;
+  const expected = pensionStandardFor(grades, yearMonth, health);
+  if (expected === null || expected === pension) return null;
+  const man = (v: number) => `${(v / 10_000).toLocaleString('ja-JP')}万円`;
+  return `健康保険 ${man(health)}と厚生年金 ${man(pension)}は、同じ報酬月額から決まる組み合わせではありません。健康保険が${man(health)}なら、厚生年金は${man(expected)}です（決定通知書を確かめてください）`;
+}

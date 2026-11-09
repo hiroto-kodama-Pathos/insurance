@@ -100,6 +100,7 @@ export class MasterImportPage implements OnInit {
           offices: this.offices(),
           groups: this.groups(),
           scope: this.scope(),
+          today: new Intl.DateTimeFormat('sv-SE', { timeZone: 'Asia/Tokyo' }).format(new Date()),
         })
       : [],
   );

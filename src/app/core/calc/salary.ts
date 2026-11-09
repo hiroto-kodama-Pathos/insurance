@@ -173,6 +173,22 @@ export function baseDaysWarning(days: number | null, periodDays: number | null):
     : null;
 }
 
+/**
+ * 同じ月に2回以上支払うときの、支払基礎日数の合計の確かめ（合計が計算期間の暦日数を超えたらエラー。超えなければ null）。
+ * 随時改定・定時決定は、同じ月の支払基礎日数を合算して17日（短時間労働者は11日）以上かを見るので、
+ * 2回目以降の支払いに1か月分の日数を入れると、判定を誤る。periodDays が null（締め日・支払月の変更月）なら確かめない
+ */
+export function baseDaysTotalError(days: number | null, otherDays: number[], periodDays: number | null): string | null {
+  if (days === null || !Number.isInteger(days) || periodDays === null || otherDays.length === 0) return null;
+  const total = days + otherDays.reduce((a, b) => a + b, 0);
+  // 1回の支払いだけで暦日数を超えるとき（ほかは0日）は、1回分の注意（baseDaysWarning）で伝え、ここではエラーにしない
+  if (total <= periodDays || total <= Math.max(days, ...otherDays)) return null;
+  return (
+    `同じ月の支払いの支払基礎日数の合計（${total}日）が、給与の計算期間の暦日数（${periodDays}日）を超えます。` +
+    '2回目以降の支払いには、その支払いが対象にする日数だけを入れてください（遡及差額・手当だけの支払いは0日）'
+  );
+}
+
 export function validateSalary(input: SalaryInput): SalaryErrors {
   const e: SalaryErrors = {};
   if (!isValidDate(input.paidDate)) e.paidDate = '支払日を正しく入力してください';

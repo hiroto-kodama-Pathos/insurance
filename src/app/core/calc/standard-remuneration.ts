@@ -98,11 +98,22 @@ export class StandardRemuneration {
       return null;
     }
 
+    // 厚生年金：同じ報酬月額の行に厚生年金の等級があればその額。厚生年金の範囲より下・上の報酬月額は、
+    // 厚生年金のいちばん下・上の等級（健康保険と厚生年金は等級の範囲が違うため）
+    const pensionRows = gradeTable.filter((g) => g.pensionGrade !== null).sort((a, b) => a.standardAmount - b.standardAmount);
+    const pensionRow =
+      matchedGrade.pensionGrade !== null
+        ? matchedGrade
+        : pensionRows.length === 0
+          ? null
+          : matchedGrade.standardAmount < pensionRows[0].standardAmount
+            ? pensionRows[0]
+            : pensionRows[pensionRows.length - 1];
     return {
       healthGrade: matchedGrade.healthGrade,
-      pensionGrade: matchedGrade.pensionGrade,
+      pensionGrade: pensionRow?.pensionGrade ?? null,
       healthStandard: matchedGrade.standardAmount,
-      pensionStandard: matchedGrade.standardAmount, // 健保・厚年で異なる場合は要調整
+      pensionStandard: pensionRow?.standardAmount ?? null,
     };
   }
 

@@ -784,9 +784,13 @@ describe('EmployeeDetail', () => {
     const health = [...el().querySelectorAll('#card-standard form label')].find((l) => l.textContent?.includes('健康保険の標準報酬月額'))!.querySelector('input')!;
     health.value = '320000';
     health.dispatchEvent(new Event('input'));
+    // 健康保険と厚生年金は同じ報酬月額から決まるので、両方を直す
+    const pension = [...el().querySelectorAll('#card-standard form label')].find((l) => l.textContent?.includes('厚生年金の標準報酬月額'))!.querySelector('input')!;
+    pension.value = '320000';
+    pension.dispatchEvent(new Event('input'));
     await submit();
     expect(calls[0].slice(0, 3)).toEqual(['updateStandard', 'e1', 's1']);
-    expect(calls[0][3]).toMatchObject({ validFrom: '2024-04', reason: 'acquisition', healthStandard: 320_000, pensionStandard: 300_000 });
+    expect(calls[0][3]).toMatchObject({ validFrom: '2024-04', reason: 'acquisition', healthStandard: 320_000, pensionStandard: 320_000 });
 
     calls = [];
     rowButton('#card-standard table', '資格取得時決定', '直す').click();
@@ -961,9 +965,13 @@ describe('EmployeeDetail', () => {
     const health = [...el().querySelectorAll('#card-standard form label')].find((l) => l.textContent?.includes('健康保険の標準報酬月額'))!.querySelector('input')!;
     health.value = '320000';
     health.dispatchEvent(new Event('input'));
+    // 健康保険と厚生年金は同じ報酬月額から決まるので、両方を直す
+    const pension = [...el().querySelectorAll('#card-standard form label')].find((l) => l.textContent?.includes('厚生年金の標準報酬月額'))!.querySelector('input')!;
+    pension.value = '320000';
+    pension.dispatchEvent(new Event('input'));
     await submit();
     expect(logs[0]).toContain('標準報酬月額を直しました');
-    expect(logs[0]).toContain('（直す前：2024年4月からの標準報酬月額（健保 30万円／厚年 30万円）／直したあと：2024年4月からの標準報酬月額（健保 32万円／厚年 30万円））');
+    expect(logs[0]).toContain('（直す前：2024年4月からの標準報酬月額（健保 30万円／厚年 30万円）／直したあと：2024年4月からの標準報酬月額（健保 32万円／厚年 32万円））');
 
     rowButton('table.dependents', '山田 花子', '削除').click();
     await answer(true);

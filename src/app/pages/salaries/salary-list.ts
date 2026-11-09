@@ -24,6 +24,7 @@ import {
   SalaryErrors,
   SalaryInput,
   SalaryRecord,
+  baseDaysTotalError,
   baseDaysWarning,
   validateSalary,
 } from '../../core/calc/salary';
@@ -434,6 +435,11 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
     // 支払月・締め日の変更月で、算定から除く額が要る月は必須（入れないと、随時改定・定時決定の平均を誤るため）。除く額がなければ0円
     if (!errors.excludedAmount && needsExclusion(row.periodChange) && (input.excludedAmount === null || input.excludedAmount === undefined))
       errors.excludedAmount = 'この月は算定から除く額が必要です（説明を見て入れてください。除く額がなければ 0）';
+    // 同じ月のほかの支払いと合わせた支払基礎日数が、計算期間の暦日数を超えないか
+    if (!errors.paymentBaseDays) {
+      const total = baseDaysTotalError(input.paymentBaseDays, row.payments.filter((s) => s.id !== row.existing?.id).map((s) => s.paymentBaseDays), row.periodDays);
+      if (total) errors.paymentBaseDays = total;
+    }
     if (row.closed) errors.form = 'この月は確定済みです。月次保険料一覧で確定を解除してから入力してください';
     else if (!errors.paidDate) {
       const o = this.officeForSave(row, input.paidDate);
@@ -659,6 +665,10 @@ export class SalaryList implements OnInit, HasUnsavedChanges {
       errors.paidDate = `支払日は${yearMonthLabel(ym)}の日付にしてください（随時改定は支払月で数えます）`;
     if (!errors.paidDate && row.payments.some((s) => s.id !== edit.salaryId && s.paidDate === input.paidDate))
       errors.paidDate = `${dateLabel(input.paidDate)}の支払いはすでに登録されています（その行の「直す」で直してください）`;
+    if (!errors.paymentBaseDays) {
+      const total = baseDaysTotalError(input.paymentBaseDays, row.payments.filter((s) => s.id !== edit.salaryId).map((s) => s.paymentBaseDays), row.periodDays);
+      if (total) errors.paymentBaseDays = total;
+    }
     if (row.closed) errors.form = 'この月は確定済みです。月次保険料一覧で確定を解除してから入力してください';
     else if (!errors.paidDate) {
       const o = this.officeForSave(row, input.paidDate);

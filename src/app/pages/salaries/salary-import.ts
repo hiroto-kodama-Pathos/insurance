@@ -100,6 +100,8 @@ export class SalaryImport implements OnInit {
   // プレビュー
   private readonly closed = signal<Set<string>>(new Set());
   private readonly existingIds = signal<Set<string>>(new Set());
+  /** 登録済みの給与の支払基礎日数（同じ月の支払いの合計を確かめる） */
+  private readonly existingDays = signal<{ employeeId: string; paidDate: string; paymentBaseDays: number }[]>([]);
   protected readonly overwrite = signal(false);
 
   protected readonly isAdmin = computed(() => this.auth.isAdmin());
@@ -113,6 +115,7 @@ export class SalaryImport implements OnInit {
       offices: this.offices(),
       closed: this.closed(),
       existingIds: this.existingIds(),
+      existingDays: this.existingDays(),
       scope: this.auth.user()?.siScope ?? 'all',
       needsExclusion: need,
       periodDaysOf: this.periodDaysFn(),
@@ -224,6 +227,7 @@ export class SalaryImport implements OnInit {
     ]);
     this.closed.set(new Set(closings.flat().map((c) => `${c.yearMonth}|${c.officeId}`)));
     this.existingIds.set(new Set(existing.map((s) => s.id)));
+    this.existingDays.set(existing.map((s) => ({ employeeId: s.employeeId, paidDate: s.paidDate, paymentBaseDays: s.paymentBaseDays })));
   }
 
   protected setSingle(key: SingleKey, value: string): void {

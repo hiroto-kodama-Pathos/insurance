@@ -89,7 +89,7 @@ describe('checkRate', () => {
   it('同じ種類・同じ月の二重登録はエラー（種類が違えばよい）', () => {
     const existing: InsurerRate = { insurerId: 'k1', rateType: 'health', prefecture: null, validFrom: '2026-03', rate: 9000, employeeShare: 500 };
     expect(checkRate(input, [existing]).errors).toHaveProperty('validFrom');
-    expect(checkRate({ ...input, rateType: 'care' }, [existing]).errors).toEqual({});
+    expect(checkRate({ ...input, rateType: 'care', rate: '1.8' }, [existing]).errors).toEqual({});
   });
   it('支援金は2026年4月分より前は登録できない', () => {
     expect(checkRate({ ...input, rateType: 'childSupport', rate: '0.23' }, []).errors).toHaveProperty('validFrom');
@@ -149,5 +149,19 @@ describe('健康保険組合の追加と一緒に登録する料率（checkKumia
     const early = { ...base, validFrom: '2026-03' };
     expect(checkKumiaiRates({ ...early, childSupport: { rate: '0.23', employeeRate: '' } }).errors['childSupportRate']).toContain('2026年4月分から');
     expect(checkKumiaiRates(early).errors).toEqual({});
+  });
+});
+
+describe('checkRate：料率の範囲', () => {
+  const r = (rateType: 'health' | 'care' | 'childSupport', rate: string) =>
+    checkRate({ insurerId: 'k1', rateType, validFrom: '2026-04', rate, employeeRate: '' }, []).errors['rate'];
+  it('健康保険は3%〜13%（法律の範囲）、介護保険は5%まで、支援金は1%まで', () => {
+    expect(r('health', '40')).toContain('3%〜13%');
+    expect(r('health', '2.9')).toContain('3%〜13%');
+    expect(r('health', '9.5')).toBeUndefined();
+    expect(r('care', '15')).toContain('5%を超えています');
+    expect(r('care', '1.8')).toBeUndefined();
+    expect(r('childSupport', '2.3')).toContain('1%を超えています');
+    expect(r('childSupport', '0.23')).toBeUndefined();
   });
 });

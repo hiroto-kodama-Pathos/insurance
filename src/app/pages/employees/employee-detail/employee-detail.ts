@@ -1419,14 +1419,14 @@ export class EmployeeDetail implements OnInit, HasUnsavedChanges {
           : `${dep.name}さんの介護保険の適用除外に、非該当年月日（${dateLabel(f.endDate)}）を登録しました。${n.name}：${n.deadline}`;
     } else if (mode === 'exemption') {
       const f = this.exemptionForm();
-      errors = checkExemption(d.exemptions, f);
+      errors = checkExemption(d.exemptions, f, null, d.birthDate);
       action = () => this.repo.addExemption(d.id, f);
       const n = exemptionNotice(f.type, f.startDate);
       message = `適用除外（${EXEMPTION_LABEL[f.type]}）を登録しました。${n.name}：${n.deadline}`;
     } else if (mode === 'exemptionEnd') {
       const f = this.exemptionForm();
       const id = this.editingExemptionId()!;
-      errors = checkExemption(d.exemptions, f, id);
+      errors = checkExemption(d.exemptions, f, id, d.birthDate);
       action = () => this.repo.updateExemption(d.id, id, f);
       const n = exemptionNotice(f.type, f.startDate);
       message = `適用除外（${EXEMPTION_LABEL[f.type]}）を直しました。${f.endDate ? `非該当年月日は${dateLabel(f.endDate)}です。` : ''}${n.name}：${n.deadline}`;

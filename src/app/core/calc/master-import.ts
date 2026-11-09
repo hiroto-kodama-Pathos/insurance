@@ -8,7 +8,7 @@ import { parseDateLoose, parseNumberLoose } from './csv';
 import { checkDependent, checkRemoval, Dependent } from './dependent';
 import { parseStandardLoose, parseYearMonthLoose } from './decision-import';
 import { Qualification } from './eligibility';
-import { GradeRow, gradeTableAt, noGradeTableMessage } from './grade-suggest';
+import { GradeRow, gradeTableAt, noGradeTableMessage, standardPairError } from './grade-suggest';
 import { INSURED_TYPE_LABEL, InsuredType } from './insured-type';
 import { isValidDate } from './new-employee';
 import { Assignment } from './office';
@@ -170,6 +170,8 @@ export type EmployeeImportContext = {
   offices: { id: string; name: string; archived?: boolean }[];
   groups: { id: string; name: string; isDefault?: boolean; archived?: boolean }[];
   scope: string;
+  /** 今日（YYYY-MM-DD）。生年月日が今日より後の行を止める（画面の新規登録と同じ） */
+  today?: string;
 };
 
 /** 被保険者区分を、名前・キー・よくある書き方から読む。空欄は一般被保険者 */
@@ -212,7 +214,10 @@ export function buildEmployeeImport(rows: string[][], m: ColumnMapping, ctx: Emp
     if (!hireDate && !acquiredDate && !errors.some((e) => e.includes('入社日') || e.includes('資格取得日')))
       errors.push('入社日か資格取得日を入れてください');
     if (hireDate && acquiredDate && acquiredDate < hireDate) errors.push('資格取得日が入社日より前です（資格取得日は、入社日か、加入の条件を満たした日です）');
-    if (birthDate && acquiredDate && acquiredDate < birthDate) errors.push('資格取得日が生年月日より前です');
+    // 画面の新規登録（validateNewEmployee）と同じ決まり：生年月日は今日まで、資格取得日・入社日より前の日
+    if (birthDate && ctx.today && birthDate > ctx.today) errors.push('生年月日に、今日より後の日は入れられません');
+    if (birthDate && hireDate && hireDate <= birthDate) errors.push('入社日が生年月日と同じか、それより前です');
+    if (birthDate && acquiredDate && acquiredDate <= birthDate) errors.push('資格取得日が生年月日と同じか、それより前です');
     else if (birthDate && acquiredDate && isValidDate(birthDate) && isValidDate(acquiredDate) && is75OrOlderOn(birthDate, acquiredDate))
       errors.push('資格取得日に75歳以上の人は、健康保険・厚生年金の被保険者になりません（資格取得日を空にし、入社日だけを入れて未加入として取り込んでください）');
 
@@ -393,6 +398,11 @@ export function buildStandardImport(
     if (Number.isNaN(pensionRaw)) errors.push('厚生年金の標準報酬月額を読み取れません');
     else if (pensionRaw !== null && table.length > 0 && !table.some((g) => g.pensionGrade !== null && g.standardAmount === pensionRaw))
       errors.push(`厚生年金の標準報酬月額 ${yen(pensionRaw)}円は等級表にありません`);
+    else if (validFrom && health !== null && !Number.isNaN(health) && table.length > 0 && table.some((g) => g.standardAmount === health)) {
+      // 健康保険と厚生年金は同じ報酬月額から決まるので、組み合わせも確かめる
+      const pair = standardPairError(grades, validFrom, health, pensionRaw);
+      if (pair) errors.push(pair);
+    }
     if (emp && validFrom) {
       const key = `${emp.id}|${validFrom}`;
       if (seen.has(key)) errors.push('同じ人・同じ適用年月の行がファイルの中に2つ以上あります');

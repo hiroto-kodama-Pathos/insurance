@@ -29,3 +29,13 @@ describe('適用除外の入力チェック', () => {
     expect(exemptionNote(list, '2026-09')).toBe('適用除外（厚生年金）');
   });
 });
+
+describe('後期高齢者医療の障害認定の年齢', () => {
+  const input = (startDate: string) => ({ type: 'healthLateElderly' as const, startDate, endDate: '' });
+  it('65歳未満・75歳以上はエラー。65歳以上75歳未満ならよい', () => {
+    expect(checkExemption([], input('2026-11-01'), null, '1986-05-10').startDate).toContain('まだ65歳になっていません'); // 40歳
+    expect(checkExemption([], input('2026-11-01'), null, '1950-05-10').startDate).toContain('75歳からは'); // 76歳
+    expect(checkExemption([], input('2026-11-01'), null, '1958-05-10')).toEqual({}); // 68歳
+    expect(checkExemption([], input('2026-11-01'))).toEqual({}); // 生年月日を渡さなければ確かめない
+  });
+});

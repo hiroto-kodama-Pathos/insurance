@@ -5,7 +5,7 @@ import { dateLabel } from './year-month';
 import type { InsuredType } from './insured-type';
 import type { EligibilityInput, EligibilityResult } from './eligibility-check';
 import { checkDependent, type DependentInput } from './dependent';
-import { standardGradeError, type GradeRow } from './grade-suggest';
+import { standardGradeError, standardPairError, type GradeRow } from './grade-suggest';
 
 /** 入社時の報酬月額の内訳（設計書 2.3）。基本給は必須、ほかは空欄なら0円 */
 export type RemunerationBreakdown = {
@@ -164,9 +164,12 @@ export function checkEligibilityInput(
   const e: Partial<Record<'weeklyHours' | 'monthlyDays' | 'contractEnd', string>> = {};
   const optional = hoursOptional(el.employmentType);
   const h = el.weeklyHours;
-  if (h === null ? !optional : !(h >= 0 && h <= 168 && Math.round(h * 10) === h * 10)) e.weeklyHours = '週の所定労働時間を0〜168時間で入力してください（小数第1位まで）';
+  // 所定労働時間・日数は契約で決めた数なので0にはしない（シフト制などで決まっていない人は、契約書・労働条件通知書の見込みの数を入れる）
+  if (h === null ? !optional : !(h > 0 && h <= 168 && Math.round(h * 10) === h * 10))
+    e.weeklyHours = '週の所定労働時間を、0より大きく168時間以下で入力してください（小数第1位まで。シフト制の人は契約の見込みの時間）';
   const d = el.monthlyDays;
-  if (d === null ? !optional : !(Number.isInteger(d) && d >= 0 && d <= 31)) e.monthlyDays = '月の所定労働日数を0〜31日で入力してください';
+  if (d === null ? !optional : !(Number.isInteger(d) && d >= 1 && d <= 31))
+    e.monthlyDays = '月の所定労働日数を1〜31日で入力してください（シフト制の人は契約の見込みの日数）';
   if (el.contractEnd !== '') {
     if (!isValidDate(el.contractEnd)) e.contractEnd = '契約の終わりの日を正しく入力してください';
     else if (isValidDate(baseDate) && el.contractEnd < baseDate) e.contractEnd = `契約の終わりは${baseLabel}以後にしてください`;
@@ -243,6 +246,11 @@ export function validateNewEmployee(input: NewEmployeeInput, existingNumbers: st
       const g = standardGradeError(grades, standardMonth, key === 'healthStandard' ? 'health' : 'pension', v);
       if (g) e[key] = g;
     }
+  }
+  // 健康保険と厚生年金は同じ報酬月額から決まるので、組み合わせも確かめる
+  if (standardMonth && !e.healthStandard && !e.pensionStandard) {
+    const pair = standardPairError(grades, standardMonth, input.healthStandard, input.pensionStandard);
+    if (pair) e.pensionStandard = pair;
   }
   // 被扶養者（加入する人だけ）。行ごとに最初の誤りを出す
   if (input.insured) {

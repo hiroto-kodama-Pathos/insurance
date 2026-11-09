@@ -4,7 +4,7 @@
 import { parseDateLoose, parseNumberLoose } from './csv';
 import { StandardHistory } from './employee-month';
 import { findByNumber } from './salary-import';
-import { standardGradeError, type GradeRow } from './grade-suggest';
+import { standardGradeError, standardPairError, type GradeRow } from './grade-suggest';
 
 /** アプリの項目ごとに、対応するCSVの列名（空はその列なし） */
 export type DecisionMapping = {
@@ -182,6 +182,11 @@ export function buildDecisionPreview(
       if (gh) errors.push(gh);
       const gp = pensionRaw === null ? null : standardGradeError(grades, validFrom, 'pension', pensionRaw);
       if (gp && gp !== gh) errors.push(gp);
+      // 健康保険と厚生年金は同じ報酬月額から決まるので、組み合わせも確かめる
+      if (!gh && !gp) {
+        const pair = standardPairError(grades, validFrom, health, pensionRaw);
+        if (pair) errors.push(pair);
+      }
     }
 
     const label = emp ? `${emp.employeeNumber} ${emp.name}` : number || name;

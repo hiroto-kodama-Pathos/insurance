@@ -387,7 +387,7 @@ describe('SalaryList', () => {
     const payments = () => store.filter((s) => s.employeeId === 'e1' && s.paidDate.startsWith('2026-10')).map((s) => [s.paidDate, s.fixedWages]).sort();
 
     beforeEach(async () => {
-      store = [...store, sal('e1', '2026-10-15', 200_000)];
+      store = [...store, { ...sal('e1', '2026-10-15', 200_000), paymentBaseDays: 14 }]; // 月2回払いの前半
       fixture.componentRef.instance['yearMonth'].set('2026-10');
       await (fixture.componentInstance as unknown as { loadMonth(): Promise<void> }).loadMonth();
       await settle();
@@ -410,8 +410,22 @@ describe('SalaryList', () => {
       expect(el().textContent).toContain('2026年10月の支払いは2回で、随時改定・定時決定では合算します');
     });
 
+    it('同じ月の支払基礎日数の合計が計算期間の暦日数を超えたら保存しない（2回目に1か月分を入れた誤り）', async () => {
+      button(row('山田 太郎'), '支払いの一覧・追加（1回）').click();
+      await settle();
+      button(panel(), '支払いを追加（同じ月の2回目）').click();
+      await settle();
+      fill('paymentPaidDate', '2026-10-31');
+      fill('payment-fixedWages', '50000');
+      fill('payment-paymentBaseDays', '30');
+      button(panel(), '保存').click();
+      await settle();
+      expect(payments()).toEqual([['2026-10-15', 200_000]]);
+      expect(panel().textContent).toContain('同じ月の支払いの支払基礎日数の合計（44日）が、給与の計算期間の暦日数（30日）を超えます');
+    });
+
     it('2回目だけを直す・削除できる（1回目はそのまま）', async () => {
-      store = [...store, sal('e1', '2026-10-31', 50_000)];
+      store = [...store, { ...sal('e1', '2026-10-31', 50_000), paymentBaseDays: 16 }];
       await (fixture.componentInstance as unknown as { loadMonth(): Promise<void> }).loadMonth();
       await settle();
       button(row('山田 太郎'), '支払いの一覧・追加（2回）').click();
@@ -439,7 +453,7 @@ describe('SalaryList', () => {
       expect(extra.textContent).toContain('2026年10月31日');
       expect(extra.textContent).toContain('50,000');
       const total = [...el().querySelectorAll('tr.payments-total td')].map((td) => td.textContent!.trim());
-      expect(total.slice(1, 6)).toEqual(['この月の合計', '2回', '250,000', '3,000', '46']);
+      expect(total.slice(1, 6)).toEqual(['この月の合計', '2回', '250,000', '3,000', '30']);
       button(extra, '直す').click();
       await settle();
       expect((panel().querySelector('input[name="payment-fixedWages"]') as HTMLInputElement).value).toBe('50000');
@@ -447,7 +461,7 @@ describe('SalaryList', () => {
     });
 
     it('支払日を、ほかの支払いと同じ日に変えようとすると、上書きせずにエラー（一覧の行・支払日ごとの欄のどちらも）', async () => {
-      store = [...store, sal('e1', '2026-10-31', 50_000)];
+      store = [...store, { ...sal('e1', '2026-10-31', 50_000), paymentBaseDays: 16 }];
       await (fixture.componentInstance as unknown as { loadMonth(): Promise<void> }).loadMonth();
       await settle();
       // 一覧の行（1回目）の支払日を、2回目と同じ日に
@@ -483,7 +497,7 @@ describe('SalaryList', () => {
       await settle();
       expect(payments()).toEqual([['2026-10-20', 200_000]]);
       // 画面に出ていない給与（ほかの担当者が登録した）と同じ支払日を追加しようとすると、上書きしない
-      store = [...store, sal('e1', '2026-10-31', 70_000)];
+      store = [...store, { ...sal('e1', '2026-10-31', 70_000), paymentBaseDays: 16 }];
       button(panel(), '支払いを追加').click();
       await settle();
       fill('paymentPaidDate', '2026-10-31');

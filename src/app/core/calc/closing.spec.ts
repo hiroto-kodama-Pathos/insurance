@@ -65,6 +65,17 @@ describe('closeBlockers', () => {
   it('保険料がかかる人がいない事業所は確定しない', () => {
     expect(closeBlockers('2026-10', 'osaka', rowsOf([emp('e1', 'honsha', 300_000)]))).toHaveLength(1);
   });
+  it('所属事業所が決まらない人がいれば、ほかに正常な人がいても確定しない（黙って結果から外れないように）', () => {
+    const noOffice = { ...emp('e3', 'honsha', 300_000), assignments: [] };
+    const rows = rowsOf([emp('e1', 'honsha', 300_000), noOffice]);
+    expect(closeBlockers('2026-10', 'honsha', rows)).toEqual(['e3 社員 e3：所属事業所が未登録（どの事業所の保険料か決まらないため、所属を登録してください）']);
+  });
+  it('事業所の保険者が決まらない人がいれば、その事業所は確定しない', () => {
+    const rows = rowsOf([emp('e1', 'honsha', 300_000), emp('e4', 'honsha', 300_000)]).map((r) =>
+      r.employee.id === 'e4' ? { ...r, result: { ...r.result, status: 'noOffice' as const } } : r,
+    );
+    expect(closeBlockers('2026-10', 'honsha', rows)).toEqual(['e4 社員 e4：事業所の保険者が決まらない（適用事業所の設定を確かめてください）']);
+  });
 });
 
 describe('buildOfficeClosing と restoreRow', () => {

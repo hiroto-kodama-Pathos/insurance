@@ -1,4 +1,4 @@
-import { detectFixedWageChanges, detectRetroactivePossibilities, baseDaysWarning, payMonths, SalaryRecord, validateSalary } from './salary';
+import { detectFixedWageChanges, detectRetroactivePossibilities, baseDaysTotalError, baseDaysWarning, payMonths, SalaryRecord, validateSalary } from './salary';
 
 const s = (paidDate: string, fixed: number, nonFixed = 0, days = 30, retro: number | null = null): SalaryRecord => ({
   id: paidDate, employeeId: 'e1', paidDate, fixedWages: fixed, nonFixedWages: nonFixed,
@@ -90,5 +90,15 @@ describe('baseDaysWarning：支払基礎日数と計算期間の暦日数', () =
     expect(baseDaysWarning(31, null)).toBeNull(); // 締め日・支払月の変更月
     expect(baseDaysWarning(null, 30)).toBeNull();
     expect(baseDaysWarning(32, 30)).toBeNull(); // 32日はエラー（0〜31日）の方で伝える
+  });
+});
+
+describe('baseDaysTotalError：同じ月の支払基礎日数の合計', () => {
+  it('合計が計算期間の暦日数を超えたらエラー。1回だけで超える（ほかは0日）ときは注意の方で伝える', () => {
+    expect(baseDaysTotalError(20, [20], 30)).toContain('合計（40日）が、給与の計算期間の暦日数（30日）を超えます');
+    expect(baseDaysTotalError(15, [15], 30)).toBeNull(); // 月2回払い
+    expect(baseDaysTotalError(0, [31], 30)).toBeNull();
+    expect(baseDaysTotalError(20, [], 30)).toBeNull();
+    expect(baseDaysTotalError(20, [20], null)).toBeNull(); // 締め日・支払月の変更月
   });
 });

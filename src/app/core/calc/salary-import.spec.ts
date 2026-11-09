@@ -270,3 +270,14 @@ describe('給与のCSV：空欄・桁の多すぎる金額・対応づけの矛�
     });
   });
 });
+
+describe('給与CSV：同じ月の支払基礎日数の合計', () => {
+  it('ファイルの行と登録済みの給与を合わせて、計算期間の暦日数を超えたらエラー（上書きする支払日はファイルの値で数える）', () => {
+    const emp: ImportEmployee = { id: 'e1', employeeNumber: '0001', name: '山田 太郎', assignments: [{ validFrom: '2020-04-01', officeId: 'honsha' }] } as ImportEmployee;
+    const c = (extra: Partial<PreviewContext>): PreviewContext => ({ employees: [emp], offices: [{ id: 'honsha', name: '本社', prefecture: '東京都', insurerId: 'kyokai' }], closed: new Set(), existingIds: new Set(), scope: 'all', periodDaysOf: () => 30, ...extra } as PreviewContext);
+    const csv = parseCsv(`${TEMPLATE_HEADERS.join(',')}\r\n0001,2026-11-25,20,100000,0,,,,\r\n`);
+    expect(buildPreview(csv, TEMPLATE_MAPPING, c({ existingDays: [{ employeeId: 'e1', paidDate: '2026-11-10', paymentBaseDays: 20 }] }))[0].errors[0]).toContain('合計（40日）');
+    expect(buildPreview(csv, TEMPLATE_MAPPING, c({ existingDays: [{ employeeId: 'e1', paidDate: '2026-11-25', paymentBaseDays: 20 }] }))[0].status).toBe('new');
+  });
+});
+

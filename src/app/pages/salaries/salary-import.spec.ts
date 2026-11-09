@@ -182,7 +182,7 @@ describe('SalaryImport', () => {
   it('確認のあとにほかの担当者が登録した行は上書きせず、途中で書けなかった件数も出す（ファイルは残す）', async () => {
     saveResult = { conflicts: 1, failed: 1 };
     await setup();
-    await load(templateCsv() + '2,2026/10/25,30,260000,10000,,\r\n0001,2026-10-26,30,1,0,,\r\n');
+    await load(templateCsv() + '2,2026/10/25,30,260000,10000,,\r\n0001,2026-10-26,0,1,0,,\r\n');
     importButton().click();
     await fixture.whenStable();
     await new Promise((r) => setTimeout(r));

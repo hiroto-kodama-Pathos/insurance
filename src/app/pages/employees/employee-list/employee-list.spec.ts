@@ -535,7 +535,7 @@ describe('EmployeeList', () => {
     el().querySelector('form')!.dispatchEvent(new Event('submit'));
     await settle();
     expect(created.length).toBe(0);
-    expect(el().textContent).toContain('週の所定労働時間を0〜168時間で入力してください');
+    expect(el().textContent).toContain('週の所定労働時間を、0より大きく168時間以下で入力してください');
   });
   it('状態・検索・事業所で絞り込める', async () => {
     const el = fixture.nativeElement as HTMLElement;

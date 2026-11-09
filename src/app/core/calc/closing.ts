@@ -98,15 +98,27 @@ export function closeBlockerList(
   const label: Partial<Record<EmployeeMonthResult['status'], string>> = {
     noStandard: '標準報酬月額が未登録',
     missingRate: '料率が未登録',
+    noOffice: '事業所の保険者が決まらない（適用事業所の設定を確かめてください）',
   };
   const person = (e: RowInput['employee'], reason: string): CloseBlocker => ({
     employeeId: e.id, employeeNumber: e.employeeNumber, name: e.name, reason,
   });
   const mine = rows.filter((r) => r.result.yearMonth === yearMonth && r.result.officeId === officeId);
   const problems = mine.filter((r) => label[r.result.status]).map((r) => person(r.employee, label[r.result.status]!));
+  // 所属事業所が決まらない人（officeId なし）は、どの事業所の保険料かが決まらない。黙って確定の結果から外れ、
+  // 納付額・本人負担の合計が少なく出るのを防ぐため、その月のどの事業所の確定も止める（所属を登録すれば確定できる）
+  for (const r of rows) {
+    if (r.result.yearMonth === yearMonth && r.result.status === 'noOffice' && !r.result.officeId)
+      problems.push(person(r.employee, '所属事業所が未登録（どの事業所の保険料か決まらないため、所属を登録してください）'));
+  }
   const myBonuses = bonuses.filter((b) => b.result.yearMonth === yearMonth && b.result.officeId === officeId);
   for (const b of myBonuses) {
     if (b.result.status === 'missingRate') problems.push(person(b.employee, `賞与（${dateLabel(b.result.bonus.paidDate)}）の料率が未登録`));
+    if (b.result.status === 'noOffice') problems.push(person(b.employee, `賞与（${dateLabel(b.result.bonus.paidDate)}）の事業所の保険者が決まらない`));
+  }
+  for (const b of bonuses) {
+    if (b.result.yearMonth === yearMonth && b.result.status === 'noOffice' && !b.result.officeId)
+      problems.push(person(b.employee, `賞与（${dateLabel(b.result.bonus.paidDate)}）の所属事業所が未登録`));
   }
   if (mine.filter((r) => r.result.status === 'ok').length === 0 && myBonuses.length === 0 && problems.length === 0) {
     problems.push({ employeeId: null, employeeNumber: '', name: '', reason: 'この月に保険料がかかる従業員がいません' });

@@ -106,6 +106,14 @@ export function checkRate(
 
   const rate = percentToRate(input.rate);
   if (rate === null || rate === 0) errors['rate'] = '料率を%で入力してください（小数第3位まで。例：9.5）';
+  // 料率の範囲（入力の誤りで、極端な保険料にならないように）。健康保険は法律の範囲（健康保険法160条：3%〜13%）。
+  // 介護保険・子ども・子育て支援金は法律の上限がないので、実際の料率から大きく外れる値（介護 5%超・支援金 1%超）を止める
+  else if (input.rateType === 'health' && (rate < 3_000 || rate > 13_000))
+    errors['rate'] = '健康保険の料率は、法律で3%〜13%の範囲です。規約・告示の料率を確かめてください';
+  else if (input.rateType === 'care' && rate > 5_000)
+    errors['rate'] = '介護保険の料率が5%を超えています。入力の誤りでないか、規約・告示の料率を確かめてください（多くは1〜2%台）';
+  else if (input.rateType === 'childSupport' && rate > 1_000)
+    errors['rate'] = '子ども・子育て支援金の料率が1%を超えています。入力の誤りでないか、告示の料率を確かめてください';
 
   let share: number | null = 500;
   if (input.employeeRate.trim() !== '' && rate) {

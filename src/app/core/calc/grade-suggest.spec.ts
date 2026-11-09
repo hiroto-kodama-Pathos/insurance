@@ -1,4 +1,4 @@
-import { buildKyokaiGrades, gradeTableAt, standardGradeError, suggestStandards } from './grade-suggest';
+import { buildKyokaiGrades, gradeTableAt, pensionStandardFor, standardGradeError, standardPairError, suggestStandards } from './grade-suggest';
 
 const grades = buildKyokaiGrades('2020-09');
 
@@ -127,5 +127,20 @@ describe('標準報酬月額が等級の額かのチェック', () => {
       const error = standardGradeError(emptyGrades, '2026-10', 'health', 300_000);
       expect(error).toContain('登録されていないため、登録できません');
     });
+  });
+});
+
+describe('健康保険と厚生年金の標準報酬月額の組み合わせ', () => {
+  it('同じ報酬月額から決まる厚生年金の額（範囲より下・上は、いちばん下・上の等級）', () => {
+    expect(pensionStandardFor(grades, '2026-04', 320_000)).toBe(320_000);
+    expect(pensionStandardFor(grades, '2026-04', 58_000)).toBe(88_000);
+    expect(pensionStandardFor(grades, '2026-04', 1_390_000)).toBe(650_000);
+  });
+  it('組み合わせが合わなければエラー（健保 32万円・厚年 30万円）。合っていれば null、片方がなければ確かめない', () => {
+    expect(standardPairError(grades, '2026-04', 320_000, 300_000)).toContain('健康保険が32万円なら、厚生年金は32万円です');
+    expect(standardPairError(grades, '2026-04', 320_000, 320_000)).toBeNull();
+    expect(standardPairError(grades, '2026-04', 1_390_000, 650_000)).toBeNull();
+    expect(standardPairError(grades, '2026-04', 320_000, null)).toBeNull();
+    expect(standardPairError(null, '2026-04', 320_000, 300_000)).toBeNull();
   });
 });

@@ -5,7 +5,7 @@ import { isValidDate } from './new-employee';
 import { Assignment } from './office';
 import { yearMonthLabel } from './year-month';
 import { toHalfWidth } from './half-width';
-import { standardGradeError, type GradeRow } from './grade-suggest';
+import { standardGradeError, type GradeRow, standardPairError } from './grade-suggest';
 
 export type Errors = Record<string, string>;
 
@@ -142,6 +142,11 @@ export function checkStandard(
       const g = standardGradeError(grades, input.validFrom, key === 'healthStandard' ? 'health' : 'pension', v);
       if (g) errors[key] = g;
     }
+  }
+  // 健康保険と厚生年金は同じ報酬月額から決まるので、組み合わせも確かめる（どちらも等級の額のときだけ）
+  if (!errors['healthStandard'] && !errors['pensionStandard'] && isValidMonth(input.validFrom)) {
+    const pair = standardPairError(grades, input.validFrom, input.healthStandard, input.pensionStandard);
+    if (pair) errors['pensionStandard'] = pair;
   }
   const own = input.ownRemuneration ?? null;
   const total = input.totalRemuneration ?? null;
